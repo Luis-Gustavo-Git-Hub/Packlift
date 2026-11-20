@@ -38,7 +38,8 @@ jobs:
         run: |
           flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
             --repo=flatpak-repo --force-clean flatpak-build io.github.flatapk.Installer.json
-          flatpak build-bundle flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
       - name: Validate the installed bundle
         run: |
           flatpak install --user --noninteractive ./Flatapk-x86_64.flatpak
@@ -48,7 +49,7 @@ jobs:
             bsdtar --version
             msiinfo --version
             zstd --version
-            unsquashfs -version
+            unsquashfs -version | grep -F "unsquashfs version"
           '
           dbus-run-session -- flatpak run --command=python3 io.github.flatapk.Installer - <<'PY'
           import gi
