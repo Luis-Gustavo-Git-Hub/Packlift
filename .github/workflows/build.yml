@@ -1,0 +1,47 @@
+name: Test and build Flatapk
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream desktop-file-utils gettext libarchive-tools zstd
+      - name: Run tests and validate desktop integration
+        run: |
+          make test
+          make install DESTDIR="$RUNNER_TEMP/flatapk-install"
+          desktop-file-validate data/io.github.flatapk.Installer.desktop
+          appstreamcli validate --no-net data/io.github.flatapk.Installer.metainfo.xml
+
+  flatpak:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Flatpak build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build Flatpak bundle
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
+            --repo=flatpak-repo --force-clean flatpak-build io.github.flatapk.Installer.json
+          flatpak build-bundle flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flatapk-x86_64
+          path: Flatapk-x86_64.flatpak
+          if-no-files-found: error

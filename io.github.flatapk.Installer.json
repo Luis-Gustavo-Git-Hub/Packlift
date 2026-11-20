@@ -1,0 +1,120 @@
+{
+  "app-id": "io.github.flatapk.Installer",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "command": "flatapk",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--socket=pulseaudio",
+    "--device=dri",
+    "--filesystem=home",
+    "--filesystem=xdg-data/applications:create",
+    "--talk-name=org.freedesktop.Flatpak"
+  ],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/lib/cmake",
+    "/share/man",
+    "/share/gtk-doc",
+    "/share/bash-completion",
+    "*.a",
+    "*.la"
+  ],
+  "modules": [
+    {
+      "name": "libarchive",
+      "buildsystem": "cmake-ninja",
+      "config-opts": ["-DENABLE_TEST=OFF", "-DENABLE_CPIO=OFF", "-DENABLE_CAT=OFF", "-DENABLE_UNZIP=OFF"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://www.libarchive.org/downloads/libarchive-3.8.2.tar.xz",
+          "sha256": "db0dee91561cbd957689036a3a71281efefd131d35d1d98ebbc32720e4da58e2"
+        }
+      ]
+    },
+    {
+      "name": "zstd-cli",
+      "buildsystem": "simple",
+      "build-commands": ["make -C programs zstd", "install -Dm755 programs/zstd /app/bin/zstd"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://codeload.github.com/facebook/zstd/tar.gz/refs/tags/v1.5.7",
+          "archive-type": "tar-gzip",
+          "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"
+        }
+      ]
+    },
+    {
+      "name": "libgsf",
+      "buildsystem": "autotools",
+      "config-opts": ["--enable-introspection=no", "--disable-gtk-doc"],
+      "cleanup": ["/bin"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/libgsf/1.14/libgsf-1.14.53.tar.xz",
+          "sha256": "0eb59a86e0c50f97ac9cfe4d8cc1969f623f2ae8c5296f2414571ff0a9e8bcba"
+        }
+      ]
+    },
+    {
+      "name": "gcab",
+      "buildsystem": "meson",
+      "config-opts": ["-Ddocs=false", "-Dtests=false", "-Dintrospection=false", "-Dvapi=false"],
+      "cleanup": ["/bin"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/gcab/1.6/gcab-1.6.tar.xz",
+          "sha256": "2f0c9615577c4126909e251f9de0626c3ee7a152376c15b5544df10fc87e560b"
+        }
+      ]
+    },
+    {
+      "name": "msitools",
+      "buildsystem": "meson",
+      "config-opts": ["-Dintrospection=false", "-Dvalidate-wxi=false"],
+      "cleanup": ["/bin/msidiff", "/bin/msidump", "/bin/msibuild", "/share/msitools"],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/msitools/0.106/msitools-0.106.tar.xz",
+          "sha256": "1ed34279cf8080f14f1b8f10e649474125492a089912e7ca70e59dfa2e5a659b"
+        }
+      ]
+    },
+    {
+      "name": "unsquashfs",
+      "buildsystem": "simple",
+      "build-commands": [
+        "make -C squashfs-tools unsquashfs XZ_SUPPORT=1 ZSTD_SUPPORT=1 LZ4_SUPPORT=1",
+        "install -Dm755 squashfs-tools/unsquashfs /app/bin/unsquashfs"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://codeload.github.com/plougher/squashfs-tools/tar.gz/refs/tags/4.6.1",
+          "archive-type": "tar-gzip",
+          "sha256": "9c4974e07c61547dae14af4ed1f358b7d04618ae194e54d6be72ee126f0d2f53"
+        }
+      ]
+    },
+    {
+      "name": "flatapk",
+      "buildsystem": "simple",
+      "build-commands": ["make install PREFIX=/app"],
+      "sources": [
+        {"type": "dir", "path": "flatapk", "dest": "flatapk"},
+        {"type": "dir", "path": "data", "dest": "data"},
+        {"type": "dir", "path": "po", "dest": "po"},
+        {"type": "file", "path": "Makefile"}
+      ]
+    }
+  ]
+}

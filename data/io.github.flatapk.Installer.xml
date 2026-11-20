@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-flatapk-windows-setup">
+    <comment>Windows setup executable</comment>
+    <sub-class-of type="application/vnd.microsoft.portable-executable"/>
+    <glob pattern="*.setup" weight="75"/>
+  </mime-type>
+  <mime-type type="application/x-flatapk-arch-package">
+    <comment>Arch Linux package archive</comment>
+    <sub-class-of type="application/x-zstd-compressed-tar"/>
+    <glob pattern="*.pkg.tar.zst" weight="80"/>
+  </mime-type>
+</mime-info>

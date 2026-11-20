@@ -1,0 +1,1 @@
+"""Flatapk desktop package installer."""

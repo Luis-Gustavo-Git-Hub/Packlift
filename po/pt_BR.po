@@ -1,0 +1,320 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Flatapk\n"
+"PO-Revision-Date: 2026-11-20 00:00+0000\n"
+"Last-Translator: Flatapk contributors\n"
+"Language-Team: Portuguese (Brazil)\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "A stored Windows installer failed its integrity check."
+msgstr "Um instalador do Windows salvo falhou na verificação de integridade."
+
+msgid "Advanced options"
+msgstr "Opções avançadas"
+
+msgid "Analyzing the file"
+msgstr "Analisando o arquivo"
+
+msgid "Another Flatapk operation is running. Try again when it finishes."
+msgstr "Já existe uma operação em andamento. Tente novamente quando ela terminar."
+
+msgid "Applying changes"
+msgstr "Aplicando alterações"
+
+msgid "Check the details for the failing step and try again."
+msgstr "Consulte os detalhes da etapa que falhou e tente novamente."
+
+msgid "Checking compatibility"
+msgstr "Verificando compatibilidade"
+
+msgid "Choose a local package file."
+msgstr "Escolha um arquivo de pacote local."
+
+msgid "Choose a regular package file."
+msgstr "Escolha um arquivo de pacote comum."
+
+msgid "Choose an executable Wine or Proton runtime installed on the host."
+msgstr "Selecione um executável do Wine ou Proton instalado no sistema."
+
+msgid "Choose the program to launch"
+msgstr "Selecione o programa que deseja abrir"
+
+msgid "Clean _unused Toolbox environments"
+msgstr "Limpar ambientes Toolbox sem _uso"
+
+msgid "Clean unused Toolbox environments?"
+msgstr "Limpar os ambientes Toolbox sem uso?"
+
+msgid "Cleaning environments"
+msgstr "Limpando ambientes"
+
+msgid "Current Fedora and openSUSE toolchains require a 64-bit host."
+msgstr "As versões atuais de Fedora e openSUSE exigem um computador de 64 bits."
+
+msgid "Default Wine, or an absolute path to wine or proton"
+msgstr "Wine do sistema ou caminho absoluto para wine ou proton"
+
+msgid "Dependencies"
+msgstr "Dependências"
+
+msgid "Done"
+msgstr "Concluído"
+
+msgid "Downloading dependencies"
+msgstr "Baixando dependências"
+
+msgid "Enter one NAME=value per line, including WINEDLLOVERRIDES if needed."
+msgstr "Digite uma configuração NOME=valor por linha. Inclua WINEDLLOVERRIDES se necessário."
+
+msgid "Extra 32-bit components may be downloaded."
+msgstr "O Flatapk pode baixar componentes adicionais de 32 bits."
+
+msgid "Flatapk could not complete this operation."
+msgstr "O Flatapk não conseguiu concluir esta operação."
+
+msgid "Flatapk removes its Toolbox containers that have no registered programs."
+msgstr "O Flatapk remove os containers que ele criou e que não têm programas registrados."
+
+msgid "Install Toolbox and Podman on the host before continuing."
+msgstr "Instale Toolbox e Podman no sistema antes de continuar."
+
+msgid "Install Wine with 32-bit support on the host before continuing."
+msgstr "Instale Wine com suporte a programas de 32 bits antes de continuar."
+
+msgid "Install polkit and start a desktop authentication agent first."
+msgstr "Instale o polkit e inicie um agente de autenticação gráfica."
+
+msgid "Installed programs"
+msgstr "Programas instalados"
+
+msgid "Installing {}"
+msgstr "Instalando {}"
+
+msgid "Local installation"
+msgstr "Instalação local"
+
+msgid "No executable was selected. The archive was not installed."
+msgstr "Nenhum executável foi selecionado. A instalação foi cancelada."
+
+msgid "Open a package file to install your first program."
+msgstr "Abra um arquivo de pacote para instalar seu primeiro programa."
+
+msgid "Open package"
+msgstr "Abrir pacote"
+
+msgid "Operation failed"
+msgstr "Falha na operação"
+
+msgid "Podman could not check the Toolbox environment."
+msgstr "O Podman não conseguiu verificar o ambiente Toolbox."
+
+msgid "Preparing the environment"
+msgstr "Preparando o ambiente"
+
+msgid "Proton's prefix does not point to the Flatapk prefix."
+msgstr "O prefixo do Proton não aponta para o prefixo do Flatapk."
+
+msgid "Rebuild the shared Wine prefix?"
+msgstr "Recriar o prefixo compartilhado do Wine?"
+
+msgid "Repairing Wine prefix"
+msgstr "Reparando o prefixo do Wine"
+
+msgid "Restore the last Wine snapshot?"
+msgstr "Restaurar a última cópia do prefixo do Wine?"
+
+msgid "Restoring Wine prefix"
+msgstr "Restaurando o prefixo do Wine"
+
+msgid "Show details"
+msgstr "Ver detalhes"
+
+msgid "Signature could not be verified. Install only if you trust the source."
+msgstr "A assinatura não pôde ser verificada. Instale apenas se confiar na origem."
+
+msgid "Signature verified with a trusted key."
+msgstr "Assinatura verificada com uma chave confiável."
+
+msgid "System package manager"
+msgstr "Gerenciador de pacotes do sistema"
+
+msgid "The Debian package does not contain readable control metadata."
+msgstr "Não foi possível ler os metadados de controle do pacote Debian."
+
+msgid "The Debian package is missing a required archive member."
+msgstr "Falta um componente obrigatório no pacote Debian."
+
+msgid "The RPM header is damaged."
+msgstr "O cabeçalho do RPM está corrompido."
+
+msgid "The RPM metadata is incomplete."
+msgstr "Os metadados do RPM estão incompletos."
+
+msgid "The RPM metadata is too large."
+msgstr "Os metadados do RPM são grandes demais."
+
+msgid "The SHA-256 sidecar is invalid."
+msgstr "O arquivo auxiliar SHA-256 é inválido."
+
+msgid "The application launcher could not be started."
+msgstr "Não foi possível abrir o programa pelo atalho."
+
+msgid "The archive contains a link or special file. Use an AppImage or a system package."
+msgstr "O arquivo compactado contém um link ou arquivo especial. Use um AppImage ou pacote do sistema."
+
+msgid "The archive contains an invalid file name."
+msgstr "O arquivo compactado contém um nome de arquivo inválido."
+
+msgid "The archive contains an unsafe path."
+msgstr "O arquivo compactado contém um caminho inseguro."
+
+msgid "The archive has no executable compatible with this computer."
+msgstr "O arquivo compactado não contém um executável compatível com este computador."
+
+msgid "The file does not match its SHA-256 checksum."
+msgstr "O arquivo não corresponde à soma de verificação SHA-256."
+
+msgid "The file header does not match a supported package format."
+msgstr "O cabeçalho do arquivo não corresponde a um formato compatível."
+
+msgid "The package architecture is incompatible with this computer."
+msgstr "A arquitetura do pacote é incompatível com este computador."
+
+msgid "The package did not provide an application launcher or executable."
+msgstr "O pacote não contém um atalho de aplicativo nem um executável identificado."
+
+msgid "The package is missing required metadata."
+msgstr "Faltam metadados obrigatórios no pacote."
+
+msgid "The program can access your home folder."
+msgstr "O programa pode acessar a sua pasta pessoal."
+
+msgid "The program contains an unknown architecture."
+msgstr "O programa usa uma arquitetura desconhecida."
+
+msgid "The signed source file changed after confirmation. Open it again."
+msgstr "O arquivo assinado mudou depois da confirmação. Abra-o novamente."
+
+msgid "The snapshot's program is no longer registered."
+msgstr "O programa associado à cópia já foi removido."
+
+msgid "The source file changed after confirmation. Open it again."
+msgstr "O arquivo foi alterado depois da confirmação. Abra-o novamente."
+
+msgid "The source file changed while it was being analyzed. Open it again."
+msgstr "O arquivo foi alterado durante a análise. Abra-o novamente."
+
+msgid "The supported Arch image requires a 64-bit host."
+msgstr "A imagem Arch usada pelo Flatapk exige um computador de 64 bits."
+
+msgid "The system already has this package installed."
+msgstr "Este pacote já está instalado no sistema."
+
+msgid "The system changed after confirmation. Open the package again."
+msgstr "O sistema mudou depois da confirmação. Abra o pacote novamente."
+
+msgid "The system will ask you to authorize this installation with polkit."
+msgstr "O sistema vai pedir autorização para esta instalação via polkit."
+
+msgid "There are no registered Windows programs to repair."
+msgstr "Não há programas do Windows registrados para reparar."
+
+msgid "There is no Wine installation snapshot to restore."
+msgstr "Não há cópia de instalação do Wine para restaurar."
+
+msgid "This archive contains more than one executable."
+msgstr "O arquivo contém mais de um executável."
+
+msgid "This file does not contain a valid Windows PE header."
+msgstr "O arquivo não contém um cabeçalho PE do Windows válido."
+
+msgid "This host architecture is outside the supported x86 family."
+msgstr "Este computador usa uma arquitetura fora da família x86."
+
+msgid "This installer needs Windows components. Install Winetricks on the host and retry."
+msgstr "Este instalador precisa de componentes do Windows. Instale o Winetricks e tente novamente."
+
+msgid "This program is already registered in Flatapk."
+msgstr "Este programa já está registrado no Flatapk."
+
+msgid "This removes the most recently installed Windows program and restores the saved prefix."
+msgstr "Isso remove o último programa do Windows instalado e restaura o prefixo salvo."
+
+msgid "This removes the program and its shortcuts."
+msgstr "Isso remove o programa e seus atalhos."
+
+msgid "This runs every saved installer again. Settings and files inside the old prefix can be lost."
+msgstr "O Flatapk vai executar novamente todos os instaladores salvos. Configurações e arquivos no prefixo anterior podem ser perdidos."
+
+msgid "Toolbox container"
+msgstr "Container do Toolbox"
+
+msgid "Undo last _Wine installation"
+msgstr "Desfazer a última instalação no _Wine"
+
+msgid "Uninstall {}?"
+msgstr "Desinstalar {}?"
+
+msgid "Uninstalling"
+msgstr "Desinstalando"
+
+msgid "Unknown architecture"
+msgstr "Arquitetura desconhecida"
+
+msgid "Updating application shortcuts"
+msgstr "Atualizando os atalhos no sistema"
+
+msgid "Use one environment setting per line in NAME=value format."
+msgstr "Use uma configuração de ambiente por linha no formato NOME=valor."
+
+msgid "Wine did not produce a new program shortcut or executable."
+msgstr "O Wine não criou um atalho ou executável identificável para este programa."
+
+msgid "Wine launch settings"
+msgstr "Configurações de inicialização no Wine"
+
+msgid "Wine shared prefix"
+msgstr "Prefixo compartilhado do Wine"
+
+msgid "_Cancel"
+msgstr "_Cancelar"
+
+msgid "_Choose"
+msgstr "_Selecionar"
+
+msgid "_Close"
+msgstr "_Fechar"
+
+msgid "_Continue"
+msgstr "C_ontinuar"
+
+msgid "_Copy log"
+msgstr "_Copiar log"
+
+msgid "_Install"
+msgstr "_Instalar"
+
+msgid "_Open"
+msgstr "_Abrir"
+
+msgid "_Open package"
+msgstr "_Abrir pacote"
+
+msgid "_Open program"
+msgstr "_Abrir programa"
+
+msgid "_Repair Wine prefix"
+msgstr "_Reparar prefixo do Wine"
+
+msgid "_Save"
+msgstr "_Salvar"
+
+msgid "_Settings"
+msgstr "_Configurar"
+
+msgid "_Uninstall"
+msgstr "_Desinstalar"
