@@ -1,6 +1,5 @@
 import hashlib
 import io
-import os
 import shutil
 import struct
 import subprocess
@@ -116,6 +115,31 @@ class FlatapkTests(unittest.TestCase):
         self.assertEqual(self.installer.registry.apps(), [])
         self.assertEqual(list((self.installer.data / "installed").iterdir()), [])
         self.assertFalse((self.root / "escape").exists())
+
+    def test_archive_accepts_internal_links_and_rejects_external_links(self):
+        fixture = self.root / "linked.tar.xz"
+        for target in ("../lib/library", "../../../outside"):
+            with tarfile.open(fixture, "w:xz") as archive:
+                for name, payload, permissions in (
+                    ("program/bin/hello", b"#!/bin/sh\ncat link\n", 0o755),
+                    ("program/lib/library", b"internal\n", 0o644),
+                ):
+                    member = tarfile.TarInfo(name)
+                    member.size = len(payload)
+                    member.mode = permissions
+                    archive.addfile(member, io.BytesIO(payload))
+                symbol = tarfile.TarInfo("program/bin/link")
+                symbol.type = tarfile.SYMTYPE
+                symbol.linkname = target
+                archive.addfile(symbol)
+            package, plan = self.installer.probe(fixture)
+            if "outside" in target:
+                with self.assertRaisesRegex(FlatapkError, "unsafe path"):
+                    self.installer.install(package, plan, lambda _: None, lambda *_: None)
+                continue
+            app = self.installer.install(package, plan, lambda _: None, lambda *_: None)
+            self.assertEqual(subprocess.check_output(app["exports"][0]["argv"], text=True), "internal\n")
+            self.installer.uninstall(app, lambda _: None)
 
     def test_integrity_and_changed_source(self):
         path = self.archive()

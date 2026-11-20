@@ -139,6 +139,46 @@ def appimage_offset(path):
     return 0
 
 
+def pe_version(path):
+    values = {}
+    resource = b""
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) < 64:
+            return values
+        stream.seek(struct.unpack_from("<I", header, 60)[0])
+        coff = stream.read(24)
+        if len(coff) < 24 or not coff.startswith(b"PE\0\0"):
+            return values
+        sections = struct.unpack_from("<H", coff, 6)[0]
+        optional_size = struct.unpack_from("<H", coff, 20)[0]
+        stream.seek(optional_size, 1)
+        for _ in range(min(sections, 96)):
+            section = stream.read(40)
+            if len(section) < 40:
+                break
+            if section[:8].rstrip(b"\0") == b".rsrc":
+                size, offset = struct.unpack_from("<II", section, 16)
+                stream.seek(offset)
+                resource = stream.read(min(size, 16 * 1024 * 1024))
+                break
+    for key in ("ProductName", "FileDescription", "ProductVersion", "FileVersion"):
+        encoded = (key + "\0").encode("utf-16-le")
+        for match in re.finditer(re.escape(encoded), resource):
+            start = match.start() - 6
+            if start < 0:
+                continue
+            length, characters, kind = struct.unpack_from("<HHH", resource, start)
+            value_at = (match.end() + 3) & ~3
+            end = value_at + characters * 2
+            if kind == 1 and 0 < characters < 256 and end <= min(start + length, len(resource)):
+                value = resource[value_at:end].decode("utf-16le", errors="replace").strip("\0 ")
+                if value and all(character.isprintable() for character in value):
+                    values[key] = value
+                    break
+    return values
+
+
 def decorate(package, runner):
     if package.kind == "deb":
         assets = deb_assets(package, runner)
@@ -157,6 +197,10 @@ def decorate(package, runner):
         path = str(package.path)
         filesystem_asset(package, runner, ["bsdtar", "-tf", path],
                          lambda name: ["bsdtar", "-xOf", path, "--", name])
+    elif package.kind in {"exe", "setup"}:
+        values = pe_version(package.path)
+        package.name = values.get("ProductName") or values.get("FileDescription") or package.name
+        package.version = values.get("ProductVersion") or values.get("FileVersion") or ""
     elif package.kind == "appimage":
         offset = appimage_offset(package.path)
         if offset:

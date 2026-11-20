@@ -253,4 +253,3 @@ class Installer:
                 remove_exports(app)
             shutil.rmtree(primary.root / "undo", ignore_errors=True)
         step("done")
-

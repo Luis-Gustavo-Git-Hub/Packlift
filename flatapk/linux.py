@@ -3,6 +3,7 @@
 import configparser
 import io
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -83,7 +84,7 @@ def already_installed(runner, manager, target, container):
     result = runner.run([*invoke(container), *commands[manager]], streaming=False, check=False)
     if result.returncode:
         return False
-    return manager != "apt" or result.stdout.split()[-1:] == ["installed"]
+    return manager != "apt" or result.stdout.split()[-1:] not in ([], ["not-installed"], ["config-files"])
 
 
 def install_system(runner, package, plan, source, container, step):
@@ -98,12 +99,12 @@ def install_system(runner, package, plan, source, container, step):
     if not container and manager == "apt" and plan.multilib:
         elevated(runner, container, ["apt-get", "update"])
     if manager == "apt":
-        elevated(runner, container, ["apt-get", "install", "--download-only", "-y", source])
+        elevated(runner, container, ["apt-get", "install", "--no-remove", "--download-only", "-y", source])
     elif manager == "dnf":
         elevated(runner, container, ["dnf", "install", "--downloadonly", "-y", source])
     step("install")
     commands = {
-        "apt": ["apt-get", "install", "-y", source],
+        "apt": ["apt-get", "install", "--no-remove", "-y", source],
         "dnf": ["dnf", "install", "-y", source],
         "zypper": ["zypper", "--non-interactive", "install", source],
         "pacman": ["pacman", "-U", "--noconfirm", "--", source],
@@ -181,6 +182,7 @@ def system_launchers(runner, package, plan, target, container, directory):
 def unpack(archive: Path, directory: Path):
     executables = []
     desktop_files = []
+    links = []
     with tarfile.open(archive) as stream:
         for member in stream:
             relative = relative_member(member.name)
@@ -192,8 +194,16 @@ def unpack(archive: Path, directory: Path):
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
+            if member.issym() or member.islnk():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                origin = relative.parent if member.issym() else Path()
+                if posixpath.isabs(member.linkname):
+                    raise FlatapkError("The archive contains a link outside the program directory.")
+                destination = relative_member(posixpath.normpath(str(origin / member.linkname)))
+                links.append((member, target, directory / destination))
+                continue
             if not member.isfile():
-                raise FlatapkError("The archive contains a link or special file. Use an AppImage or a system package.")
+                raise FlatapkError("The archive contains a special file. Use an AppImage or a system package.")
             target.parent.mkdir(parents=True, exist_ok=True)
             with stream.extractfile(member) as source, target.open("xb") as destination:
                 shutil.copyfileobj(source, destination)
@@ -205,6 +215,15 @@ def unpack(archive: Path, directory: Path):
                     executables.append(target)
             if target.suffix == ".desktop":
                 desktop_files.append(target)
+    for member, target, destination in links:
+        if not target.parent.resolve().is_relative_to(directory):
+            raise FlatapkError("The archive contains a link outside the program directory.")
+        if member.issym():
+            target.symlink_to(os.path.relpath(destination, target.parent))
+        elif destination.is_file() and not destination.is_symlink() and destination.resolve().is_relative_to(directory):
+            os.link(destination, target, follow_symlinks=False)
+        else:
+            raise FlatapkError("The archive contains an invalid hard link.")
     return executables, desktop_files
 
 

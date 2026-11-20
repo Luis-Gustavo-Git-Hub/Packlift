@@ -163,8 +163,8 @@ msgstr "O arquivo auxiliar SHA-256 é inválido."
 msgid "The application launcher could not be started."
 msgstr "Não foi possível abrir o programa pelo atalho."
 
-msgid "The archive contains a link or special file. Use an AppImage or a system package."
-msgstr "O arquivo compactado contém um link ou arquivo especial. Use um AppImage ou pacote do sistema."
+msgid "The archive contains a special file. Use an AppImage or a system package."
+msgstr "O arquivo compactado contém um arquivo especial. Use um AppImage ou pacote do sistema."
 
 msgid "The archive contains an invalid file name."
 msgstr "O arquivo compactado contém um nome de arquivo inválido."
@@ -318,3 +318,9 @@ msgstr "_Configurar"
 
 msgid "_Uninstall"
 msgstr "_Desinstalar"
+
+msgid "The archive contains a link outside the program directory."
+msgstr "O arquivo compactado contém um link para fora do diretório do programa."
+
+msgid "The archive contains an invalid hard link."
+msgstr "O arquivo compactado contém um link físico inválido."

@@ -32,7 +32,7 @@ Instale Wine no host com suporte a programas de 32 e 64 bits quando disponível.
 
 O Flatapk procura referências a componentes comuns do Windows e usa Winetricks quando detecta uma dependência conhecida. Instaladores compactados e jogos podem exigir ajustes manuais. Configure variáveis por programa, incluindo `WINEDLLOVERRIDES`, na lista de programas instalados.
 
-Uma instalação malsucedida restaura a cópia anterior do prefixo quando possível. A última instalação do Windows pode ser desfeita pelo painel principal. O reparo recria o prefixo e executa novamente os instaladores preservados. O reparo pode exigir interação com os instaladores e apagar configurações ou documentos que estejam dentro do prefixo. A desinstalação normal usa o desinstalador registrado pelo programa quando disponível e preserva o prefixo compartilhado.
+Feche os programas do prefixo compartilhado antes de instalar, desinstalar ou reparar. Uma instalação malsucedida restaura a cópia anterior do prefixo quando possível. A última instalação do Windows pode ser desfeita pelo painel principal. O reparo recria o prefixo e executa novamente os instaladores preservados. O reparo pode exigir interação com os instaladores e apagar configurações ou documentos que estejam dentro do prefixo. A desinstalação normal usa o desinstalador registrado pelo programa quando disponível e preserva o prefixo compartilhado.
 
 ### Integridade e permissões
 
@@ -59,7 +59,7 @@ flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-c
 flatpak build-bundle flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
 ```
 
-O runtime GNOME distribuído neste manifesto é x86-64. A execução nativa do código em um host x86 de 32 bits depende da disponibilidade de GTK, Wine e do gerenciador correspondente. As imagens atuais de Fedora e Arch usadas pelo Toolbx exigem um host de 64 bits. Em x86-64, pacotes i386 usam o multiarch de APT e pacotes i686 dependem das bibliotecas oferecidas pela distribuição RPM. Arquivos compactados com links ou arquivos especiais são recusados para impedir que a extração escreva fora do diretório do programa.
+O runtime GNOME distribuído neste manifesto é x86-64. A execução nativa do código em um host x86 de 32 bits depende da disponibilidade de GTK, Wine e do gerenciador correspondente. As imagens atuais de Fedora e Arch usadas pelo Toolbx exigem um host de 64 bits. Em x86-64, pacotes i386 usam o multiarch de APT e pacotes i686 dependem das bibliotecas oferecidas pela distribuição RPM. O Flatapk recusa arquivos especiais e links que apontam para fora do diretório do programa durante a extração.
 
 A suíte automatizada exerce detecção por cabeçalho, planos de instalação, metadados de pacote real, arquivos locais, registro, atalhos, integridade, concorrência e recuperação do Wine. Para validar os fluxos externos, use sessões gráficas em Fedora e Ubuntu com Toolbx e em um host com Wine WoW64. O desempenho desses fluxos depende da imagem, dos repositórios e dos instaladores usados. Atualizações automáticas e prefixos isolados por programa estão previstas para a v2.
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 from .core import FlatapkError, architecture_group
+from .linux import desktop_details, icon_from_paths
 
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 REDISTRIBUTABLES = {
@@ -229,6 +230,23 @@ class Wine:
                          "winetricks", "-q", *sorted(found)])
         self.wait()
 
+    def launch_icon(self, name, directory, index):
+        name = name.casefold()
+        for desktop in self.integrations.glob("applications/**/*.desktop"):
+            if desktop.is_symlink() or desktop.stat().st_size > 64 * 1024:
+                continue
+            details = desktop_details(desktop.read_text(encoding="utf-8", errors="replace"))
+            if not details or details[0].casefold() != name:
+                continue
+            choices = [str(path) for path in self.integrations.glob("icons/**/*")
+                       if path.is_file() and not path.is_symlink()]
+            icon = icon_from_paths(choices, details[2])
+            if icon:
+                destination = directory / f"wine-icon-{index}{Path(icon).suffix}"
+                shutil.copyfile(icon, destination)
+                return str(destination)
+        return ""
+
     def install(self, package, source, directory, step):
         self.prepare()
         previous_links = self.shortcuts()
@@ -260,7 +278,8 @@ class Wine:
                 continue
             exported = directory / f"shortcut-{len(launchers)}.lnk"
             shutil.copyfile(link, exported)
-            launchers.append((link.stem, ["start.exe", "/unix", str(exported)], "", False))
+            icon = self.launch_icon(link.stem, directory, len(launchers))
+            launchers.append((link.stem, ["start.exe", "/unix", str(exported)], icon, False))
         if not launchers:
             executables = [path for path in sorted(installed_files) if path.suffix.lower() == ".exe"
                            and not re.search(r"unins|setup|update|helper", path.stem, re.I)]

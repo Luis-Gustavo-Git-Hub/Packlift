@@ -39,6 +39,18 @@ jobs:
           flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
             --repo=flatpak-repo --force-clean flatpak-build io.github.flatapk.Installer.json
           flatpak build-bundle flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
+      - name: Validate the installed bundle
+        run: |
+          flatpak install --user --noninteractive ./Flatapk-x86_64.flatpak
+          dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
+            test -x /app/bin/flatapk
+            test -f /app/lib/flatapk-app/locale/pt_BR/LC_MESSAGES/flatapk.mo
+            bsdtar --version
+            msiinfo --version
+            zstd --version
+            unsquashfs -version
+            python3 -c "import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")"
+          '
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:

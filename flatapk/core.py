@@ -251,9 +251,9 @@ def inspect(path: Path, runner) -> Package:
                 template[1], template[1])
     elif kind == "tar":
         package.name = re.sub(r"\.tar\.(?:gz|xz)$", "", path.name, flags=re.I)
-        with tarfile.open(path) as archive:
+        with tarfile.open(path, "r|*") as archive:
             for index, member in enumerate(archive):
-                if index >= 2048:
+                if index >= 2048 or archive.offset > 32 * 1024 * 1024:
                     break
                 if member.isfile() and member.mode & 0o111:
                     with archive.extractfile(member) as stream:
