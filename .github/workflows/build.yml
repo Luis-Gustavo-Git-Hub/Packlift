@@ -44,6 +44,7 @@ jobs:
         run: |
           flatpak install --user --noninteractive ./Flatapk-x86_64.flatpak
           dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
+            flatpak-spawn --host --watch-bus uname -m
             test -x /app/bin/flatapk
             test -f /app/lib/flatapk-app/locale/pt_BR/LC_MESSAGES/flatapk.mo
             bsdtar --version

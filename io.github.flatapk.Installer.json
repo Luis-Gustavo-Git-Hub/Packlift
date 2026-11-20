@@ -66,7 +66,7 @@
     {
       "name": "gcab",
       "buildsystem": "meson",
-      "config-opts": ["-Ddocs=false", "-Dtests=false", "-Dintrospection=false", "-Dvapi=false"],
+      "config-opts": ["--libdir=lib", "-Ddocs=false", "-Dtests=false", "-Dintrospection=false", "-Dvapi=false"],
       "cleanup": ["/bin"],
       "sources": [
         {
@@ -79,7 +79,7 @@
     {
       "name": "msitools",
       "buildsystem": "meson",
-      "config-opts": ["-Dintrospection=false", "-Dvalidate-wxi=false"],
+      "config-opts": ["--libdir=lib", "-Dintrospection=false", "-Dvalidate-wxi=false"],
       "cleanup": ["/bin/msidiff", "/bin/msidump", "/bin/msibuild", "/share/msitools"],
       "sources": [
         {
