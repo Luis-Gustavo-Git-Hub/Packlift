@@ -163,11 +163,38 @@ msgstr "O arquivo auxiliar SHA-256 é inválido."
 msgid "The application launcher could not be started."
 msgstr "Não foi possível abrir o programa pelo atalho."
 
-msgid "The AppImage exited with an error. See the launch output in the log."
-msgstr "O AppImage encerrou com erro. Consulte a saída da execução no log."
+msgid "The program exited with an error. See the launch output in the log."
+msgstr "O programa encerrou com erro. Consulte a saída da execução no log."
 
 msgid "Updating AppImage icons"
 msgstr "Atualizando os ícones dos AppImages"
+
+msgid "Install Wine or choose an installed Wine or Proton in Advanced options."
+msgstr "Instale o Wine ou selecione uma instalação do Wine ou Proton nas opções avançadas."
+
+msgid "Choose the Windows executable from the game's folder."
+msgstr "Selecione o executável do Windows na pasta do jogo."
+
+msgid "If Wine is missing, Flatapk downloads Wine from Flathub for your account."
+msgstr "Se o Wine estiver ausente, o Flatapk baixa o Wine do Flathub para sua conta."
+
+msgid "Adding {} to the menu"
+msgstr "Adicionando {} ao menu"
+
+msgid "_Add game to menu"
+msgstr "_Adicionar jogo ao menu"
+
+msgid "_Remove shortcut"
+msgstr "_Remover atalho"
+
+msgid "Remove the shortcut for {}?"
+msgstr "Remover o atalho de {}?"
+
+msgid "The game files stay in their original folder."
+msgstr "Os arquivos do jogo ficam na pasta original."
+
+msgid "Removing shortcut"
+msgstr "Removendo atalho"
 
 msgid "The archive contains a special file. Use an AppImage or a system package."
 msgstr "O arquivo compactado contém um arquivo especial. Use um AppImage ou pacote do sistema."

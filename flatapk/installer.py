@@ -16,7 +16,7 @@ from .linux import (MIME_SUFFIXES, already_installed, install_local,
                     write_appimage_icon)
 from .metadata import appimage_assets, decorate
 from .system import Registry, Runner, data_home, export_desktop, operation, remove_exports, stage_package
-from .wine import Wine, environment
+from .wine import FLATPAK_WINE, Wine, ensure_runtime, environment
 
 DEFAULT_APP_ICON = "application-x-executable"
 
@@ -103,6 +103,7 @@ class Installer:
         return app
 
     def install_wine(self, app, package, source, directory, staging, runtime, machine, step):
+        runtime = self.windows_runtime(runtime, machine)
         wine = Wine(self.runner, runtime, machine)
         backup = staging / "snapshot"
         with wine.backup(backup):
@@ -123,22 +124,69 @@ class Installer:
             self.runner.write(f"Could not save the rollback snapshot: {error}")
             shutil.rmtree(candidate, ignore_errors=True)
 
+    def windows_runtime(self, runtime, machine):
+        if runtime == "wine" and any(app.get("runtime") == FLATPAK_WINE for app in self.registry.apps()):
+            runtime = FLATPAK_WINE
+        return ensure_runtime(self.runner, runtime, machine)
+
+    def add_game(self, package, step, runtime="wine"):
+        source = package.path
+        step("analyze")
+        with operation(self.data):
+            if package.kind != "exe" or not source.is_file():
+                raise FlatapkError("Choose the Windows executable from the game's folder.")
+            if fingerprint(source) != package.fingerprint:
+                raise FlatapkError("The source file changed after confirmation. Open it again.")
+            if package.checksum or package.verified_digest:
+                with source.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                if any(expected and expected != digest for expected in (package.verified_digest, package.checksum)):
+                    raise FlatapkError("The file does not match its SHA-256 checksum.")
+            step("compatibility")
+            host = host_info(self.runner)
+            plan_for(package, host)
+            identifier = hashlib.sha256(f"game:{source}".encode()).hexdigest()[:20]
+            if any(app["id"] == identifier for app in self.registry.apps()):
+                raise FlatapkError("This program is already registered in Flatapk.")
+            step("environment")
+            wine = Wine(self.runner, self.windows_runtime(runtime, host[1]), host[1])
+            if (not (wine.prefix / "system.reg").is_file()
+                    or (wine.proton and not (wine.root / "compatdata" / "pfx").is_symlink())):
+                wine.prepare()
+            if fingerprint(source) != package.fingerprint:
+                raise FlatapkError("The source file changed after confirmation. Open it again.")
+            app = {
+                "id": identifier, "name": package.name, "version": package.version,
+                "architecture": package.architecture, "source": str(source), "exports": [],
+                "method": "wine", "runtime": wine.runtime, "game_shortcut": True,
+                "working_directory": str(source.parent),
+            }
+            try:
+                self.register(app, [(package.name, [str(source)], "applications-games", False)], step, wine)
+            except Exception:
+                remove_exports(app)
+                raise
+        step("done")
+        return app
+
     def prepare_exports(self, app, launchers, wine=None):
         app["exports"] = []
         for index, (name, argv, icon, terminal) in enumerate(launchers):
             desktop = self.applications / f"io.github.flatapk.Installer.{app['id']}.{index}.desktop"
             app["exports"].append({
                 "desktop": str(desktop), "name": name, "icon": icon or DEFAULT_APP_ICON,
-                "argv": wine.command(*argv, extra=app.get("environment")) if wine else argv,
+                "argv": wine.command(*argv, extra=app.get("environment"),
+                                     cwd=app.get("working_directory")) if wine else argv,
                 "terminal": terminal, "wine_args": argv if wine else [],
             })
         if not app["name"] or wine:
             app["name"] = app["exports"][0]["name"]
 
     def write_exports(self, app):
+        category = "Game" if app.get("game_shortcut") else "Utility"
         for export in app["exports"]:
             export_desktop(Path(export["desktop"]), export["name"],
-                           export["argv"], export["icon"], export["terminal"])
+                           export["argv"], export["icon"], export["terminal"], category=category)
 
     def register(self, app, launchers, step, wine=None):
         step("shortcut")
@@ -173,7 +221,7 @@ class Installer:
         except FlatapkError as error:
             self.runner.write(str(error))
 
-    def launch_appimage(self, app):
+    def observe_launch(self, app):
         export = app["exports"][0]
         argv = self.runner.command(export["argv"], local=False, watch_bus=False)
         self.runner.write(f"$ {shlex.join(argv)}")
@@ -189,8 +237,8 @@ class Installer:
             output = log.read().decode("utf-8", errors="replace").strip()
             if output:
                 self.runner.write(output)
-            self.runner.write(f"AppImage exited with status {status}.")
-            raise FlatapkError("The AppImage exited with an error. See the launch output in the log.")
+            self.runner.write(f"Program exited with status {status}.")
+            raise FlatapkError("The program exited with an error. See the launch output in the log.")
 
     def uninstall(self, app, step):
         with operation(self.data):
@@ -198,7 +246,7 @@ class Installer:
             if app["method"] in {"native", "toolbox"}:
                 if already_installed(self.runner, app["manager"], app["target"], app["container"]):
                     remove_system(self.runner, app["manager"], app["target"], app["container"])
-            elif app["method"] == "wine":
+            elif app["method"] == "wine" and not app.get("game_shortcut"):
                 machine = host_info(self.runner)[1]
                 wine = Wine(self.runner, app["runtime"], machine)
                 others = [entry for entry in self.registry.apps() if entry["id"] != app["id"]]
@@ -229,7 +277,8 @@ class Installer:
             app["environment"] = environment(text)
             wine = Wine(self.runner, app["runtime"], host_info(self.runner)[1])
             for export in app["exports"]:
-                export["argv"] = wine.command(*export["wine_args"], extra=app["environment"])
+                export["argv"] = wine.command(*export["wine_args"], extra=app["environment"],
+                                             cwd=app.get("working_directory"))
             self.write_exports(app)
             self.registry.save(app)
 
@@ -254,11 +303,12 @@ class Installer:
 
     def repair_wine(self, step):
         with operation(self.data), tempfile.TemporaryDirectory(dir=self.data) as temp:
-            apps = [app for app in self.registry.apps() if app["method"] == "wine"]
+            apps = [app for app in self.registry.apps()
+                    if app["method"] == "wine" and not app.get("game_shortcut")]
             if not apps:
                 raise FlatapkError("There are no registered Windows programs to repair.")
             machine = host_info(self.runner)[1]
-            primary = Wine(self.runner, apps[0]["runtime"], machine)
+            primary = Wine(self.runner, self.windows_runtime(apps[0]["runtime"], machine), machine)
             staging = Path(temp)
             prepared = []
             step("environment")
@@ -273,7 +323,7 @@ class Installer:
                     if digest != original["digest"]:
                         raise FlatapkError("A stored Windows installer failed its integrity check.")
                     package = inspect(source, self.runner)
-                    wine = Wine(self.runner, original["runtime"], machine)
+                    wine = Wine(self.runner, self.windows_runtime(original["runtime"], machine), machine)
                     directory = Path(original["directory"]).with_name(
                         original["id"] + "-" + uuid.uuid4().hex[:8])
                     record = dict(original, directory=str(directory), installer=str(directory / source.name))

@@ -30,7 +30,9 @@ Pacotes nativos usam o gerenciador da distribuição e solicitam autorização v
 
 ### Windows
 
-Instale Wine no host com suporte a programas de 32 e 64 bits quando disponível. O prefixo compartilhado fica em `~/.local/share/flatapk/wine/prefix` com o XDG padrão. O painel **Opções avançadas** aceita o caminho absoluto de um executável Wine ou do script `proton` instalado no host. O Wine do sistema é a configuração padrão. Algumas distribuições de Proton exigem Steam e um runtime compatível no host.
+Em x86-64, o Flatapk instala o Wine WoW64 do Flathub para sua conta quando o Wine do sistema estiver ausente. A primeira instalação requer internet e baixa também o runtime do Wine. O prefixo compartilhado fica em `~/.local/share/flatapk/wine/prefix` com o XDG padrão. O painel **Opções avançadas** aceita o caminho absoluto de um executável Wine ou do script `proton` instalado no host. Algumas distribuições de Proton exigem Steam e um runtime compatível no host.
+
+Para um jogo já extraído, abra o executável `.exe` do jogo no Flatapk e escolha **Adicionar jogo ao menu**. O atalho inicia o jogo na pasta do executável e mantém acesso aos arquivos da pasta pessoal. Para jogos em uma unidade externa, o Wine do Flathub recebe acesso à pasta do executável. A opção **Remover atalho** mantém os arquivos do jogo na pasta original.
 
 O Flatapk procura referências a componentes comuns do Windows e usa Winetricks quando detecta uma dependência conhecida. Instaladores compactados e jogos podem exigir ajustes manuais. Configure variáveis por programa, incluindo `WINEDLLOVERRIDES`, na lista de programas instalados.
 

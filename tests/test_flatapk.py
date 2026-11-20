@@ -7,12 +7,12 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from flatapk.core import FlatapkError, Package, detect, inspect, plan_for
 from flatapk.installer import DEFAULT_APP_ICON, Installer
 from flatapk.system import Runner, desktop_exec, operation
-from flatapk.wine import Wine, environment, windows_argv
+from flatapk.wine import FLATPAK_WINE, Wine, ensure_runtime, environment, windows_argv
 
 
 class FlatapkTests(unittest.TestCase):
@@ -158,11 +158,58 @@ class FlatapkTests(unittest.TestCase):
         image.write_text("#!/bin/sh\nprintf 'Use the graphical launcher.\\n' >&2\nexit 1\n")
         image.chmod(0o700)
         app = {"exports": [{"argv": ["env", "APPIMAGE_EXTRACT_AND_RUN=1", str(image)]}]}
-        with self.assertRaisesRegex(FlatapkError, "AppImage exited"):
-            self.installer.launch_appimage(app)
+        with self.assertRaisesRegex(FlatapkError, "program exited"):
+            self.installer.observe_launch(app)
         log = self.installer.runner.log.read_text()
         self.assertIn("Use the graphical launcher.", log)
-        self.assertIn("AppImage exited with status 1.", log)
+        self.assertIn("Program exited with status 1.", log)
+
+    def test_missing_wine_is_installed_for_the_current_account(self):
+        runner = Mock(spec=Runner)
+        runner.available.side_effect = lambda command: command == "flatpak"
+        runner.run.return_value.returncode = 1
+        self.assertEqual(ensure_runtime(runner, "wine", "x86_64"), FLATPAK_WINE)
+        commands = [entry.args[0] for entry in runner.run.call_args_list]
+        self.assertEqual(commands[0], ["flatpak", "info", FLATPAK_WINE])
+        self.assertEqual(commands[1][:5], ["flatpak", "remote-add", "--user", "--if-not-exists", "flathub"])
+        self.assertEqual(commands[2], ["flatpak", "install", "--user", "--noninteractive",
+                                       "flathub", FLATPAK_WINE])
+
+        runner.run.reset_mock()
+        runner.run.return_value.returncode = 0
+        self.assertEqual(ensure_runtime(runner, "wine", "x86_64"), FLATPAK_WINE)
+        runner.run.assert_called_once_with(["flatpak", "info", FLATPAK_WINE], streaming=False, check=False)
+
+    def test_game_shortcut_opens_in_original_folder_and_can_be_removed(self):
+        folder = self.root / "Game with spaces" / "bin"
+        folder.mkdir(parents=True)
+        source = folder / "Game.exe"
+        content = bytearray(72)
+        content[:2] = b"MZ"
+        struct.pack_into("<I", content, 60, 64)
+        content[64:68] = b"PE\0\0"
+        struct.pack_into("<H", content, 68, 0x8664)
+        source.write_bytes(content)
+        (folder / "required.dll").touch()
+
+        runtime = self.root / "test-wine"
+        runtime.write_text('#!/bin/sh\ntest -f required.dll && test "$1" = "$PWD/Game.exe" && touch opened\n')
+        runtime.chmod(0o700)
+        prefix = self.installer.data / "wine" / "prefix"
+        prefix.mkdir(parents=True)
+        (prefix / "system.reg").touch()
+        package, _ = self.installer.probe(source)
+        app = self.installer.add_game(package, lambda _: None, str(runtime))
+        exported = Path(app["exports"][0]["desktop"])
+        self.assertIn("Categories=Game;\n", exported.read_text())
+        self.assertFalse((folder / "opened").exists())
+        self.installer.configure(app, "WINEDLLOVERRIDES=foo=n,b")
+        self.installer.observe_launch(app)
+        self.assertTrue((folder / "opened").exists())
+        self.installer.uninstall(app, lambda _: None)
+        self.assertFalse(exported.exists())
+        self.assertTrue(source.is_file())
+        self.assertTrue((folder / "required.dll").is_file())
 
     def test_archive_traversal_rolls_back(self):
         package, plan = self.installer.probe(self.archive(member="../escape"))

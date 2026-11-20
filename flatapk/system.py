@@ -174,11 +174,11 @@ def desktop_exec(argv):
     return " ".join(parts)
 
 
-def export_desktop(path: Path, name, argv, icon, terminal=False):
+def export_desktop(path: Path, name, argv, icon, terminal=False, *, category="Utility"):
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["[Desktop Entry]", "Type=Application", f"Name={desktop_string(name)}",
              f"Exec={desktop_exec(argv)}", f"Icon={desktop_string(icon)}",
-             f"Terminal={'true' if terminal else 'false'}", "Categories=Utility;",
+             f"Terminal={'true' if terminal else 'false'}", f"Categories={category};",
              "X-Flatapk-Managed=true", ""]
     temporary = path.with_suffix(".tmp")
     temporary.write_text("\n".join(lines), encoding="utf-8")

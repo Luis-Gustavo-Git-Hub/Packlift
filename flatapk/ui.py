@@ -202,6 +202,9 @@ class Window(Adw.ApplicationWindow):
             self.body.append(label(_("The system will ask you to authorize this installation with polkit.")))
         elif plan.method in {"toolbox", "wine"}:
             self.body.append(label(_("The program can access your home folder.")))
+        if plan.method == "wine":
+            self.body.append(label(_("If Wine is missing, Flatapk downloads Wine from Flathub for your account."),
+                                   "dim-label"))
         if plan.multilib:
             self.body.append(label(_("Extra 32-bit components may be downloaded.")))
         runtime = Gtk.Entry(placeholder_text=_("Default Wine, or an absolute path to wine or proton"))
@@ -220,7 +223,15 @@ class Window(Adw.ApplicationWindow):
                 package, plan, self.step, self.select_executable, selected_runtime))
 
         install = button(_("_Install"), install_package, "suggested-action")
-        self.body.append(action_bar(button(_("_Cancel"), self.close), install))
+        actions = [button(_("_Cancel"), self.close)]
+        if package.kind == "exe":
+            def add_game():
+                selected_runtime = runtime.get_text().strip() or "wine"
+                self.begin(_("Adding {} to the menu").format(package.name), lambda: self.installer.add_game(
+                    package, self.step, selected_runtime))
+
+            actions.append(button(_("_Add game to menu"), add_game))
+        self.body.append(action_bar(*actions, install))
         self.set_default_widget(install)
         install.grab_focus()
 
@@ -287,9 +298,10 @@ class Window(Adw.ApplicationWindow):
 
     def launch(self, app):
         export = app["exports"][0]
-        if (app["method"] == "local" and not export["terminal"]
-                and (Path(app["directory"]) / "program.AppImage").is_file()):
-            threading.Thread(target=self.watch_appimage, args=(app,), daemon=True).start()
+        appimage = (app["method"] == "local" and not export["terminal"]
+                    and (Path(app["directory"]) / "program.AppImage").is_file())
+        if app.get("game_shortcut") or appimage:
+            threading.Thread(target=self.watch_program, args=(app,), daemon=True).start()
             return
         try:
             if not self.installer.runner.sandbox:
@@ -302,9 +314,9 @@ class Window(Adw.ApplicationWindow):
         except (GLib.Error, OSError, FlatapkError) as error:
             self.show_result(error=error)
 
-    def watch_appimage(self, app):
+    def watch_program(self, app):
         try:
-            self.installer.launch_appimage(app)
+            self.installer.observe_launch(app)
         except (OSError, FlatapkError) as error:
             def show_error(launch_error):
                 if self.get_visible() and not self.running:
@@ -366,10 +378,17 @@ class Window(Adw.ApplicationWindow):
             icon_name = app["exports"][0]["icon"] if app["exports"] else DEFAULT_APP_ICON
             row.add_prefix(installed_icon(icon_name))
             row.add_suffix(button(_("_Open"), lambda app=app: self.launch(app)))
-            row.add_suffix(button(_("_Uninstall"), lambda app=app: self.confirm_action(
-                _("Uninstall {}?").format(app["name"]), _("This removes the program and its shortcuts."),
-                lambda: self.begin(_("Uninstalling"), lambda: self.installer.uninstall(app, self.step)),
-                destructive=True, response_text=_("_Uninstall"))))
+            if app.get("game_shortcut"):
+                row.add_suffix(button(_("_Remove shortcut"), lambda app=app: self.confirm_action(
+                    _("Remove the shortcut for {}?").format(app["name"]),
+                    _("The game files stay in their original folder."),
+                    lambda: self.begin(_("Removing shortcut"), lambda: self.installer.uninstall(app, self.step)),
+                    destructive=True, response_text=_("_Remove shortcut"))))
+            else:
+                row.add_suffix(button(_("_Uninstall"), lambda app=app: self.confirm_action(
+                    _("Uninstall {}?").format(app["name"]), _("This removes the program and its shortcuts."),
+                    lambda: self.begin(_("Uninstalling"), lambda: self.installer.uninstall(app, self.step)),
+                    destructive=True, response_text=_("_Uninstall"))))
             if app["method"] == "wine":
                 row.add_suffix(button(_("_Settings"), lambda app=app: self.settings(app)))
             group.add(row)
@@ -378,7 +397,7 @@ class Window(Adw.ApplicationWindow):
             _("Clean unused Toolbox environments?"),
             _("Flatapk removes its Toolbox containers that have no registered programs."),
             lambda: self.begin(_("Cleaning environments"), lambda: self.installer.clean(self.step)))))
-        if any(app["method"] == "wine" for app in apps):
+        if any(app["method"] == "wine" and not app.get("game_shortcut") for app in apps):
             self.body.append(button(_("_Repair Wine prefix"), lambda: self.confirm_action(
                 _("Rebuild the shared Wine prefix?"),
                 _("This runs every saved installer again. Settings and files inside the old prefix can be lost."),

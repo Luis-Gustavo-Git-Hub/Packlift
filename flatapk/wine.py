@@ -12,6 +12,8 @@ from pathlib import Path
 from .core import FlatapkError, architecture_group
 from .linux import desktop_details, icon_from_paths
 
+FLATPAK_WINE = "org.winehq.Wine//wow64-25.08"
+FLATHUB_REPOSITORY = "https://dl.flathub.org/repo/flathub.flatpakrepo"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 REDISTRIBUTABLES = {
     b"vcruntime140": "vcrun2022", b"msvcp140": "vcrun2022",
@@ -83,6 +85,23 @@ def environment(text):
     return result
 
 
+def ensure_runtime(runner, runtime, machine):
+    if runtime == "wine" and runner.available("wine"):
+        return runtime
+    if runtime not in {"wine", FLATPAK_WINE}:
+        if not Path(runtime).is_absolute() or not os.access(runtime, os.X_OK):
+            raise FlatapkError("Choose an executable Wine or Proton runtime installed on the host.")
+        return runtime
+    if architecture_group(machine) != "x86_64" or not runner.available("flatpak"):
+        raise FlatapkError("Install Wine or choose an installed Wine or Proton in Advanced options.")
+    installed = runner.run(["flatpak", "info", FLATPAK_WINE], streaming=False, check=False)
+    if installed.returncode:
+        runner.run(["flatpak", "remote-add", "--user", "--if-not-exists", "flathub",
+                    FLATHUB_REPOSITORY])
+        runner.run(["flatpak", "install", "--user", "--noninteractive", "flathub", FLATPAK_WINE])
+    return FLATPAK_WINE
+
+
 class Wine:
     def __init__(self, runner, runtime, machine):
         self.runner = runner
@@ -90,17 +109,35 @@ class Wine:
         self.prefix = self.root / "prefix"
         self.integrations = self.root / "desktop"
         self.runtime = runtime or "wine"
+        self.flatpak = self.runtime == FLATPAK_WINE
         self.proton = Path(self.runtime).name == "proton"
         self.architecture = "win32" if architecture_group(machine) == "x86" else "win64"
 
-    def command(self, *arguments, extra=None):
-        values = {"WINEPREFIX": str(self.prefix), "XDG_DATA_HOME": str(self.integrations)}
+    def command(self, *arguments, extra=None, cwd=None, tool="wine"):
+        values = {"WINEPREFIX": str(self.prefix)}
+        if tool != "wineserver":
+            values["XDG_DATA_HOME"] = str(self.integrations)
         values.update(extra or {})
+        if self.flatpak:
+            filesystem = [f"--filesystem={self.runner.data}"]
+            directory = []
+            if cwd:
+                working = Path(cwd)
+                if working.is_relative_to(Path.home().resolve()):
+                    filesystem.append("--filesystem=home")
+                else:
+                    filesystem.append(f"--filesystem={working}")
+                directory = [f"--cwd={working}"]
+            return ["flatpak", "run", f"--command={tool}", *filesystem, *directory,
+                    *(f"--env={key}={value}" for key, value in values.items()),
+                    self.runtime, *arguments]
+        directory = ["-C", cwd] if cwd else []
         if self.proton:
             values["STEAM_COMPAT_DATA_PATH"] = str(self.root / "compatdata")
             values["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = str(Path.home() / ".steam/steam")
         wrapper = [self.runtime, "run"] if self.proton else [self.runtime]
-        return ["env", *(f"{key}={value}" for key, value in values.items()), *wrapper, *arguments]
+        return ["env", *directory, *(f"{key}={value}" for key, value in values.items()),
+                *wrapper, *arguments]
 
     def prepare(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -108,7 +145,7 @@ class Wine:
             if not self.runner.available("wine"):
                 raise FlatapkError(
                     "Wine was not found on the host. Install Wine or choose an installed Wine or Proton in Advanced options.")
-        elif not Path(self.runtime).is_absolute() or not os.access(self.runtime, os.X_OK):
+        elif not self.flatpak and (not Path(self.runtime).is_absolute() or not os.access(self.runtime, os.X_OK)):
             raise FlatapkError("Choose an executable Wine or Proton runtime installed on the host.")
         if self.proton:
             compatdata = self.root / "compatdata"
@@ -121,7 +158,8 @@ class Wine:
                 raise FlatapkError("Proton's prefix does not point to the Flatapk prefix.")
             self.run("wineboot.exe", "--init")
         elif not (self.prefix / "system.reg").exists():
-            self.run("wineboot.exe", "--init", extra={"WINEARCH": self.architecture})
+            extra = None if self.flatpak else {"WINEARCH": self.architecture}
+            self.run("wineboot.exe", "--init", extra=extra)
         self.wait()
         for desktop in self.prefix.glob("drive_c/users/*/Desktop"):
             if desktop.is_symlink():
@@ -132,6 +170,9 @@ class Wine:
         self.runner.run(self.command(*argv, extra=extra))
 
     def wait(self):
+        if self.flatpak:
+            self.runner.run(self.command("-w", tool="wineserver"))
+            return
         runtime = Path(self.runtime)
         server = "wineserver"
         if self.proton:
@@ -224,6 +265,10 @@ class Wine:
                 found.update(verb for name, verb in REDISTRIBUTABLES.items() if name in sample)
                 tail = chunk[-32:]
         if not found:
+            return
+        if self.flatpak:
+            self.runner.run(self.command("-q", *sorted(found), tool="winetricks"))
+            self.wait()
             return
         if not self.runner.available("winetricks"):
             raise FlatapkError("This installer needs Windows components. Install Winetricks on the host and retry.")

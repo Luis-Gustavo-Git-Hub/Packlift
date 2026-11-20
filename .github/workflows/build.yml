@@ -71,7 +71,7 @@ jobs:
               installer = Installer(data=root / "state", applications=root / "applications")
               app = {"exports": [{"argv": ["/bin/sh", "-c", "echo fixture-launch-error >&2; exit 1"]}]}
               try:
-                  installer.launch_appimage(app)
+                  installer.observe_launch(app)
               except FlatapkError:
                   assert "fixture-launch-error" in installer.runner.log.read_text()
               else:
@@ -83,3 +83,59 @@ jobs:
           name: Flatapk-x86_64
           path: Flatapk-x86_64.flatpak
           if-no-files-found: error
+
+  windows-games:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak gcc-mingw-w64-x86-64 libglib2.0-bin xvfb
+      - name: Add, launch and remove an existing game using Wine from Flathub
+        run: |
+          fixture="$(mktemp -d "$HOME/flatapk-wine-test.XXXXXX")"
+          mkdir -p "$fixture/Game files/bin"
+          touch "$fixture/Game files/bin/game-data"
+          cat > "$fixture/game.c" <<'C'
+          #include <stdio.h>
+          int main(void) {
+              FILE *data = fopen("game-data", "rb");
+              if (!data) return 1;
+              fclose(data);
+              FILE *result = fopen("opened", "w");
+              if (!result) return 2;
+              return fclose(result);
+          }
+          C
+          x86_64-w64-mingw32-gcc "$fixture/game.c" -o "$fixture/Game files/bin/Game.exe"
+          dbus-run-session -- xvfb-run -a python3 - "$fixture" <<'PY'
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+          from flatapk.installer import Installer
+          from flatapk.wine import FLATPAK_WINE
+
+          root = Path(sys.argv[1])
+          installer = Installer(output=lambda line: print(line, flush=True),
+                                data=root / "state", applications=root / "shortcuts")
+          game = root / "Game files/bin/Game.exe"
+          package, _ = installer.probe(game)
+          app = installer.add_game(package, lambda step: print(step, flush=True), FLATPAK_WINE)
+          assert app["runtime"] == FLATPAK_WINE
+          shortcut = Path(app["exports"][0]["desktop"])
+          result = game.with_name("opened")
+          assert not result.exists(), "Registering a shortcut should not start the game."
+          subprocess.run(["gio", "launch", str(shortcut)], check=True)
+          for _ in range(120):
+              if result.exists():
+                  break
+              time.sleep(1)
+          assert result.exists(), "The menu shortcut did not start the game in its original folder."
+          installer.uninstall(app, lambda step: None)
+          assert not shortcut.exists()
+          assert game.is_file() and game.with_name("game-data").is_file()
+          PY
