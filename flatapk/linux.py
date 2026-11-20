@@ -135,7 +135,8 @@ def desktop_details(contents):
     argv = [arg.replace("%%", "%") for arg in argv if not re.search(r"%[fFuUdDnNickvm]", arg)]
     if not argv or entry.get("NoDisplay", "").lower() == "true":
         return None
-    return entry.get("Name", argv[0]), argv, entry.get("Icon", ""), entry.get("Terminal", "").lower() == "true"
+    return (entry.get("Name", argv[0]), argv, entry.get("Icon", ""),
+            entry.get("Terminal", "").lower() == "true", entry.get("Comment", ""))
 
 
 def icon_from_paths(files, icon):
@@ -162,7 +163,7 @@ def system_launchers(runner, package, plan, target, container, directory):
         details = desktop_details(contents)
         if not details:
             continue
-        name, argv, icon, terminal = details
+        name, argv, icon, terminal, _ = details
         candidate = icon_from_paths(files, icon)
         if candidate and container:
             icon_directory.mkdir(exist_ok=True)
@@ -240,7 +241,7 @@ def archive_launcher(package, directory, targets, desktop_files, select, machine
     for desktop in desktop_files:
         details = desktop_details(desktop.read_text(encoding="utf-8", errors="replace"))
         if details:
-            name, argv, icon, terminal = details
+            name, argv, icon, terminal, _ = details
             matches = [p for p in compatible if p.name == Path(argv[0]).name]
             if len(matches) == 1:
                 icons = [str(p) for p in directory.rglob("*") if p.is_file()]
@@ -265,7 +266,7 @@ def install_local(package, source, directory, select, machine):
         if package.icon:
             icon = directory / f"icon{package.icon_suffix}"
             icon.write_bytes(package.icon)
-        return [(package.name, argv, str(icon), False)]
+        return [(package.name, argv, str(icon), package.terminal)]
     payload = directory / "payload"
     payload.mkdir()
     targets, desktops = unpack(source, payload)

@@ -1,7 +1,10 @@
 """Coordinate package installation, recovery and registry changes."""
 
 import hashlib
+import os
+import shlex
 import shutil
+import subprocess
 import tempfile
 import tarfile
 import uuid
@@ -139,6 +142,25 @@ class Installer:
         self.prepare_exports(app, launchers, wine)
         self.write_exports(app)
         self.registry.save(app)
+
+    def launch_appimage(self, app):
+        export = app["exports"][0]
+        argv = self.runner.command(export["argv"], local=False, watch_bus=False)
+        self.runner.write(f"$ {shlex.join(argv)}")
+        # A file descriptor lets an app keep running if the Flatapk window closes.
+        with tempfile.TemporaryFile() as log:
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            status = process.wait()
+            if status == 0:
+                return
+            size = log.seek(0, os.SEEK_END)
+            log.seek(max(0, size - 16 * 1024))
+            output = log.read().decode("utf-8", errors="replace").strip()
+            if output:
+                self.runner.write(output)
+            self.runner.write(f"AppImage exited with status {status}.")
+            raise FlatapkError("The AppImage exited with an error. See the launch output in the log.")
 
     def uninstall(self, app, step):
         with operation(self.data):

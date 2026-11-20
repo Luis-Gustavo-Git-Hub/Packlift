@@ -31,10 +31,10 @@ class Runner:
         data.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.log = data / "flatapk.log"
 
-    def command(self, argv, local):
+    def command(self, argv, local, *, watch_bus=True):
         if self.sandbox and not local:
-            return ["flatpak-spawn", "--host", "--watch-bus",
-                    f"--directory={Path.home()}", *argv]
+            watch = ["--watch-bus"] if watch_bus else []
+            return ["flatpak-spawn", "--host", *watch, f"--directory={Path.home()}", *argv]
         return argv
 
     def write(self, text):

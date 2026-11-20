@@ -169,6 +169,8 @@ class Window(Adw.ApplicationWindow):
                 icon.set_from_paintable(Gdk.Texture.new_from_bytes(GLib.Bytes.new(package.icon)))
             except GLib.Error:
                 pass
+        if package.description:
+            self.body.append(label(package.description))
         size = GLib.format_size(package.fingerprint[2])
         architecture = package.architecture or _("Unknown architecture")
         self.body.append(label(f"{package.path.name}  ·  {size}  ·  {package.kind.upper()}  ·  {architecture}", "dim-label"))
@@ -272,6 +274,10 @@ class Window(Adw.ApplicationWindow):
 
     def launch(self, app):
         export = app["exports"][0]
+        if (app["method"] == "local" and not export["terminal"]
+                and (Path(app["directory"]) / "program.AppImage").is_file()):
+            threading.Thread(target=self.watch_appimage, args=(app,), daemon=True).start()
+            return
         try:
             if not self.installer.runner.sandbox:
                 info = Gio.DesktopAppInfo.new_from_filename(export["desktop"])
@@ -282,6 +288,16 @@ class Window(Adw.ApplicationWindow):
                 subprocess.Popen(argv, start_new_session=True)
         except (GLib.Error, OSError, FlatapkError) as error:
             self.show_result(error=error)
+
+    def watch_appimage(self, app):
+        try:
+            self.installer.launch_appimage(app)
+        except (OSError, FlatapkError) as error:
+            def show_error(launch_error):
+                if self.get_visible() and not self.running:
+                    self.show_result(error=launch_error)
+
+            GLib.idle_add(show_error, error)
 
     def confirm_action(self, heading, description, action, destructive=False, response_text=None):
         dialog = Adw.AlertDialog(heading=heading, body=description)

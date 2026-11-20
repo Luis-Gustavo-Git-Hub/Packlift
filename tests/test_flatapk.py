@@ -108,6 +108,45 @@ class FlatapkTests(unittest.TestCase):
         self.assertFalse(Path(app["directory"]).exists())
         self.assertFalse(Path(export["desktop"]).exists())
 
+    @unittest.skipUnless(
+        all(shutil.which(tool) for tool in ("mksquashfs", "unsquashfs")),
+        "requires squashfs-tools for the AppImage fixture",
+    )
+    def test_appimage_preserves_description_and_terminal_preference(self):
+        payload = self.root / "payload"
+        payload.mkdir()
+        (payload / "fixture.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Builder fixture\n"
+            "Comment=Command-line tool\nExec=AppRun\nTerminal=true\n",
+            encoding="utf-8",
+        )
+        filesystem = self.root / "payload.squashfs"
+        subprocess.run(["mksquashfs", str(payload), str(filesystem), "-processors", "1"],
+                       check=True, stdout=subprocess.DEVNULL)
+        # Use a host ELF as the header for a real AppImage type 2 payload.
+        runtime = bytearray(Path("/bin/true").read_bytes())
+        runtime[8:11] = b"AI\x02"
+        source = self.root / "fixture.AppImage"
+        source.write_bytes(runtime + filesystem.read_bytes())
+
+        package, plan = self.installer.probe(source)
+        self.assertEqual((package.name, package.description), ("Builder fixture", "Command-line tool"))
+        app = self.installer.install(package, plan, lambda _: None, lambda *_: None)
+        export = app["exports"][0]
+        self.assertTrue(export["terminal"])
+        self.assertIn("Terminal=true\n", Path(export["desktop"]).read_text())
+
+    def test_appimage_launch_reports_output_from_existing_shortcut(self):
+        image = self.root / "program.AppImage"
+        image.write_text("#!/bin/sh\nprintf 'Use the graphical launcher.\\n' >&2\nexit 1\n")
+        image.chmod(0o700)
+        app = {"exports": [{"argv": ["env", "APPIMAGE_EXTRACT_AND_RUN=1", str(image)]}]}
+        with self.assertRaisesRegex(FlatapkError, "AppImage exited"):
+            self.installer.launch_appimage(app)
+        log = self.installer.runner.log.read_text()
+        self.assertIn("Use the graphical launcher.", log)
+        self.assertIn("AppImage exited with status 1.", log)
+
     def test_archive_traversal_rolls_back(self):
         package, plan = self.installer.probe(self.archive(member="../escape"))
         with self.assertRaisesRegex(FlatapkError, "unsafe path"):

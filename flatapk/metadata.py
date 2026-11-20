@@ -106,7 +106,7 @@ def filesystem_asset(package, runner, listing, content):
     for path in candidates[:12]:
         details = desktop_details(bounded_output(runner, content(paths[path]), 64 * 1024).decode("utf-8", "replace"))
         if details:
-            name, _, icon, _ = details
+            name, _, icon, _, _ = details
             package.name = name or package.name
             icon_path = icon_from_paths(paths, icon)
             if not icon_path:
@@ -187,7 +187,7 @@ def decorate(package, runner):
                 continue
             details = desktop_details(data.decode("utf-8", "replace"))
             if details:
-                package.name, _, icon, _ = details
+                package.name, _, icon, _, _ = details
                 selected = icon_from_paths(assets, icon)
                 if selected:
                     package.icon = assets[selected]
@@ -215,7 +215,7 @@ def decorate(package, runner):
                 data = bounded_output(runner, [*command, "-cat", path, desktop], 64 * 1024)
                 details = desktop_details(data.decode("utf-8", "replace"))
                 if details:
-                    package.name, _, icon, _ = details
+                    package.name, _, icon, package.terminal, package.description = details
                     names = {icon, f"{icon}.png", f"{icon}.svg"}
                     chosen = next((name for name in files if Path(name).name in names), None)
                     if chosen:

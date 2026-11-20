@@ -33,6 +33,8 @@ class Package:
     product: str = ""
     fingerprint: tuple[int, ...] = ()
     verified_digest: str = ""
+    description: str = ""
+    terminal: bool = False
 
 
 @dataclass(frozen=True)

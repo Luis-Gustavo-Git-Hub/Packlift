@@ -163,6 +163,9 @@ msgstr "O arquivo auxiliar SHA-256 é inválido."
 msgid "The application launcher could not be started."
 msgstr "Não foi possível abrir o programa pelo atalho."
 
+msgid "The AppImage exited with an error. See the launch output in the log."
+msgstr "O AppImage encerrou com erro. Consulte a saída da execução no log."
+
 msgid "The archive contains a special file. Use an AppImage or a system package."
 msgstr "O arquivo compactado contém um arquivo especial. Use um AppImage ou pacote do sistema."
 

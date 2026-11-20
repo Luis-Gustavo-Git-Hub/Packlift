@@ -24,6 +24,8 @@ flatpak run io.github.flatapk.Installer
 
 Abra um pacote pelo gerenciador de arquivos com **Abrir com Flatapk** ou pelo botão **Abrir pacote**. Se quiser usar o duplo clique sempre, escolha Flatapk como aplicativo padrão para o formato nas propriedades do arquivo. Abra o Flatapk sem selecionar um arquivo para gerenciar os programas instalados.
 
+Se clicar no ícone de um AppImage e nenhuma janela aparecer, tente **Abrir** na lista de programas do Flatapk. Se a execução encerrar com erro, a saída estará em **Ver detalhes**.
+
 Pacotes nativos usam o gerenciador da distribuição e solicitam autorização via polkit. O Toolbx precisa estar instalado no host junto com o Podman. O Flatapk reutiliza um ambiente por distribuição e usa Toolbx para repassar a sessão gráfica, o áudio e o diretório pessoal ao programa. Em sistemas Fedora baseados em OSTree, o Flatapk usa Toolbx para RPMs. Os nomes das imagens podem ser configurados por `FLATAPK_UBUNTU_IMAGE`, `FLATAPK_FEDORA_IMAGE` e `FLATAPK_ARCH_IMAGE`.
 
 ### Windows
