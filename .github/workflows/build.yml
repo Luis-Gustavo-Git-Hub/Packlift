@@ -49,8 +49,13 @@ jobs:
             msiinfo --version
             zstd --version
             unsquashfs -version
-            python3 -c "import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")"
           '
+          dbus-run-session -- flatpak run --command=python3 io.github.flatapk.Installer - <<'PY'
+          import gi
+          gi.require_version("Gtk", "4.0")
+          gi.require_version("Adw", "1")
+          from gi.repository import Adw, Gtk
+          PY
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
