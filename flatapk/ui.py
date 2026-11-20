@@ -13,10 +13,11 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 from .core import FlatapkError
-from .installer import Installer
+from .installer import DEFAULT_APP_ICON, Installer
 
 APP_ID = "io.github.flatapk.Installer"
 LOCALE = Path(__file__).resolve().parent.parent / "locale"
@@ -68,6 +69,18 @@ def action_bar(*buttons):
     for widget in buttons:
         bar.append(widget)
     return bar
+
+
+def installed_icon(name):
+    if Path(name).is_absolute():
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(name, 32, 32, True)
+            return Gtk.Image.new_from_pixbuf(pixbuf)
+        except GLib.Error:
+            name = DEFAULT_APP_ICON
+    icon = Gtk.Image.new_from_icon_name(name)
+    icon.set_pixel_size(32)
+    return icon
 
 
 class Window(Adw.ApplicationWindow):
@@ -350,7 +363,8 @@ class Window(Adw.ApplicationWindow):
         for app in sorted(apps, key=lambda item: item["name"].casefold()):
             row = Adw.ActionRow(title=GLib.markup_escape_text(app["name"]),
                                 subtitle=GLib.markup_escape_text(methods()[app["method"]]))
-            row.add_prefix(Gtk.Image.new_from_icon_name("application-x-executable-symbolic"))
+            icon_name = app["exports"][0]["icon"] if app["exports"] else DEFAULT_APP_ICON
+            row.add_prefix(installed_icon(icon_name))
             row.add_suffix(button(_("_Open"), lambda app=app: self.launch(app)))
             row.add_suffix(button(_("_Uninstall"), lambda app=app: self.confirm_action(
                 _("Uninstall {}?").format(app["name"]), _("This removes the program and its shortcuts."),
@@ -385,7 +399,12 @@ class Application(Adw.Application):
 
     def do_activate(self):
         window = Window(self)
-        window.manage()
+        if window.installer.appimages_missing_icons():
+            window.shell(_("Updating AppImage icons"), "", "image-x-generic-symbolic")
+            window.body.append(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER))
+            window.run_job(window.installer.refresh_appimage_icons, lambda _: window.manage())
+        else:
+            window.manage()
         window.present()
 
     def do_open(self, files, count, hint):

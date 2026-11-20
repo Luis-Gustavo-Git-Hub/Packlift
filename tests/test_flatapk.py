@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from flatapk.core import FlatapkError, Package, detect, inspect, plan_for
-from flatapk.installer import Installer
+from flatapk.installer import DEFAULT_APP_ICON, Installer
 from flatapk.system import Runner, desktop_exec, operation
 from flatapk.wine import Wine, environment, windows_argv
 
@@ -112,14 +112,17 @@ class FlatapkTests(unittest.TestCase):
         all(shutil.which(tool) for tool in ("mksquashfs", "unsquashfs")),
         "requires squashfs-tools for the AppImage fixture",
     )
-    def test_appimage_preserves_description_and_terminal_preference(self):
+    def test_appimage_metadata_and_icon_recovery_use_the_image_file(self):
         payload = self.root / "payload"
         payload.mkdir()
         (payload / "fixture.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=Builder fixture\n"
-            "Comment=Command-line tool\nExec=AppRun\nTerminal=true\n",
+            "Comment=Command-line tool\nExec=AppRun\nTerminal=true\nIcon=fixture\n",
             encoding="utf-8",
         )
+        (payload / "fixture").write_bytes(Path("/bin/true").read_bytes())
+        icon = (Path(__file__).resolve().parents[1] / "data/io.github.flatapk.Installer.png").read_bytes()
+        (payload / "fixture.png").write_bytes(icon)
         filesystem = self.root / "payload.squashfs"
         subprocess.run(["mksquashfs", str(payload), str(filesystem), "-processors", "1"],
                        check=True, stdout=subprocess.DEVNULL)
@@ -131,10 +134,24 @@ class FlatapkTests(unittest.TestCase):
 
         package, plan = self.installer.probe(source)
         self.assertEqual((package.name, package.description), ("Builder fixture", "Command-line tool"))
+        self.assertEqual((package.icon, package.icon_suffix), (icon, ".png"))
         app = self.installer.install(package, plan, lambda _: None, lambda *_: None)
         export = app["exports"][0]
         self.assertTrue(export["terminal"])
         self.assertIn("Terminal=true\n", Path(export["desktop"]).read_text())
+        exported_icon = Path(export["icon"])
+        self.assertEqual(exported_icon.read_bytes(), icon)
+
+        source.unlink()
+        exported_icon.unlink()
+        export["icon"] = DEFAULT_APP_ICON
+        self.installer.write_exports(app)
+        self.installer.registry.save(app)
+        self.installer.refresh_appimage_icons()
+        self.assertEqual(exported_icon.read_bytes(), icon)
+        self.assertIn(f"Icon={exported_icon}\n", Path(export["desktop"]).read_text())
+        self.assertEqual(self.installer.registry.apps()[0]["exports"][0]["icon"], str(exported_icon))
+        self.assertEqual(self.installer.appimages_missing_icons(), [])
 
     def test_appimage_launch_reports_output_from_existing_shortcut(self):
         image = self.root / "program.AppImage"

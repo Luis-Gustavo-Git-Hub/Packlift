@@ -139,6 +139,53 @@ def appimage_offset(path):
     return 0
 
 
+def appimage_assets(package, runner):
+    offset = appimage_offset(package.path)
+    if not offset:
+        return
+    command = ["unsquashfs", "-o", str(offset)]
+    path = str(package.path)
+    extensions = (".png", ".svg", ".xpm")
+    patterns = ["*.desktop", ".DirIcon", *(f"*{suffix}" for suffix in extensions),
+                "usr/share/applications", "usr/share/icons", "usr/share/pixmaps"]
+    listing = bounded_output(runner, [*command, "-ls", path, *patterns], 1024 * 1024)
+    files = [line.removeprefix("squashfs-root/") for line in
+             listing.decode("utf-8", "replace").splitlines() if line.startswith("squashfs-root/")]
+
+    def read(name, limit):
+        return bounded_output(runner, [*command, "-no-wildcards", "-cat", path, name], limit)
+
+    desktops = sorted((name for name in files if name.endswith(".desktop") and (
+        "/" not in name or name.startswith("usr/share/applications/"))),
+        key=lambda name: ("/" in name, name))
+    icon = ""
+    for desktop in desktops[:8]:
+        details = desktop_details(read(desktop, 64 * 1024).decode("utf-8", "replace"))
+        if details:
+            package.name, _, icon, package.terminal, package.description = details
+            break
+
+    icon_path = icon.lstrip("/")
+    icon_name = Path(icon_path).name
+    candidates = [name for name in files if Path(name).suffix.lower() in extensions and (
+        Path(name).name == icon_name or Path(name).stem == icon_name)]
+    candidates.sort(key=lambda name: (name != icon_path, "/" not in name, name))
+    if ".DirIcon" in files:
+        candidates.append(".DirIcon")
+    for candidate in candidates[:12]:
+        data = read(candidate, ICON_LIMIT)
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            suffix = ".png"
+        elif re.search(rb"<svg(?:\s|>)", data[:8192]):
+            suffix = ".svg"
+        elif data.lstrip().startswith(b"/* XPM */"):
+            suffix = ".xpm"
+        else:
+            continue
+        package.icon, package.icon_suffix = data, suffix
+        break
+
+
 def pe_version(path):
     values = {}
     resource = b""
@@ -202,23 +249,4 @@ def decorate(package, runner):
         package.name = values.get("ProductName") or values.get("FileDescription") or package.name
         package.version = values.get("ProductVersion") or values.get("FileVersion") or ""
     elif package.kind == "appimage":
-        offset = appimage_offset(package.path)
-        if offset:
-            command = ["unsquashfs", "-o", str(offset)]
-            path = str(package.path)
-            listing = bounded_output(runner, [*command, "-ls", path], 1024 * 1024)
-            files = [line.removeprefix("squashfs-root/") for line in
-                     listing.decode("utf-8", "replace").splitlines()
-                     if line.startswith("squashfs-root/")]
-            desktops = [name for name in files if "/" not in name and name.endswith(".desktop")]
-            for desktop in desktops[:8]:
-                data = bounded_output(runner, [*command, "-cat", path, desktop], 64 * 1024)
-                details = desktop_details(data.decode("utf-8", "replace"))
-                if details:
-                    package.name, _, icon, package.terminal, package.description = details
-                    names = {icon, f"{icon}.png", f"{icon}.svg"}
-                    chosen = next((name for name in files if Path(name).name in names), None)
-                    if chosen:
-                        package.icon = bounded_output(runner, [*command, "-cat", path, chosen], ICON_LIMIT)
-                        package.icon_suffix = Path(chosen).suffix
-                    break
+        appimage_assets(package, runner)

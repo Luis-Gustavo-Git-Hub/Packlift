@@ -82,8 +82,8 @@ msgstr "O Flatapk remove os containers que ele criou e que não têm programas r
 msgid "Install Toolbox and Podman on the host before continuing."
 msgstr "Instale Toolbox e Podman no sistema antes de continuar."
 
-msgid "Install Wine with 32-bit support on the host before continuing."
-msgstr "Instale Wine com suporte a programas de 32 bits antes de continuar."
+msgid "Wine was not found on the host. Install Wine or choose an installed Wine or Proton in Advanced options."
+msgstr "O Wine não foi encontrado no sistema. Instale o Wine ou selecione uma instalação do Wine ou Proton nas opções avançadas."
 
 msgid "Install polkit and start a desktop authentication agent first."
 msgstr "Instale o polkit e inicie um agente de autenticação gráfica."
@@ -165,6 +165,9 @@ msgstr "Não foi possível abrir o programa pelo atalho."
 
 msgid "The AppImage exited with an error. See the launch output in the log."
 msgstr "O AppImage encerrou com erro. Consulte a saída da execução no log."
+
+msgid "Updating AppImage icons"
+msgstr "Atualizando os ícones dos AppImages"
 
 msgid "The archive contains a special file. Use an AppImage or a system package."
 msgstr "O arquivo compactado contém um arquivo especial. Use um AppImage ou pacote do sistema."

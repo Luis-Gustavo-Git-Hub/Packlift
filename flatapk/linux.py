@@ -9,6 +9,7 @@ import shlex
 import shutil
 import stat
 import tarfile
+import tempfile
 from pathlib import Path
 
 from .core import FlatapkError, architecture_group, elf_architecture, relative_member
@@ -254,6 +255,21 @@ def archive_launcher(package, directory, targets, desktop_files, select, machine
     return package.name, ["env", "-C", str(chosen.parent), str(chosen)], "", False
 
 
+def write_appimage_icon(package, directory):
+    if not package.icon:
+        return ""
+    icon = directory / f"icon{package.icon_suffix}"
+    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temporary:
+        pending = Path(temporary.name)
+        try:
+            temporary.write(package.icon)
+            temporary.close()
+            pending.replace(icon)
+        finally:
+            pending.unlink(missing_ok=True)
+    return str(icon)
+
+
 def install_local(package, source, directory, select, machine):
     if package.kind == "appimage":
         target = directory / "program.AppImage"
@@ -262,11 +278,8 @@ def install_local(package, source, directory, select, machine):
         with target.open("rb") as stream:
             type2 = stream.read(11)[8:11] == b"AI\x02"
         argv = ["env", "APPIMAGE_EXTRACT_AND_RUN=1", str(target)] if type2 else [str(target)]
-        icon = ""
-        if package.icon:
-            icon = directory / f"icon{package.icon_suffix}"
-            icon.write_bytes(package.icon)
-        return [(package.name, argv, str(icon), package.terminal)]
+        icon = write_appimage_icon(package, directory)
+        return [(package.name, argv, icon, package.terminal)]
     payload = directory / "payload"
     payload.mkdir()
     targets, desktops = unpack(source, payload)

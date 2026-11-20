@@ -10,12 +10,15 @@ import tarfile
 import uuid
 from pathlib import Path
 
-from .core import FlatapkError, detect, fingerprint, host_info, inspect, plan_for
+from .core import FlatapkError, Package, detect, fingerprint, host_info, inspect, plan_for
 from .linux import (MIME_SUFFIXES, already_installed, install_local,
-                    install_system, package_target, remove_system, system_launchers, toolbox)
-from .metadata import decorate
+                    install_system, package_target, remove_system, system_launchers, toolbox,
+                    write_appimage_icon)
+from .metadata import appimage_assets, decorate
 from .system import Registry, Runner, data_home, export_desktop, operation, remove_exports, stage_package
 from .wine import Wine, environment
+
+DEFAULT_APP_ICON = "application-x-executable"
 
 
 class Installer:
@@ -125,7 +128,7 @@ class Installer:
         for index, (name, argv, icon, terminal) in enumerate(launchers):
             desktop = self.applications / f"io.github.flatapk.Installer.{app['id']}.{index}.desktop"
             app["exports"].append({
-                "desktop": str(desktop), "name": name, "icon": icon or "application-x-executable",
+                "desktop": str(desktop), "name": name, "icon": icon or DEFAULT_APP_ICON,
                 "argv": wine.command(*argv, extra=app.get("environment")) if wine else argv,
                 "terminal": terminal, "wine_args": argv if wine else [],
             })
@@ -142,6 +145,33 @@ class Installer:
         self.prepare_exports(app, launchers, wine)
         self.write_exports(app)
         self.registry.save(app)
+
+    def appimages_missing_icons(self):
+        return [app for app in self.registry.apps()
+                if app["method"] == "local"
+                and (Path(app["directory"]) / "program.AppImage").is_file()
+                and any(export["icon"] == DEFAULT_APP_ICON for export in app["exports"])]
+
+    def refresh_appimage_icons(self):
+        try:
+            with operation(self.data):
+                for app in self.appimages_missing_icons():
+                    directory = Path(app["directory"])
+                    package = Package(directory / "program.AppImage", "appimage", app["name"])
+                    try:
+                        appimage_assets(package, self.runner)
+                        icon = write_appimage_icon(package, directory)
+                        if not icon:
+                            continue
+                        for export in app["exports"]:
+                            if export["icon"] == DEFAULT_APP_ICON:
+                                export["icon"] = icon
+                        self.write_exports(app)
+                        self.registry.save(app)
+                    except OSError as error:
+                        self.runner.write(f"Could not refresh the icon for {app['name']}: {error}")
+        except FlatapkError as error:
+            self.runner.write(str(error))
 
     def launch_appimage(self, app):
         export = app["exports"][0]

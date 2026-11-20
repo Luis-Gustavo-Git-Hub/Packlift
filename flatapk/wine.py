@@ -106,7 +106,8 @@ class Wine:
         self.root.mkdir(parents=True, exist_ok=True)
         if self.runtime == "wine":
             if not self.runner.available("wine"):
-                raise FlatapkError("Install Wine with 32-bit support on the host before continuing.")
+                raise FlatapkError(
+                    "Wine was not found on the host. Install Wine or choose an installed Wine or Proton in Advanced options.")
         elif not Path(self.runtime).is_absolute() or not os.access(self.runtime, os.X_OK):
             raise FlatapkError("Choose an executable Wine or Proton runtime installed on the host.")
         if self.proton:
