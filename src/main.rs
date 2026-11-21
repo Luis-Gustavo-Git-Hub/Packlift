@@ -768,7 +768,20 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
         .text("Packlift could not complete the operation")
         .secondary_text(message)
         .build();
-    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.add_button("Copy log", gtk::ResponseType::Apply);
+    dialog.connect_response(|dialog, response| {
+        if response == gtk::ResponseType::Apply {
+            let path = packlift::system::data_home()
+                .join("flatapk")
+                .join("flatapk.log");
+            let contents = std::fs::read_to_string(path)
+                .unwrap_or_else(|error| format!("Could not read the Packlift log: {error}"));
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&contents);
+            }
+        }
+        dialog.close();
+    });
     dialog.present();
 }
 

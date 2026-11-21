@@ -1512,6 +1512,11 @@ impl Wine {
     }
 
     fn wait(&self) -> Result<()> {
+        // UMU accepts Windows executables, not Wine's Linux-side wineserver
+        // utility. umu-run already waits for the Windows process it launched.
+        if self.umu {
+            return Ok(());
+        }
         let args = self.command("wineserver", &["-w".into()], None);
         self.runner
             .run(&args, self.umu && self.runner.sandbox, true, true)?;

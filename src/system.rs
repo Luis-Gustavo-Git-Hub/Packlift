@@ -71,7 +71,7 @@ impl Runner {
         let mut child = Command::new(&command[0])
             .args(&command[1..])
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
                 PackliftError::Message(format!(
@@ -79,6 +79,18 @@ impl Runner {
                     command[0]
                 ))
             })?;
+        let stderr = child.stderr.take();
+        let stderr_runner = self.clone();
+        let stderr_reader = std::thread::spawn(move || {
+            if let Some(stderr) = stderr {
+                for line in BufReader::new(stderr)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    stderr_runner.write(&line);
+                }
+            }
+        });
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
                 let line = line?;
@@ -86,6 +98,7 @@ impl Runner {
             }
         }
         let output = child.wait_with_output()?;
+        let _ = stderr_reader.join();
         if check && !output.status.success() {
             return Err(PackliftError::Message(format!(
                 "{} exited with status {}. See the installation log.",
@@ -108,7 +121,7 @@ impl Runner {
             .args(&command[1..])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
                 PackliftError::Message(format!(
@@ -116,6 +129,35 @@ impl Runner {
                     args.first().map(String::as_str).unwrap_or("program")
                 ))
             })?;
+        if let Some(stderr) = child.stderr.take() {
+            let runner = self.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    runner.write(&line);
+                }
+            });
+        }
+        // Catch launchers that exit immediately with an error so the UI can
+        // keep the log available instead of treating the game as launched.
+        let launch_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                self.write(&format!("Program exited during startup with status {status}"));
+                if !status.success() {
+                    return Err(PackliftError::Message(format!(
+                        "The program failed to start (exit status {status}). See the installation log."
+                    )));
+                }
+                return Ok(());
+            }
+            if std::time::Instant::now() >= launch_deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let runner = self.clone();
         std::thread::spawn(move || match child.wait() {
             Ok(status) => runner.write(&format!("Program exited with status {status}")),
