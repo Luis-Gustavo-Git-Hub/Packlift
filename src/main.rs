@@ -626,7 +626,7 @@ where
                 if let Some(window) = weak_window.upgrade() {
                     match result {
                         Err(error) => show_error(&window, &error.to_string()),
-                        Ok(Some(record)) => show_success(&app, &window, &record),
+                        Ok(Some(record)) => show_success(&window, &record),
                         Ok(None) => render_home(&app, &window),
                     }
                 }
@@ -638,7 +638,7 @@ where
     });
 }
 
-fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
+fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     window.set_title(Some("Packlift"));
     window.set_default_size(430, 320);
     window.set_resizable(false);
@@ -676,11 +676,10 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     actions.set_halign(gtk::Align::Center);
     actions.set_margin_top(4);
     let close = gtk::Button::with_label("Close");
-    let close_app = app.clone();
     let weak_window = window.downgrade();
     close.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {
-            render_home(&close_app, &window);
+            window.close();
         }
     });
     actions.append(&close);
