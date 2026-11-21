@@ -175,6 +175,12 @@ msgstr "Instale o Wine ou selecione uma instalação do Wine ou Proton nas opç�
 msgid "Choose the Windows executable from the game's folder."
 msgstr "Selecione o executável do Windows na pasta do jogo."
 
+msgid "Choose the Proton executable"
+msgstr "Selecione o executável do Proton"
+
+msgid "Choose the Proton executable installed on the host."
+msgstr "Selecione o executável do Proton instalado no sistema."
+
 msgid "Windows programs can access your home folder. If needed, Packlift downloads Wine from Flathub for your account."
 msgstr "Programas do Windows podem acessar sua pasta pessoal. Se necessário, o Packlift baixa o Wine do Flathub para sua conta."
 
@@ -183,6 +189,51 @@ msgstr "Adicionando {} ao menu"
 
 msgid "_Add game to menu"
 msgstr "_Adicionar jogo ao menu"
+
+msgid "Add game to menu"
+msgstr "Adicionar jogo ao menu"
+
+msgid "Choose"
+msgstr "Selecionar"
+
+msgid "Default Windows runtime"
+msgstr "Ambiente padrão para programas do Windows"
+
+msgid "How do you want to use this .exe?"
+msgstr "Como deseja usar este arquivo .exe?"
+
+msgid "Choose Wine or Proton for this program and edit its launch settings."
+msgstr "Escolha Wine ou Proton para este programa e ajuste as opções de inicialização."
+
+msgid "Install Windows program"
+msgstr "Instalar programa do Windows"
+
+msgid "Packlift settings"
+msgstr "Configurações do Packlift"
+
+msgid "Path to the Proton executable"
+msgstr "Caminho para o executável do Proton"
+
+msgid "Proton"
+msgstr "Proton"
+
+msgid "Choose Wine or Proton."
+msgstr "Escolha Wine ou Proton."
+
+msgid "Updating application icons"
+msgstr "Atualizando ícones dos programas"
+
+msgid "Windows compatibility runtime"
+msgstr "Ambiente de compatibilidade do Windows"
+
+msgid "Choose the default runtime for new Windows games and programs."
+msgstr "Escolha o ambiente padrão para novos jogos e programas do Windows."
+
+msgid "Choose Add to menu for a game that is already extracted. Choose Install Windows program to run a setup file."
+msgstr "Escolha Adicionar ao menu para um jogo já extraído. Escolha Instalar programa do Windows para executar um instalador."
+
+msgid "Wine"
+msgstr "Wine"
 
 msgid "_Remove shortcut"
 msgstr "_Remover atalho"

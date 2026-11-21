@@ -226,6 +226,118 @@ def pe_version(path):
     return values
 
 
+def pe_icon(path):
+    """Return the largest embedded Windows application icon as a single-image ICO."""
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(64)
+            if len(header) != 64:
+                return b""
+            stream.seek(struct.unpack_from("<I", header, 60)[0])
+            coff = stream.read(24)
+            if not coff.startswith(b"PE\0\0"):
+                return b""
+            sections = struct.unpack_from("<H", coff, 6)[0]
+            optional_size = struct.unpack_from("<H", coff, 20)[0]
+            optional = stream.read(optional_size)
+            magic = struct.unpack_from("<H", optional)[0]
+            data_dir = 96 if magic == 0x10B else 112 if magic == 0x20B else 0
+            if not data_dir or len(optional) < data_dir + 24:
+                return b""
+            resource_rva, resource_size = struct.unpack_from("<II", optional, data_dir + 16)
+            section_table = stream.tell()
+            ranges = []
+            for _ in range(min(sections, 96)):
+                section = stream.read(40)
+                if len(section) < 40:
+                    break
+                virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", section, 8)
+                ranges.append((virtual_address, max(virtual_size, raw_size), raw_size, raw_offset))
+
+            def raw_offset(rva):
+                for address, span, size, offset in ranges:
+                    if address <= rva < address + span and rva - address < size:
+                        return offset + rva - address
+                return None
+
+            root_file = raw_offset(resource_rva)
+            if root_file is None or resource_size < 16 or resource_size > 32 * 1024 * 1024:
+                return b""
+            stream.seek(root_file)
+            resource = stream.read(resource_size)
+    except (OSError, struct.error):
+        return b""
+
+    def directory(offset):
+        if offset < 0 or offset + 16 > len(resource):
+            return {}
+        named, ids = struct.unpack_from("<HH", resource, offset + 12)
+        count = min(named + ids, 4096)
+        if offset + 16 + count * 8 > len(resource):
+            return {}
+        entries = {}
+        for index in range(count):
+            name, target = struct.unpack_from("<II", resource, offset + 16 + index * 8)
+            if name & 0x80000000:
+                continue
+            entries[name & 0x7FFFFFFF] = target
+        return entries
+
+    def payload(target):
+        entry = target & 0x7FFFFFFF
+        if target & 0x80000000 or entry + 16 > len(resource):
+            return b""
+        rva, size = struct.unpack_from("<II", resource, entry)
+        offset = raw_offset(rva)
+        if offset is None or not 0 < size <= 2 * 1024 * 1024:
+            return b""
+        stream_data = path.open("rb")
+        try:
+            stream_data.seek(offset)
+            return stream_data.read(size)
+        finally:
+            stream_data.close()
+
+    def language_data(target):
+        languages = directory(target & 0x7FFFFFFF) if target & 0x80000000 else {}
+        return next((data for _, data_target in languages.items()
+                     if (data := payload(data_target))), b"")
+
+    root = directory(0)
+    group_target = root.get(14)
+    icons_target = root.get(3)
+    if group_target is None or icons_target is None:
+        return b""
+    groups = directory(group_target & 0x7FFFFFFF) if group_target & 0x80000000 else {}
+    icons = directory(icons_target & 0x7FFFFFFF) if icons_target & 0x80000000 else {}
+    icon_data = {}
+    for icon_id, target in icons.items():
+        if target & 0x80000000:
+            data = language_data(target)
+            if data:
+                icon_data[icon_id] = data
+    candidates = []
+    for target in groups.values():
+        group = language_data(target) if target & 0x80000000 else payload(target)
+        if len(group) < 6:
+            continue
+        reserved, kind, count = struct.unpack_from("<HHH", group)
+        if reserved or kind != 1 or not 0 < count <= 64 or 6 + count * 14 > len(group):
+            continue
+        for index in range(count):
+            width, height, colors, _, planes, depth, size, icon_id = struct.unpack_from(
+                "<BBBBHHIH", group, 6 + index * 14)
+            data = icon_data.get(icon_id, b"")
+            if data and len(data) <= 2 * 1024 * 1024 and size <= len(data):
+                candidates.append((width or 256, height or 256, depth, data))
+    if not candidates:
+        return b""
+    width, height, _, data = max(candidates, key=lambda icon: (icon[0] * icon[1], icon[2]))
+    entry = struct.pack("<BBBBHHII", width % 256, height % 256, 0, 0, 1, 32,
+                        len(data), 22)
+    return struct.pack("<HHH", 0, 1, 1) + entry + data
+
+
 def decorate(package, runner):
     if package.kind == "deb":
         assets = deb_assets(package, runner)
@@ -248,5 +360,7 @@ def decorate(package, runner):
         values = pe_version(package.path)
         package.name = values.get("ProductName") or values.get("FileDescription") or package.name
         package.version = values.get("ProductVersion") or values.get("FileVersion") or ""
+        package.icon = pe_icon(package.path)
+        package.icon_suffix = ".ico" if package.icon else ""
     elif package.kind == "appimage":
         appimage_assets(package, runner)

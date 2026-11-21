@@ -1,6 +1,7 @@
 """Coordinate package installation, recovery and registry changes."""
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -25,8 +26,31 @@ class Installer:
     def __init__(self, output=lambda line: None, data=None, applications=None):
         self.data = Path(data) if data else data_home() / "flatapk"
         self.applications = Path(applications) if applications else data_home() / "applications"
+        self.preferences_path = self.data / "preferences.json"
         self.runner = Runner(self.data, output)
         self.registry = Registry(self.data)
+
+    def preferences(self):
+        try:
+            value = json.loads(self.preferences_path.read_text(encoding="utf-8"))
+            return {"runtime": value.get("runtime", "wine"),
+                    "proton_path": value.get("proton_path", "")}
+        except (OSError, ValueError, AttributeError):
+            return {"runtime": "wine", "proton_path": ""}
+
+    def save_preferences(self, runtime, proton_path):
+        if runtime not in {"wine", "proton"}:
+            raise FlatapkError("Choose Wine or Proton.")
+        proton_path = str(Path(proton_path).expanduser()) if proton_path else ""
+        if runtime == "proton" and (not proton_path or not Path(proton_path).is_file()
+                                     or not os.access(proton_path, os.X_OK)):
+            raise FlatapkError("Choose the Proton executable installed on the host.")
+        self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.preferences_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"runtime": runtime, "proton_path": proton_path}),
+                             encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(self.preferences_path)
 
     def probe(self, path):
         package = inspect(path, self.runner)
@@ -161,8 +185,16 @@ class Installer:
                 "method": "wine", "runtime": wine.runtime, "game_shortcut": True,
                 "working_directory": str(source.parent),
             }
+            icon = ""
+            if package.icon:
+                directory = self.data / "games" / identifier
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                icon_path = directory / "icon.ico"
+                icon_path.write_bytes(package.icon)
+                app.update(directory=str(directory), icon_path=str(icon_path))
+                icon = str(icon_path)
             try:
-                self.register(app, [(package.name, [str(source)], "applications-games", False)], step, wine)
+                self.register(app, [(package.name, [str(source)], icon, False)], step, wine)
             except Exception:
                 remove_exports(app)
                 raise
@@ -199,6 +231,34 @@ class Installer:
                 if app["method"] == "local"
                 and (Path(app["directory"]) / "program.AppImage").is_file()
                 and any(export["icon"] == DEFAULT_APP_ICON for export in app["exports"])]
+
+    def games_missing_icons(self):
+        return [app for app in self.registry.apps()
+                if app.get("game_shortcut")
+                and any(export["icon"] == DEFAULT_APP_ICON for export in app["exports"])
+                and Path(app.get("source", "")).is_file()]
+
+    def refresh_game_icons(self):
+        try:
+            from .metadata import pe_icon
+
+            with operation(self.data):
+                for app in self.games_missing_icons():
+                    icon = pe_icon(Path(app["source"]))
+                    if not icon:
+                        continue
+                    directory = self.data / "games" / app["id"]
+                    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    icon_path = directory / "icon.ico"
+                    icon_path.write_bytes(icon)
+                    app.update(directory=str(directory), icon_path=str(icon_path))
+                    for export in app["exports"]:
+                        if export["icon"] == DEFAULT_APP_ICON:
+                            export["icon"] = str(icon_path)
+                    self.write_exports(app)
+                    self.registry.save(app)
+        except FlatapkError as error:
+            self.runner.write(str(error))
 
     def refresh_appimage_icons(self):
         try:
@@ -272,10 +332,14 @@ class Installer:
                 self.registry.remove_container(name)
         step("done")
 
-    def configure(self, app, text):
+    def configure(self, app, text, runtime=None):
         with operation(self.data):
             app["environment"] = environment(text)
-            wine = Wine(self.runner, app["runtime"], host_info(self.runner)[1])
+            machine = host_info(self.runner)[1]
+            runtime = self.windows_runtime(runtime or app["runtime"], machine)
+            wine = Wine(self.runner, runtime, machine)
+            wine.prepare()
+            app["runtime"] = runtime
             for export in app["exports"]:
                 export["argv"] = wine.command(*export["wine_args"], extra=app["environment"],
                                              cwd=app.get("working_directory"))
