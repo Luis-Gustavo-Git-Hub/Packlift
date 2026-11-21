@@ -1,5 +1,5 @@
 {
-  "app-id": "io.github.flatapk.Installer",
+  "app-id": "io.github.luis_gustavo_git_hub.Packlift",
   "runtime": "org.gnome.Platform",
   "runtime-version": "49",
   "sdk": "org.gnome.Sdk",
@@ -161,10 +161,10 @@
         "mkdir -p \"$CARGO_HOME\" && install -m 644 cargo-config.toml \"$CARGO_HOME/config.toml\"",
         "cargo build --offline --locked --release --features gui",
         "install -Dm755 target/release/packlift /app/bin/flatapk",
-        "install -Dm644 data/io.github.flatapk.Installer.desktop /app/share/applications/io.github.flatapk.Installer.desktop",
-        "install -Dm644 data/io.github.flatapk.Installer.metainfo.xml /app/share/metainfo/io.github.flatapk.Installer.metainfo.xml",
-        "install -Dm644 data/io.github.flatapk.Installer.xml /app/share/mime/packages/io.github.flatapk.Installer.xml",
-        "install -Dm644 data/io.github.flatapk.Installer.png /app/share/icons/hicolor/128x128/apps/io.github.flatapk.Installer.png"
+        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.desktop /app/share/applications/io.github.luis_gustavo_git_hub.Packlift.desktop",
+        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml /app/share/metainfo/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml",
+        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.xml /app/share/mime/packages/io.github.luis_gustavo_git_hub.Packlift.xml",
+        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.png /app/share/icons/hicolor/128x128/apps/io.github.luis_gustavo_git_hub.Packlift.png"
       ],
       "sources": [
         {

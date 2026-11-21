@@ -15,18 +15,22 @@ Packlift is a GTK4 and libadwaita app for installing Linux packages and adding W
 
 ## Install Packlift
 
-Download `Packlift-x86_64.flatpak` and its SHA-256 checksum from [GitHub Releases](https://github.com/Luis-Gustavo-Git-Hub/Packlift/releases/latest). For the first stable release, see the [v0.1.0 Flatpak manifest](https://github.com/Luis-Gustavo-Git-Hub/Packlift/blob/v0.1.0/io.github.flatapk.Installer.json). The release workflow builds the bundle from the exact tagged commit. Install it with:
+Download `Packlift-x86_64.flatpak` and its SHA-256 checksum from [GitHub Releases](https://github.com/Luis-Gustavo-Git-Hub/Packlift/releases/latest). For the current application ID, see the [v0.1.1 Flatpak manifest](https://github.com/Luis-Gustavo-Git-Hub/Packlift/blob/v0.1.1/io.github.luis_gustavo_git_hub.Packlift.json). The release workflow builds the bundle from the exact tagged commit. Install it with:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user flathub org.gnome.Platform//49
 flatpak install --user ./Packlift-x86_64.flatpak
-flatpak run io.github.flatapk.Installer
+flatpak run io.github.luis_gustavo_git_hub.Packlift
 ```
 
 Open a package from your file manager with **Open With Packlift**, use **Open package**, or launch Packlift without a file to manage installed programs. In Packlift settings, choose **Set as default for supported files** to open compatible files with a double-click. This updates the file associations for your Linux account. Opening a package still takes you to the review screen before installation or launch.
 
 If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **Show details** for its launch output.
+
+### Updating from v0.1.0
+
+Flatpak treats `io.github.luis_gustavo_git_hub.Packlift` as a separate app from `io.github.flatapk.Installer`. Install the new bundle and check your library before removing the previous installation. Host mode still uses your existing Packlift data directory. Enable host access and set your file associations again if you used those features. Sandbox mode has a separate library under the new ID, so add your local packages again there.
 
 ## Windows games and programs
 
@@ -70,8 +74,8 @@ To build the x86-64 Flatpak locally, add Flathub and run:
 
 ```sh
 flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-clean \
-  flatpak-build io.github.flatapk.Installer.json
-flatpak build-bundle flatpak-repo Packlift-x86_64.flatpak io.github.flatapk.Installer
+  flatpak-build io.github.luis_gustavo_git_hub.Packlift.json
+flatpak build-bundle flatpak-repo Packlift-x86_64.flatpak io.github.luis_gustavo_git_hub.Packlift
 ```
 
 The Flatpak and the managed Toolbx images are intended for x86-64 hosts. The **Find and install missing libraries in the container** option can resolve missing shared libraries detected in a launcher through the container's configured repositories. **Repair…** retries that process on an existing container installation. Packages that need a different distribution release or an unavailable library require a compatible build.

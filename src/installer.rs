@@ -12,6 +12,7 @@ use crate::{
         desktop_exec, export_desktop, export_desktop_with_wm_class, host_access_available,
         operation, packlift_data_dir, remove_exports, sha256, Registry, Runner,
     },
+    APP_ID,
 };
 
 const FLATPAK_WINE: &str = "org.winehq.Wine//wow64-25.08";
@@ -48,10 +49,12 @@ impl Installer {
     }
 
     pub fn set_default_file_handler(&self) -> Result<()> {
-        const HANDLER: &str = "io.github.flatapk.Installer.desktop";
-        const HANDLER_ENTRY: &str = include_str!("../data/io.github.flatapk.Installer.desktop");
-        const MIME_DEFINITIONS: &str = include_str!("../data/io.github.flatapk.Installer.xml");
+        const HANDLER_ENTRY: &str =
+            include_str!("../data/io.github.luis_gustavo_git_hub.Packlift.desktop");
+        const MIME_DEFINITIONS: &str =
+            include_str!("../data/io.github.luis_gustavo_git_hub.Packlift.xml");
 
+        let handler = format!("{APP_ID}.desktop");
         let _operation = operation(&self.data)?;
         for executable in ["gio", "xdg-mime", "update-mime-database"] {
             if !self.runner.available(executable) {
@@ -60,7 +63,9 @@ impl Installer {
                 )));
             }
         }
-        let mime_file = self.data.join("io.github.flatapk.Installer.xml");
+        let mime_file = self
+            .data
+            .join("io.github.luis_gustavo_git_hub.Packlift.xml");
         fs::write(&mime_file, MIME_DEFINITIONS)?;
         self.runner.run(
             &[
@@ -87,7 +92,7 @@ impl Installer {
             if self
                 .runner
                 .run(
-                    &["gio".into(), "mime".into(), mime.into(), HANDLER.into()],
+                    &["gio".into(), "mime".into(), mime.into(), handler.clone()],
                     false,
                     true,
                     true,
@@ -1018,7 +1023,7 @@ fi"#
         for (index, (name, argv, icon, terminal, wm_class)) in launchers.iter().enumerate() {
             let path = self
                 .applications
-                .join(format!("io.github.flatapk.Installer.{id}.{index}.desktop"));
+                .join(format!("{APP_ID}.{id}.{index}.desktop"));
             let displayed_icon = if icon.is_empty() {
                 "application-x-executable"
             } else {
@@ -1170,9 +1175,9 @@ fi"#
                 .write("Registering the application in the sandbox library");
             None
         } else {
-            let path = self.applications.join(format!(
-                "io.github.flatapk.Installer.{identifier}.0.desktop"
-            ));
+            let path = self
+                .applications
+                .join(format!("{APP_ID}.{identifier}.0.desktop"));
             export_desktop(&path, &package.name, &argv, &icon, terminal, "Utility")?;
             self.runner.write("Creating the application menu shortcut");
             Some(path)
@@ -1252,9 +1257,9 @@ fi"#
         let target = executables.into_iter().next().ok_or_else(|| PackliftError::Message(
             "The installer finished, but Packlift could not find the installed program. Add its game executable from the file manager.".into()))?;
         let windows_directory = windows_install_directory(&target, &prefix);
-        let export = self.applications.join(format!(
-            "io.github.flatapk.Installer.{identifier}.0.desktop"
-        ));
+        let export = self
+            .applications
+            .join(format!("{APP_ID}.{identifier}.0.desktop"));
         let argv = wine.command(
             "wine",
             &[target.to_string_lossy().into_owned()],
@@ -1339,9 +1344,9 @@ fi"#
             .parent()
             .unwrap_or(Path::new("/"))
             .to_path_buf();
-        let export_path = self.applications.join(format!(
-            "io.github.flatapk.Installer.{identifier}.0.desktop"
-        ));
+        let export_path = self
+            .applications
+            .join(format!("{APP_ID}.{identifier}.0.desktop"));
         let argv = wine.command(
             "wine",
             &[package.path.to_string_lossy().to_string()],

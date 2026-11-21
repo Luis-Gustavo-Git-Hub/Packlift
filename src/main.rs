@@ -6,10 +6,9 @@ use packlift::{
     core::{Package, PackliftError, Result},
     installer::Installer,
     system::{host_access_available, packlift_data_dir, LogHandler},
+    APP_ID,
 };
 use serde_json::Value;
-
-const APP_ID: &str = "io.github.flatapk.Installer";
 
 fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     let command = format!("flatpak override --user --talk-name=org.freedesktop.Flatpak {APP_ID}");

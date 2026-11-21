@@ -22,8 +22,8 @@ jobs:
         run: |
           make test
           make install DESTDIR="$RUNNER_TEMP/flatapk-install"
-          desktop-file-validate data/io.github.flatapk.Installer.desktop
-          appstreamcli validate --no-net data/io.github.flatapk.Installer.metainfo.xml
+          desktop-file-validate data/io.github.luis_gustavo_git_hub.Packlift.desktop
+          appstreamcli validate --no-net data/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml
 
   flatpak:
     runs-on: ubuntu-24.04
@@ -40,20 +40,20 @@ jobs:
       - name: Build Flatpak bundle
         run: |
           flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
-            --repo=flatpak-repo --force-clean flatpak-build io.github.flatapk.Installer.json
+            --repo=flatpak-repo --force-clean flatpak-build io.github.luis_gustavo_git_hub.Packlift.json
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-            flatpak-repo Packlift-x86_64.flatpak io.github.flatapk.Installer
+            flatpak-repo Packlift-x86_64.flatpak io.github.luis_gustavo_git_hub.Packlift
       - name: Validate the installed bundle
         run: |
           flatpak install --user --noninteractive ./Packlift-x86_64.flatpak
-          dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
+          dbus-run-session -- flatpak run --command=sh io.github.luis_gustavo_git_hub.Packlift -ec '
             command -v flatpak-spawn
             if flatpak-spawn --host --watch-bus /usr/bin/true; then
               exit 1
             fi
           '
-          flatpak override --user --talk-name=org.freedesktop.Flatpak io.github.flatapk.Installer
-          dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
+          flatpak override --user --talk-name=org.freedesktop.Flatpak io.github.luis_gustavo_git_hub.Packlift
+          dbus-run-session -- flatpak run --command=sh io.github.luis_gustavo_git_hub.Packlift -ec '
             flatpak-spawn --host --watch-bus uname -m
             test -x /app/bin/flatapk
             bsdtar --version

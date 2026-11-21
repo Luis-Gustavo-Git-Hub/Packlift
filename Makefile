@@ -1,5 +1,5 @@
 PREFIX ?= /usr/local
-APP_ID = io.github.flatapk.Installer
+APP_ID = io.github.luis_gustavo_git_hub.Packlift
 SHARE = $(DESTDIR)$(PREFIX)/share
 
 .PHONY: build install test

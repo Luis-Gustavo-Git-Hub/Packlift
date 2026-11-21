@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.flatapk.Installer</id>
+  <id>io.github.luis_gustavo_git_hub.Packlift</id>
   <name>Packlift</name>
   <summary>Install packages with your system, Toolbox or Wine</summary>
   <summary xml:lang="pt-BR">Instale pacotes pelo sistema, Toolbox ou Wine</summary>
@@ -15,10 +15,15 @@
     <p xml:lang="pt-BR">Abra um pacote baixado, revise a origem e o método de instalação e acompanhe o progresso na mesma janela. O Packlift adiciona programas ao menu do sistema e permite desinstalá-los pelo aplicativo.</p>
     <p xml:lang="pt-BR">O Packlift pode executar comandos no host para usar o gerenciador de pacotes, o Toolbox e o Wine. Programas instalados em Toolbox ou Wine podem acessar sua pasta pessoal.</p>
   </description>
-  <launchable type="desktop-id">io.github.flatapk.Installer.desktop</launchable>
+  <launchable type="desktop-id">io.github.luis_gustavo_git_hub.Packlift.desktop</launchable>
   <url type="homepage">https://github.com/Luis-Gustavo-Git-Hub/Packlift</url>
   <url type="bugtracker">https://github.com/Luis-Gustavo-Git-Hub/Packlift/issues</url>
   <releases>
+    <release version="0.1.1" date="2026-11-21" type="stable">
+      <description>
+        <p>Update the application ID used by the Flatpak, desktop launcher and file associations.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-21" type="stable">
       <description>
         <p>Install supported Linux packages, manage Windows programs and games, and run compatible AppImages and TAR archives in the Flatpak sandbox.</p>
