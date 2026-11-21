@@ -175,8 +175,8 @@ msgstr "Instale o Wine ou selecione uma instalação do Wine ou Proton nas opç�
 msgid "Choose the Windows executable from the game's folder."
 msgstr "Selecione o executável do Windows na pasta do jogo."
 
-msgid "If Wine is missing, Flatapk downloads Wine from Flathub for your account."
-msgstr "Se o Wine estiver ausente, o Flatapk baixa o Wine do Flathub para sua conta."
+msgid "Windows programs can access your home folder. If needed, Flatapk downloads Wine from Flathub for your account."
+msgstr "Programas do Windows podem acessar sua pasta pessoal. Se necessário, o Flatapk baixa o Wine do Flathub para sua conta."
 
 msgid "Adding {} to the menu"
 msgstr "Adicionando {} ao menu"
@@ -195,6 +195,36 @@ msgstr "Os arquivos do jogo ficam na pasta original."
 
 msgid "Removing shortcut"
 msgstr "Removendo atalho"
+
+msgid "Clean unused Toolbox environments"
+msgstr "Limpar ambientes Toolbox sem uso"
+
+msgid "Repair Wine prefix"
+msgstr "Reparar prefixo do Wine"
+
+msgid "Undo last Wine installation"
+msgstr "Desfazer última instalação no Wine"
+
+msgid "Maintenance options"
+msgstr "Opções de manutenção"
+
+msgid "No programs installed"
+msgstr "Nenhum programa instalado"
+
+msgid "Game shortcut"
+msgstr "Atalho de jogo"
+
+msgid "Settings"
+msgstr "Configurações"
+
+msgid "Remove shortcut"
+msgstr "Remover atalho"
+
+msgid "Uninstall"
+msgstr "Desinstalar"
+
+msgid "Program options"
+msgstr "Opções do programa"
 
 msgid "The archive contains a special file. Use an AppImage or a system package."
 msgstr "O arquivo compactado contém um arquivo especial. Use um AppImage ou pacote do sistema."

@@ -14,7 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 from .core import FlatapkError
 from .installer import DEFAULT_APP_ICON, Installer
@@ -47,6 +47,7 @@ def methods():
 
 def label(text, style="", xalign=0.0):
     widget = Gtk.Label(label=text, xalign=xalign, wrap=True)
+    widget.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
     if style:
         widget.add_css_class(style)
     return widget
@@ -71,6 +72,25 @@ def action_bar(*buttons):
     return bar
 
 
+def menu_button(tooltip, actions):
+    widget = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text=tooltip,
+                            valign=Gtk.Align.CENTER, css_classes=["flat"])
+    popover = Gtk.Popover()
+    entries = vertical(2)
+    for title, action in actions:
+        item = Gtk.Button(child=label(title), css_classes=["flat"])
+
+        def activate(_, callback=action):
+            popover.popdown()
+            callback()
+
+        item.connect("clicked", activate)
+        entries.append(item)
+    popover.set_child(entries)
+    widget.set_popover(popover)
+    return widget
+
+
 def installed_icon(name):
     if Path(name).is_absolute():
         try:
@@ -84,9 +104,10 @@ def installed_icon(name):
 
 
 class Window(Adw.ApplicationWindow):
-    def __init__(self, app, width=440, height=280):
-        super().__init__(application=app, title="Flatapk", default_width=width,
-                         default_height=height)
+    def __init__(self, app, *, compact=True):
+        super().__init__(application=app, title="Flatapk", default_width=466 if compact else 640,
+                         default_height=370 if compact else 470, resizable=not compact)
+        self.compact = compact
         self.running = False
         self.log = deque(maxlen=2500)
         self.installer = Installer(self.on_log)
@@ -95,20 +116,35 @@ class Window(Adw.ApplicationWindow):
         self.header = Adw.HeaderBar()
         self.header.set_title_widget(Adw.WindowTitle(title="Flatapk"))
         self.view.add_top_bar(self.header)
+        self.footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["flatapk-footer"])
+        self.view.add_bottom_bar(self.footer)
         self.set_content(self.view)
         self.reset()
 
     def reset(self):
         self.set_default_widget(None)
+        self.set_actions()
+        for controls in getattr(self, "header_controls", []):
+            self.header.remove(controls)
+        self.header_controls = []
         self.log_buffer = None
-        self.body = vertical()
-        self.body.set_margin_start(20)
-        self.body.set_margin_end(20)
-        self.body.set_margin_top(14)
-        self.body.set_margin_bottom(18)
+        self.body = vertical(9 if self.compact else 12)
+        self.body.set_margin_start(18)
+        self.body.set_margin_end(18)
+        self.body.set_margin_top(12 if self.compact else 16)
+        self.body.set_margin_bottom(12 if self.compact else 16)
         scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        scroll.set_child(self.body)
+        clamp = Adw.Clamp(maximum_size=550, tightening_threshold=430)
+        clamp.set_child(self.body)
+        scroll.set_child(clamp)
         self.view.set_content(scroll)
+
+    def set_actions(self, *buttons):
+        if child := self.footer.get_first_child():
+            self.footer.remove(child)
+        self.footer.set_visible(bool(buttons))
+        if buttons:
+            self.footer.append(action_bar(*buttons))
 
     def on_log(self, line):
         GLib.idle_add(self.append_log, line)
@@ -144,25 +180,48 @@ class Window(Adw.ApplicationWindow):
         self.log_buffer = buffer
         text = Gtk.TextView(buffer=buffer, editable=False, monospace=True,
                             cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
-        scroll = Gtk.ScrolledWindow(min_content_height=150)
+        scroll = Gtk.ScrolledWindow(min_content_height=128, css_classes=["flatapk-logs"])
         scroll.set_child(text)
         expander = Gtk.Expander(label=_("Show details"))
-        expander.set_child(scroll)
+        content = vertical(8)
+        content.set_margin_top(8)
+        content.append(scroll)
+        copy = button(_("_Copy log"), lambda: self.get_clipboard().set("\n".join(self.log)), "flat")
+        copy.set_halign(Gtk.Align.END)
+        content.append(copy)
+        expander.set_child(content)
         self.body.append(expander)
-        self.body.append(button(_("_Copy log"), lambda: self.get_clipboard().set("\n".join(self.log))))
 
     def shell(self, heading, description, icon_name):
-        row = Gtk.Box(spacing=12)
+        row = Gtk.Box(spacing=12, css_classes=["flatapk-surface", "flatapk-hero"])
         icon = Gtk.Image.new_from_icon_name(icon_name)
-        icon.set_pixel_size(42)
-        row.append(icon)
+        icon.set_pixel_size(32)
+        tile = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["flatapk-icon-tile"])
+        tile.set_hexpand(False)
+        icon.set_hexpand(True)
+        tile.append(icon)
+        row.append(tile)
         words = vertical(4)
+        words.set_valign(Gtk.Align.CENTER)
+        words.set_hexpand(True)
         words.append(label(heading, "title-2"))
         if description:
             words.append(label(description, "dim-label"))
         row.append(words)
         self.body.append(row)
         return icon
+
+    def signature_notice(self, verified):
+        text = (_("Signature verified with a trusted key.") if verified else
+                _("Signature could not be verified. Install only if you trust the source."))
+        icon = "emblem-ok-symbolic" if verified else "dialog-warning-symbolic"
+        classes = ["flatapk-notice", "success-note"] if verified else ["flatapk-notice"]
+        notice = Gtk.Box(spacing=8, css_classes=classes)
+        image = Gtk.Image.new_from_icon_name(icon)
+        image.add_css_class("success" if verified else "warning")
+        notice.append(image)
+        notice.append(label(text))
+        self.body.append(notice)
 
     def open_package(self, path):
         self.reset()
@@ -175,36 +234,45 @@ class Window(Adw.ApplicationWindow):
     def confirm(self, result):
         package, plan = result
         self.reset()
+        if self.compact:
+            self.set_default_size(466, 434 if plan.method == "wine" else 370)
         icon = self.shell(package.name, package.version or package.path.name,
                           "package-x-generic-symbolic")
         if package.icon:
             try:
-                icon.set_from_paintable(Gdk.Texture.new_from_bytes(GLib.Bytes.new(package.icon)))
+                stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(package.icon))
+                pixbuf = GdkPixbuf.Pixbuf.new_from_stream_at_scale(stream, 42, 42, True, None)
+                icon.set_from_pixbuf(pixbuf)
             except GLib.Error:
                 pass
         if package.description:
             self.body.append(label(package.description))
         size = GLib.format_size(package.fingerprint[2])
         architecture = package.architecture or _("Unknown architecture")
-        self.body.append(label(f"{package.path.name}  ·  {size}  ·  {package.kind.upper()}  ·  {architecture}", "dim-label"))
+        facts = Gtk.Box(spacing=6)
+        for value in (package.kind.upper(), size, architecture):
+            facts.append(label(value, "flatapk-pill"))
+        self.body.append(facts)
         method = methods()[plan.method]
         if plan.family and plan.method == "toolbox":
             method += f" · {plan.family.capitalize()}"
-        self.body.append(label(method))
-        origin = label(str(package.path.parent), "dim-label")
+        info = vertical(4)
+        info.append(label(method, "heading"))
+        origin = label(str(package.path), "dim-label")
         origin.set_selectable(True)
-        self.body.append(origin)
-        if package.signature == "verified":
-            self.body.append(label(_("Signature verified with a trusted key."), "success"))
-        else:
-            self.body.append(label(_("Signature could not be verified. Install only if you trust the source."), "warning"))
+        origin.set_lines(2)
+        origin.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        info.append(origin)
+        self.body.append(info)
+        self.signature_notice(package.signature == "verified")
         if plan.method == "native":
-            self.body.append(label(_("The system will ask you to authorize this installation with polkit.")))
-        elif plan.method in {"toolbox", "wine"}:
-            self.body.append(label(_("The program can access your home folder.")))
+            self.body.append(label(_("The system will ask you to authorize this installation with polkit."), "dim-label"))
+        elif plan.method == "toolbox":
+            self.body.append(label(_("The program can access your home folder."), "dim-label"))
         if plan.method == "wine":
-            self.body.append(label(_("If Wine is missing, Flatapk downloads Wine from Flathub for your account."),
-                                   "dim-label"))
+            self.body.append(label(_(
+                "Windows programs can access your home folder. If needed, Flatapk downloads Wine from Flathub for your account."),
+                "dim-label"))
         if plan.multilib:
             self.body.append(label(_("Extra 32-bit components may be downloaded.")))
         runtime = Gtk.Entry(placeholder_text=_("Default Wine, or an absolute path to wine or proton"))
@@ -223,7 +291,7 @@ class Window(Adw.ApplicationWindow):
                 package, plan, self.step, self.select_executable, selected_runtime))
 
         install = button(_("_Install"), install_package, "suggested-action")
-        actions = [button(_("_Cancel"), self.close)]
+        actions = [button(_("_Cancel"), self.close, "flat")]
         if package.kind == "exe":
             def add_game():
                 selected_runtime = runtime.get_text().strip() or "wine"
@@ -231,7 +299,7 @@ class Window(Adw.ApplicationWindow):
                     package, self.step, selected_runtime))
 
             actions.append(button(_("_Add game to menu"), add_game))
-        self.body.append(action_bar(*actions, install))
+        self.set_actions(*actions, install)
         self.set_default_widget(install)
         install.grab_focus()
 
@@ -267,8 +335,11 @@ class Window(Adw.ApplicationWindow):
         self.shell(title, "", "software-install-symbolic")
         self.status = label(_("Preparing the environment"))
         self.progress = Gtk.ProgressBar(show_text=True)
-        self.body.append(self.status)
-        self.body.append(self.progress)
+        progress_card = vertical(8)
+        progress_card.add_css_class("flatapk-surface")
+        progress_card.append(self.status)
+        progress_card.append(self.progress)
+        self.body.append(progress_card)
         self.details()
         self.run_job(task, lambda result: self.show_result(app=result))
 
@@ -294,7 +365,7 @@ class Window(Adw.ApplicationWindow):
         actions = [button(_("_Close"), self.close)]
         if app and app["exports"]:
             actions.append(button(_("_Open program"), lambda: self.launch(app), "suggested-action"))
-        self.body.append(action_bar(*actions))
+        self.set_actions(*actions)
 
     def launch(self, app):
         export = app["exports"][0]
@@ -366,49 +437,67 @@ class Window(Adw.ApplicationWindow):
 
     def manage(self):
         self.reset()
-        self.set_default_size(540, 390)
-        group = Adw.PreferencesGroup(title=_("Installed programs"))
-        self.body.append(group)
         apps = self.installer.registry.apps()
-        if not apps:
-            self.body.append(label(_("Open a package file to install your first program."), "dim-label"))
-        for app in sorted(apps, key=lambda item: item["name"].casefold()):
-            row = Adw.ActionRow(title=GLib.markup_escape_text(app["name"]),
-                                subtitle=GLib.markup_escape_text(methods()[app["method"]]))
-            icon_name = app["exports"][0]["icon"] if app["exports"] else DEFAULT_APP_ICON
-            row.add_prefix(installed_icon(icon_name))
-            row.add_suffix(button(_("_Open"), lambda app=app: self.launch(app)))
-            if app.get("game_shortcut"):
-                row.add_suffix(button(_("_Remove shortcut"), lambda app=app: self.confirm_action(
-                    _("Remove the shortcut for {}?").format(app["name"]),
-                    _("The game files stay in their original folder."),
-                    lambda: self.begin(_("Removing shortcut"), lambda: self.installer.uninstall(app, self.step)),
-                    destructive=True, response_text=_("_Remove shortcut"))))
-            else:
-                row.add_suffix(button(_("_Uninstall"), lambda app=app: self.confirm_action(
-                    _("Uninstall {}?").format(app["name"]), _("This removes the program and its shortcuts."),
-                    lambda: self.begin(_("Uninstalling"), lambda: self.installer.uninstall(app, self.step)),
-                    destructive=True, response_text=_("_Uninstall"))))
-            if app["method"] == "wine":
-                row.add_suffix(button(_("_Settings"), lambda app=app: self.settings(app)))
-            group.add(row)
-        self.body.append(button(_("_Open package"), self.file_dialog, "suggested-action"))
-        self.body.append(button(_("Clean _unused Toolbox environments"), lambda: self.confirm_action(
+        open_package = button(_("_Open package"), self.file_dialog, "suggested-action")
+        self.header.pack_start(open_package)
+        tools = [(_("Clean unused Toolbox environments"), lambda: self.confirm_action(
             _("Clean unused Toolbox environments?"),
             _("Flatapk removes its Toolbox containers that have no registered programs."),
-            lambda: self.begin(_("Cleaning environments"), lambda: self.installer.clean(self.step)))))
+            lambda: self.begin(_("Cleaning environments"), lambda: self.installer.clean(self.step))))]
         if any(app["method"] == "wine" and not app.get("game_shortcut") for app in apps):
-            self.body.append(button(_("_Repair Wine prefix"), lambda: self.confirm_action(
+            tools.append((_("Repair Wine prefix"), lambda: self.confirm_action(
                 _("Rebuild the shared Wine prefix?"),
                 _("This runs every saved installer again. Settings and files inside the old prefix can be lost."),
                 lambda: self.begin(_("Repairing Wine prefix"), lambda: self.installer.repair_wine(self.step)),
                 destructive=True)))
         if (self.installer.data / "wine/undo/app-id").is_file():
-            self.body.append(button(_("Undo last _Wine installation"), lambda: self.confirm_action(
+            tools.append((_("Undo last Wine installation"), lambda: self.confirm_action(
                 _("Restore the last Wine snapshot?"),
                 _("This removes the most recently installed Windows program and restores the saved prefix."),
                 lambda: self.begin(_("Restoring Wine prefix"), lambda: self.installer.undo_wine(self.step)),
                 destructive=True)))
+        overflow = menu_button(_("Maintenance options"), tools)
+        self.header.pack_end(overflow)
+        self.header_controls = [open_package, overflow]
+
+        if not apps:
+            self.body.append(Adw.StatusPage(
+                title=_("No programs installed"),
+                description=_("Open a package file to install your first program."),
+                icon_name="package-x-generic-symbolic", css_classes=["compact"]))
+            return
+        self.shell(_("Installed programs"), "", "view-grid-symbolic")
+        group = Adw.PreferencesGroup()
+        for app in sorted(apps, key=lambda item: item["name"].casefold()):
+            group.add(self.program_row(app))
+        self.body.append(group)
+
+    def program_row(self, app):
+        subtitle = _("Game shortcut") if app.get("game_shortcut") else methods()[app["method"]]
+        row = Adw.ActionRow(title=GLib.markup_escape_text(app["name"]),
+                            subtitle=GLib.markup_escape_text(subtitle), css_classes=["flatapk-program"])
+        icon_name = app["exports"][0]["icon"] if app["exports"] else DEFAULT_APP_ICON
+        row.add_prefix(installed_icon(icon_name))
+        open_program = button(_("_Open"), lambda: self.launch(app), "flat")
+        open_program.set_valign(Gtk.Align.CENTER)
+        row.add_suffix(open_program)
+        row.set_activatable_widget(open_program)
+        options = []
+        if app["method"] == "wine":
+            options.append((_("Settings"), lambda: self.settings(app)))
+        if app.get("game_shortcut"):
+            options.append((_("Remove shortcut"), lambda: self.confirm_action(
+                _("Remove the shortcut for {}?").format(app["name"]),
+                _("The game files stay in their original folder."),
+                lambda: self.begin(_("Removing shortcut"), lambda: self.installer.uninstall(app, self.step)),
+                destructive=True, response_text=_("_Remove shortcut"))))
+        else:
+            options.append((_("Uninstall"), lambda: self.confirm_action(
+                _("Uninstall {}?").format(app["name"]), _("This removes the program and its shortcuts."),
+                lambda: self.begin(_("Uninstalling"), lambda: self.installer.uninstall(app, self.step)),
+                destructive=True, response_text=_("_Uninstall"))))
+        row.add_suffix(menu_button(_("Program options"), options))
+        return row
 
 
 class Application(Adw.Application):
@@ -416,8 +505,15 @@ class Application(Adw.Application):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE)
 
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        provider = Gtk.CssProvider()
+        provider.load_from_path(str(Path(__file__).with_name("style.css")))
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
     def do_activate(self):
-        window = Window(self)
+        window = Window(self, compact=False)
         if window.installer.appimages_missing_icons():
             window.shell(_("Updating AppImage icons"), "", "image-x-generic-symbolic")
             window.body.append(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER))

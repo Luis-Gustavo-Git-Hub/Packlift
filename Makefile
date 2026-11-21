@@ -15,6 +15,7 @@ test:
 install: locale
 	install -d "$(DESTDIR)$(APP_DIR)/flatapk" "$(DESTDIR)$(APP_DIR)/locale/pt_BR/LC_MESSAGES" "$(DESTDIR)$(PREFIX)/bin"
 	install -m 644 flatapk/*.py "$(DESTDIR)$(APP_DIR)/flatapk"
+	install -m 644 flatapk/style.css "$(DESTDIR)$(APP_DIR)/flatapk"
 	install -m 644 locale/pt_BR/LC_MESSAGES/flatapk.mo "$(DESTDIR)$(APP_DIR)/locale/pt_BR/LC_MESSAGES"
 	sed 's|@APP_DIR@|$(APP_DIR)|g' data/flatapk.in > "$(DESTDIR)$(PREFIX)/bin/flatapk"
 	chmod 755 "$(DESTDIR)$(PREFIX)/bin/flatapk"
