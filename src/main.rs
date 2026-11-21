@@ -192,7 +192,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 fn open_package(app: &adw::Application, path: &Path) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(470, 500);
+    window.set_default_size(470, 440);
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
