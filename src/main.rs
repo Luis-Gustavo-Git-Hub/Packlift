@@ -655,7 +655,7 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
 fn open_package(app: &adw::Application, path: &Path) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(470, 440);
+    window.set_default_size(470, -1);
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -778,6 +778,9 @@ fn open_package(app: &adw::Application, path: &Path) {
             }
             let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             actions.set_halign(gtk::Align::End);
+            actions.set_margin_start(16);
+            actions.set_margin_end(16);
+            actions.set_margin_bottom(16);
             let cancel = gtk::Button::with_label("Cancel");
             let weak_window = window.downgrade();
             cancel.connect_clicked(move |_| {
@@ -890,7 +893,7 @@ fn open_package(app: &adw::Application, path: &Path) {
                 }
             });
             actions.append(&install);
-            body.append(&actions);
+            toolbar.add_bottom_bar(&actions);
         }
         Err(error) => {
             if matches!(error, PackliftError::HostAccessRequired) && !cfg!(feature = "sandbox-only")
@@ -923,6 +926,8 @@ fn open_package(app: &adw::Application, path: &Path) {
     }
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_max_content_height(480);
     scroll.set_child(Some(&body));
     toolbar.set_content(Some(&scroll));
     window.set_content(Some(&toolbar));
