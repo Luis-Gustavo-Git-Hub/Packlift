@@ -684,14 +684,9 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
         }
     });
     actions.append(&close);
-    let open = gtk::Button::with_label(if is_game {
-        "Launch game"
-    } else {
-        "Open program"
-    });
+    let open = gtk::Button::with_label("Open");
     open.add_css_class("suggested-action");
     let record = record.clone();
-    let open_app = app.clone();
     let weak_window = window.downgrade();
     open.connect_clicked(move |_| {
         if let Err(error) = installer().and_then(|manager| manager.launch(&record)) {
@@ -699,7 +694,7 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
                 show_error(&window, &error.to_string());
             }
         } else if let Some(window) = weak_window.upgrade() {
-            render_home(&open_app, &window);
+            window.close();
         }
     });
     actions.append(&open);
