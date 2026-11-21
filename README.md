@@ -10,7 +10,7 @@ Packlift is a GTK4 and libadwaita app for installing Linux packages and adding W
 | `.rpm` | DNF on Fedora and RHEL-based distributions, or Zypper on openSUSE. Other distributions use a Fedora Toolbx container. |
 | `.pkg.tar.zst` | Pacman on Arch Linux or in an Arch Toolbx container. |
 | `.AppImage` | Stored as an executable in Packlift's data directory. Type 2 AppImages run in extraction mode. |
-| `.tar.gz`, `.tar.xz` | Extracted locally. Packlift asks you to choose when it finds multiple executables. |
+| `.tar.gz`, `.tar.xz` | Extracted locally and launched with a compatible executable. |
 | `.exe`, `.msi`, `.setup` | Run a Windows installer with Wine or Proton. Existing `.exe` games can be added directly to the applications menu. |
 
 ## Install Packlift
@@ -52,14 +52,15 @@ Packlift calculates the SHA-256 digest of the package prepared for installation 
 
 ## Development
 
-To run from source, install Python 3.11 or later, PyGObject with GTK 4.10 or later and libadwaita 1.4 or later, `bsdtar`/libarchive, and any tools for the package formats you want to use (`dpkg-deb`, `msiinfo`, `unsquashfs`, and `zstd`). Install gettext to compile translations.
+Packlift's application and installer are written in Rust. To build locally, install Rust 1.85 or later, GTK 4.10 or later, libadwaita 1.4 or later, and the package inspection tools used by the formats you want to work with.
 
 ```sh
-make locale
-python3 -m flatapk
-python3 -m flatapk /path/to/package.deb
-make test
+cargo build --locked --features gui
+cargo run --locked --features gui
+cargo run --locked --features gui -- /path/to/package.deb
 ```
+
+`make test` still runs the Python compatibility checks while the migration is being completed. The Flatpak build uses the GNOME SDK Rust extension and the checked-in Cargo lockfile and crate source list.
 
 To build the x86-64 Flatpak locally, add Flathub and run:
 

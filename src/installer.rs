@@ -1,0 +1,1462 @@
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
+
+use serde_json::{json, Value};
+
+use crate::{
+    core::{architecture_group, detect, Package, PackliftError, Result},
+    system::{export_desktop, operation, remove_exports, sha256, Registry, Runner},
+};
+
+const FLATPAK_WINE: &str = "org.winehq.Wine//wow64-25.08";
+
+#[derive(Clone)]
+pub struct Installer {
+    pub data: PathBuf,
+    pub applications: PathBuf,
+    pub runner: Runner,
+    pub registry: Registry,
+}
+
+impl Installer {
+    pub fn new(
+        output: crate::system::LogHandler,
+        data: Option<PathBuf>,
+        applications: Option<PathBuf>,
+    ) -> Result<Self> {
+        let data = data.unwrap_or_else(|| crate::system::data_home().join("flatapk"));
+        let applications =
+            applications.unwrap_or_else(|| crate::system::data_home().join("applications"));
+        let runner = Runner::new(Some(data.clone()), output)?;
+        let registry = Registry::new(&data)?;
+        Ok(Self {
+            data,
+            applications,
+            runner,
+            registry,
+        })
+    }
+
+    pub fn preferences(&self) -> (String, String) {
+        let path = self.data.join("preferences.json");
+        let Ok(value) = fs::read_to_string(path) else {
+            return ("wine".into(), String::new());
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&value) else {
+            return ("wine".into(), String::new());
+        };
+        (
+            value["runtime"].as_str().unwrap_or("wine").into(),
+            String::new(),
+        )
+    }
+
+    pub fn save_preferences(&self, runtime: &str) -> Result<()> {
+        if runtime != "wine" && runtime != "proton" {
+            return Err(PackliftError::Message("Choose Wine or Proton.".into()));
+        }
+        let temporary = self.data.join("preferences.tmp");
+        fs::write(
+            &temporary,
+            serde_json::to_vec(&json!({"runtime": runtime, "proton_path": ""}))?,
+        )?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+        fs::rename(temporary, self.data.join("preferences.json"))?;
+        Ok(())
+    }
+
+    pub fn probe(&self, path: &Path) -> Result<(Package, crate::core::Plan)> {
+        let (kind, architecture) = detect(path)?;
+        let mut package = Package {
+            path: path.to_owned(),
+            kind: kind.clone(),
+            name: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Program")
+                .to_owned(),
+            architecture,
+            signature: "unknown".into(),
+            ..Default::default()
+        };
+        package.digest = sha256(path)?;
+        match kind.as_str() {
+            "deb" => self.inspect_deb(&mut package)?,
+            "rpm" => self.inspect_rpm(&mut package)?,
+            "arch" => self.inspect_arch(&mut package)?,
+            "msi" => self.inspect_msi(&mut package)?,
+            "tar" => self.inspect_archive(&mut package)?,
+            _ => {}
+        }
+        self.verify_integrity(&mut package)?;
+        if ["deb", "rpm", "arch"].contains(&kind.as_str())
+            && (!valid_package_identifier(&package.identifier)
+                || package.version.is_empty()
+                || package.architecture.is_empty())
+        {
+            return Err(PackliftError::Message(
+                "The package is missing required name, version, or architecture metadata.".into(),
+            ));
+        }
+        let release = self
+            .runner
+            .capture(&["cat".into(), "/etc/os-release".into()], false)
+            .unwrap_or_default();
+        let machine = if self.runner.sandbox {
+            self.runner.capture(
+                &[
+                    "flatpak-spawn".into(),
+                    "--host".into(),
+                    "uname".into(),
+                    "-m".into(),
+                ],
+                true,
+            )?
+        } else {
+            std::env::consts::ARCH.to_owned()
+        };
+        let host = crate::core::host_info(
+            &release,
+            machine.trim(),
+            Path::new("/run/ostree-booted").exists(),
+        );
+        let plan = crate::core::plan_for(&package, &host)?;
+        Ok((package, plan))
+    }
+
+    fn verify_integrity(&self, package: &mut Package) -> Result<()> {
+        let sidecar = PathBuf::from(format!("{}.sha256", package.path.display()));
+        if sidecar.is_file() {
+            let contents = fs::read_to_string(sidecar)?;
+            let expected = contents.split_whitespace().next().unwrap_or("");
+            if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(PackliftError::Message(
+                    "The SHA-256 sidecar is invalid.".into(),
+                ));
+            }
+            package.checksum = expected.to_ascii_lowercase();
+            if package.checksum != package.digest {
+                return Err(PackliftError::Message(
+                    "The package SHA-256 does not match its .sha256 file.".into(),
+                ));
+            }
+        }
+        if package.kind == "rpm" {
+            if let Ok(output) = self.runner.capture(
+                &[
+                    "rpmkeys".into(),
+                    "--checksig".into(),
+                    "--verbose".into(),
+                    package.path.display().to_string(),
+                ],
+                false,
+            ) {
+                if output.lines().any(|line| {
+                    line.to_ascii_lowercase().contains("signature")
+                        && line.to_ascii_lowercase().contains("ok")
+                }) {
+                    package.signature = "verified".into();
+                }
+            }
+        }
+        let signature = ["sig", "asc"]
+            .into_iter()
+            .map(|extension| PathBuf::from(format!("{}.{}", package.path.display(), extension)))
+            .find(|path| path.is_file());
+        let keyring = self.data.join("trustedkeys.gpg");
+        if let Some(signature) = signature.filter(|_| keyring.is_file()) {
+            self.runner.capture(
+                &[
+                    "gpgv".into(),
+                    "--keyring".into(),
+                    keyring.display().to_string(),
+                    signature.display().to_string(),
+                    package.path.display().to_string(),
+                ],
+                false,
+            )?;
+            package.signature = "verified".into();
+        }
+        Ok(())
+    }
+
+    fn inspect_deb(&self, package: &mut Package) -> Result<()> {
+        let output = if self.runner.available("dpkg-deb") && !self.runner.sandbox {
+            self.runner.capture(
+                &[
+                    "dpkg-deb".into(),
+                    "--field".into(),
+                    package.path.to_string_lossy().into_owned(),
+                ],
+                true,
+            )?
+        } else {
+            let listing = self.runner.capture(
+                &[
+                    "bsdtar".into(),
+                    "-tf".into(),
+                    package.path.display().to_string(),
+                ],
+                true,
+            )?;
+            let member = listing
+                .lines()
+                .find(|name| {
+                    name.starts_with("control.tar")
+                        && name
+                            .strip_prefix("control.tar")
+                            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+                })
+                .ok_or_else(|| {
+                    PackliftError::Message(
+                        "The Debian package is missing its control archive.".into(),
+                    )
+                })?;
+            let script = if member.ends_with(".zst") {
+                format!(
+                    "bsdtar -xOf {} {} | zstd -dc | bsdtar -xOf - ./control control",
+                    crate::system::shell_quote(&package.path.display().to_string()),
+                    crate::system::shell_quote(member)
+                )
+            } else {
+                format!(
+                    "bsdtar -xOf {} {} | bsdtar -xOf - ./control control",
+                    crate::system::shell_quote(&package.path.display().to_string()),
+                    crate::system::shell_quote(member)
+                )
+            };
+            self.runner
+                .capture(&["/bin/sh".into(), "-c".into(), script], true)?
+        };
+        let fields = crate::core::control_fields(&output, ':');
+        package.name = fields
+            .get("Package")
+            .cloned()
+            .unwrap_or(package.name.clone());
+        package.identifier = package.name.clone();
+        package.version = fields.get("Version").cloned().unwrap_or_default();
+        package.architecture = fields.get("Architecture").cloned().unwrap_or_default();
+        package.description = fields.get("Description").cloned().unwrap_or_default();
+        package.requires = ["Pre-Depends", "Depends"]
+            .into_iter()
+            .filter_map(|key| fields.get(key))
+            .flat_map(|deps| deps.split(',').map(|value| value.trim().to_owned()))
+            .filter(|value| !value.is_empty())
+            .collect();
+        Ok(())
+    }
+
+    fn inspect_rpm(&self, package: &mut Package) -> Result<()> {
+        let mut file = fs::File::open(&package.path)?;
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(96))?;
+        read_rpm_header(&mut file)?;
+        let offset = file.stream_position()?;
+        file.seek(SeekFrom::Start(offset + ((8 - offset % 8) % 8)))?;
+        let (tags, data) = read_rpm_header(&mut file)?;
+        package.name = rpm_string(&tags, &data, 1000).unwrap_or_else(|| package.name.clone());
+        package.identifier = package.name.clone();
+        let version = rpm_string(&tags, &data, 1001).unwrap_or_default();
+        let release = rpm_string(&tags, &data, 1002).unwrap_or_default();
+        package.version = [version, release]
+            .into_iter()
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        package.architecture = rpm_string(&tags, &data, 1022).unwrap_or_default();
+        package.description = rpm_string(&tags, &data, 1004).unwrap_or_default();
+        package.requires = rpm_strings(&tags, &data, 1049);
+        Ok(())
+    }
+
+    fn inspect_arch(&self, package: &mut Package) -> Result<()> {
+        let output = self.runner.capture(
+            &[
+                "bsdtar".into(),
+                "-xOf".into(),
+                package.path.display().to_string(),
+                ".PKGINFO".into(),
+            ],
+            true,
+        )?;
+        let fields = crate::core::control_fields(&output, '=');
+        package.name = fields
+            .get("pkgname")
+            .cloned()
+            .unwrap_or(package.name.clone());
+        package.identifier = package.name.clone();
+        package.version = fields.get("pkgver").cloned().unwrap_or_default();
+        package.architecture = fields.get("arch").cloned().unwrap_or_default();
+        package.requires = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("depend = ").map(str::to_owned))
+            .collect();
+        Ok(())
+    }
+
+    fn inspect_msi(&self, package: &mut Package) -> Result<()> {
+        if let Ok(output) = self.runner.capture(
+            &[
+                "msiinfo".into(),
+                "export".into(),
+                package.path.to_string_lossy().into_owned(),
+                "Property".into(),
+            ],
+            true,
+        ) {
+            let properties = output
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .collect::<std::collections::HashMap<_, _>>();
+            package.name = properties
+                .get("ProductName")
+                .copied()
+                .unwrap_or(&package.name)
+                .into();
+            package.version = properties
+                .get("ProductVersion")
+                .copied()
+                .unwrap_or_default()
+                .into();
+            package.identifier = properties
+                .get("ProductCode")
+                .copied()
+                .unwrap_or_default()
+                .into();
+        }
+        if let Ok(output) = self.runner.capture(
+            &[
+                "msiinfo".into(),
+                "suminfo".into(),
+                package.path.display().to_string(),
+            ],
+            true,
+        ) {
+            if let Some(value) = output.lines().find_map(|line| {
+                line.strip_prefix("Template:")
+                    .or_else(|| line.strip_prefix("Architecture:"))
+            }) {
+                package.architecture = match value.trim().split(';').next().unwrap_or("") {
+                    "Intel" => "win32".into(),
+                    "x64" => "win64".into(),
+                    other => other.into(),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn inspect_archive(&self, package: &mut Package) -> Result<()> {
+        let output = self.runner.capture(
+            &[
+                "bsdtar".into(),
+                "-tf".into(),
+                package.path.to_string_lossy().into_owned(),
+            ],
+            true,
+        )?;
+        let executable = output
+            .lines()
+            .find(|line| line.to_ascii_lowercase().ends_with(".exe"));
+        if let Some(path) = executable {
+            package.name = Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&package.name)
+                .to_owned();
+        } else if let Some(name) = package.path.file_name().and_then(|s| s.to_str()) {
+            package.name = name
+                .trim_end_matches(".tar.gz")
+                .trim_end_matches(".tar.xz")
+                .trim_end_matches(".tar")
+                .to_owned();
+        }
+        Ok(())
+    }
+
+    pub fn install_package(&self, package: &Package, runtime: &str) -> Result<Value> {
+        let machine = self.machine()?;
+        let release = self
+            .runner
+            .capture(&["cat".into(), "/etc/os-release".into()], false)
+            .unwrap_or_default();
+        let host =
+            crate::core::host_info(&release, &machine, Path::new("/run/ostree-booted").exists());
+        let plan = crate::core::plan_for(package, &host)?;
+        match plan.method.as_str() {
+            "wine" => self.install_windows_program(package, runtime, &machine),
+            "local" => self.install_local(package, &machine),
+            "native" | "toolbox" => self.install_system_package(package, &plan),
+            _ => Err(PackliftError::Message(
+                "Unsupported package installation plan.".into(),
+            )),
+        }
+    }
+
+    fn install_system_package(&self, package: &Package, plan: &crate::core::Plan) -> Result<Value> {
+        let _operation = operation(&self.data)?;
+        let container = if plan.method == "toolbox" {
+            self.ensure_toolbox(&plan.family)?
+        } else {
+            String::new()
+        };
+        let target = package_target(package, &plan.manager);
+        if already_installed(&self.runner, &plan.manager, &target, &container)? {
+            return Err(PackliftError::Message(
+                "This system package is already installed.".into(),
+            ));
+        }
+        if plan.multilib && plan.manager == "apt" {
+            let foreign = package_capture(
+                &self.runner,
+                &container,
+                &["dpkg".into(), "--print-foreign-architectures".into()],
+            )?;
+            if !foreign.split_whitespace().any(|value| value == "i386") {
+                elevated(
+                    &self.runner,
+                    &container,
+                    &["dpkg".into(), "--add-architecture".into(), "i386".into()],
+                )?;
+            }
+        }
+        let source = package.path.to_string_lossy().into_owned();
+        if plan.manager == "apt" {
+            elevated(
+                &self.runner,
+                &container,
+                &[
+                    "apt-get".into(),
+                    "install".into(),
+                    "--no-remove".into(),
+                    "--download-only".into(),
+                    "-y".into(),
+                    source.clone(),
+                ],
+            )?;
+        } else if plan.manager == "dnf" {
+            elevated(
+                &self.runner,
+                &container,
+                &[
+                    "dnf".into(),
+                    "install".into(),
+                    "--downloadonly".into(),
+                    "-y".into(),
+                    source.clone(),
+                ],
+            )?;
+        }
+        let mut command: Vec<String> = match plan.manager.as_str() {
+            "apt" => ["apt-get", "install", "--no-remove", "-y"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            "dnf" => ["dnf", "install", "-y"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            "zypper" => ["zypper", "--non-interactive", "install"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            "pacman" => ["pacman", "-U", "--noconfirm", "--"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            _ => {
+                return Err(PackliftError::Message(
+                    "Unsupported package manager.".into(),
+                ))
+            }
+        };
+        command.push(source);
+        elevated(&self.runner, &container, &command)?;
+        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
+        let directory = self.data.join("installed").join(&identifier);
+        fs::create_dir_all(&directory)?;
+        let launchers =
+            system_launchers(&self.runner, package, &plan.manager, &target, &container)?;
+        let exports = self.write_exports(&identifier, &launchers, "Utility")?;
+        let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
+            "method":plan.method,"manager":plan.manager,"target":target,"container":container,
+            "source":package.path,"digest":package.digest,"directory":directory,"exports":exports});
+        self.registry.save(&app)?;
+        Ok(app)
+    }
+
+    fn ensure_toolbox(&self, family: &str) -> Result<String> {
+        if !self.runner.available("toolbox") || !self.runner.available("podman") {
+            return Err(PackliftError::Message(
+                "Install Toolbox and Podman on the host before continuing.".into(),
+            ));
+        }
+        let name = format!("flatapk-{family}");
+        let result = self.runner.run(
+            &[
+                "podman".into(),
+                "container".into(),
+                "exists".into(),
+                name.clone(),
+            ],
+            false,
+            true,
+            false,
+        )?;
+        if result.status.success() {
+            if !self.registry.containers()?.contains(&name) {
+                return Err(PackliftError::Message(format!(
+                    "Toolbox container {name} already exists outside Packlift."
+                )));
+            }
+            return Ok(name);
+        }
+        let image = std::env::var(format!("FLATAPK_{}_IMAGE", family.to_ascii_uppercase()))
+            .unwrap_or_else(|_| match family {
+                "ubuntu" => "quay.io/toolbx/ubuntu-toolbox:24.04".into(),
+                "fedora" => "registry.fedoraproject.org/fedora-toolbox:43".into(),
+                _ => "quay.io/toolbx/arch-toolbox:latest".into(),
+            });
+        self.runner.run(
+            &["podman".into(), "pull".into(), image.clone()],
+            false,
+            true,
+            true,
+        )?;
+        self.runner.run(
+            &[
+                "toolbox".into(),
+                "create".into(),
+                "--container".into(),
+                name.clone(),
+                "--image".into(),
+                image,
+            ],
+            false,
+            true,
+            true,
+        )?;
+        self.registry.add_container(&name)?;
+        Ok(name)
+    }
+
+    fn write_exports(
+        &self,
+        id: &str,
+        launchers: &[(String, Vec<String>, String, bool)],
+        category: &str,
+    ) -> Result<Vec<Value>> {
+        let mut exports = Vec::new();
+        for (index, (name, argv, icon, terminal)) in launchers.iter().enumerate() {
+            let path = self
+                .applications
+                .join(format!("io.github.flatapk.Installer.{id}.{index}.desktop"));
+            let displayed_icon = if icon.is_empty() {
+                "application-x-executable"
+            } else {
+                icon
+            };
+            export_desktop(&path, name, argv, displayed_icon, *terminal, category)?;
+            exports.push(json!({"desktop":path,"name":name,"icon":displayed_icon,"argv":argv,"terminal":terminal}));
+        }
+        Ok(exports)
+    }
+
+    fn install_local(&self, package: &Package, machine: &str) -> Result<Value> {
+        let _operation = operation(&self.data)?;
+        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
+        if self
+            .registry
+            .apps()?
+            .iter()
+            .any(|app| app["id"] == identifier)
+        {
+            return Err(PackliftError::Message(
+                "This program is already registered in Packlift.".into(),
+            ));
+        }
+        let directory = self.data.join("installed").join(&identifier);
+        fs::create_dir_all(&directory)?;
+        let (argv, terminal) = if package.kind == "appimage" {
+            let target = directory.join("program.AppImage");
+            fs::copy(&package.path, &target)?;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+            (
+                vec![
+                    target.to_string_lossy().into_owned(),
+                    "--appimage-extract-and-run".into(),
+                ],
+                false,
+            )
+        } else if package.kind == "tar" {
+            let payload = directory.join("payload");
+            fs::create_dir_all(&payload)?;
+            let targets = unpack_archive(&package.path, &payload)?;
+            let host_arch = architecture_group(machine);
+            let target = targets
+                .into_iter()
+                .find(|target| {
+                    let Ok(mut file) = fs::File::open(target) else {
+                        return false;
+                    };
+                    let mut header = [0; 20];
+                    let Ok(count) = std::io::Read::read(&mut file, &mut header) else {
+                        return false;
+                    };
+                    let arch = crate::core::elf_architecture(&header[..count]);
+                    arch == host_arch || (host_arch == "x86_64" && arch == "x86")
+                })
+                .ok_or_else(|| {
+                    PackliftError::Message(
+                        "The archive has no executable compatible with this computer.".into(),
+                    )
+                })?;
+            (
+                vec![
+                    "env".into(),
+                    "-C".into(),
+                    target.parent().unwrap_or(&payload).to_string_lossy().into(),
+                    target.to_string_lossy().into_owned(),
+                ],
+                false,
+            )
+        } else {
+            return Err(PackliftError::Message(
+                "This local package format is not available in the Rust build yet.".into(),
+            ));
+        };
+        let export = self.applications.join(format!(
+            "io.github.flatapk.Installer.{identifier}.0.desktop"
+        ));
+        export_desktop(
+            &export,
+            &package.name,
+            &argv,
+            "application-x-executable",
+            terminal,
+            "Utility",
+        )?;
+        let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
+            "method":"local","source":package.path,"digest":package.digest,"directory":directory,
+            "exports":[{"desktop":export,"name":package.name,"icon":"application-x-executable","argv":argv,"terminal":terminal}]});
+        self.registry.save(&app)?;
+        Ok(app)
+    }
+
+    fn install_windows_program(
+        &self,
+        package: &Package,
+        runtime: &str,
+        machine: &str,
+    ) -> Result<Value> {
+        if !["exe", "setup", "msi"].contains(&package.kind.as_str()) {
+            return Err(PackliftError::Message("Choose a Windows installer.".into()));
+        }
+        let _operation = operation(&self.data)?;
+        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
+        if self
+            .registry
+            .apps()?
+            .iter()
+            .any(|app| app["id"] == identifier)
+        {
+            return Err(PackliftError::Message(
+                "This program is already registered in Packlift.".into(),
+            ));
+        }
+        let runtime = self.windows_runtime(runtime, machine)?;
+        let wine = Wine::new(
+            self.runner.clone(),
+            runtime,
+            &self.data,
+            &self.applications,
+            machine,
+        );
+        wine.prepare()?;
+        let cwd = package.path.parent().unwrap_or(Path::new("/"));
+        let arguments = if package.kind == "msi" {
+            vec![
+                "msiexec.exe".into(),
+                "/i".into(),
+                package.path.to_string_lossy().into_owned(),
+            ]
+        } else {
+            vec![package.path.to_string_lossy().into_owned()]
+        };
+        let command = wine.command("wine", &arguments, Some(cwd));
+        self.runner
+            .run(&command, wine.umu && self.runner.sandbox, true, true)?;
+        wine.wait()?;
+        let prefix = self.data.join("wine/prefix/drive_c");
+        let mut executables = Vec::new();
+        collect_exes(&prefix.join("Program Files"), &mut executables, 0)?;
+        collect_exes(&prefix.join("Program Files (x86)"), &mut executables, 0)?;
+        let needle = package.name.to_ascii_lowercase();
+        executables.sort_by_key(|path| {
+            (
+                path.file_stem()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    != needle,
+                path.components().count(),
+                path.clone(),
+            )
+        });
+        let target = executables.into_iter().next().ok_or_else(|| PackliftError::Message(
+            "The installer finished, but Packlift could not find the installed program. Add its game executable from the file manager.".into()))?;
+        let export = self.applications.join(format!(
+            "io.github.flatapk.Installer.{identifier}.0.desktop"
+        ));
+        let argv = wine.command(
+            "wine",
+            &[target.to_string_lossy().into_owned()],
+            Some(target.parent().unwrap_or(&prefix)),
+        );
+        export_desktop(
+            &export,
+            &package.name,
+            &argv,
+            "application-x-executable",
+            false,
+            "Utility",
+        )?;
+        let metadata_directory = self.data.join("windows").join(&identifier);
+        fs::create_dir_all(&metadata_directory)?;
+        let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
+            "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
+            "installer":package.path,"runtime":wine.runtime,"exports":[{"desktop":export,"name":package.name,
+            "icon":"application-x-executable","argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
+        self.registry.save(&app)?;
+        Ok(app)
+    }
+
+    pub fn add_game(&self, package: &Package, runtime: &str) -> Result<Value> {
+        if package.kind != "exe" || !package.path.is_file() {
+            return Err(PackliftError::Message(
+                "Choose the Windows executable from the game's folder.".into(),
+            ));
+        }
+        let _operation = operation(&self.data)?;
+        let digest = sha256(&package.path)?;
+        let identifier = format!(
+            "{}",
+            &sha256_bytes(format!("game:{}", package.path.display()).as_bytes())?[..20]
+        );
+        if self
+            .registry
+            .apps()?
+            .iter()
+            .any(|app| app["id"] == identifier)
+        {
+            return Err(PackliftError::Message(
+                "This program is already registered in Packlift.".into(),
+            ));
+        }
+        let machine = self.machine()?;
+        let runtime = self.windows_runtime(runtime, &machine)?;
+        let wine = Wine::new(
+            self.runner.clone(),
+            runtime,
+            &self.data,
+            &self.applications,
+            &machine,
+        );
+        wine.prepare()?;
+        let identifier_path = self.data.join("games").join(&identifier);
+        fs::create_dir_all(&identifier_path)?;
+        let app_dir = package
+            .path
+            .parent()
+            .unwrap_or(Path::new("/"))
+            .to_path_buf();
+        let export_path = self.applications.join(format!(
+            "io.github.flatapk.Installer.{identifier}.0.desktop"
+        ));
+        let argv = wine.command(
+            "wine",
+            &[package.path.to_string_lossy().to_string()],
+            Some(&app_dir),
+        );
+        export_desktop(
+            &export_path,
+            &package.name,
+            &argv,
+            "application-x-executable",
+            false,
+            "Game",
+        )?;
+        let app = json!({
+            "id": identifier, "name": package.name, "version": package.version,
+            "architecture": package.architecture, "source": package.path,
+            "digest": digest, "directory": identifier_path, "exports": [{
+                "desktop": export_path, "name": package.name, "icon": "application-x-executable",
+                "argv": argv, "terminal": false, "wine_args": [package.path.to_string_lossy()]
+            }], "method": "wine", "runtime": wine.runtime,
+            "game_shortcut": true, "working_directory": app_dir
+        });
+        self.registry.save(&app)?;
+        Ok(app)
+    }
+
+    pub fn install_windows(&self, package: &Package, runtime: &str) -> Result<()> {
+        let machine = self.machine()?;
+        self.install_windows_program(package, runtime, &machine)
+            .map(|_| ())
+    }
+
+    pub fn launch(&self, app: &Value) -> Result<()> {
+        let argv = app
+            .get("exports")
+            .and_then(Value::as_array)
+            .and_then(|e| e.first())
+            .and_then(|e| e.get("argv"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                PackliftError::Message("No launch command is registered for this program.".into())
+            })?;
+        let command: Vec<String> = argv
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        self.runner.run(&command, false, true, true)?;
+        Ok(())
+    }
+
+    fn machine(&self) -> Result<String> {
+        if self.runner.sandbox {
+            Ok(self
+                .runner
+                .capture(
+                    &[
+                        "flatpak-spawn".into(),
+                        "--host".into(),
+                        "uname".into(),
+                        "-m".into(),
+                    ],
+                    true,
+                )?
+                .trim()
+                .into())
+        } else {
+            Ok(std::env::consts::ARCH.into())
+        }
+    }
+
+    fn windows_runtime(&self, runtime: &str, machine: &str) -> Result<String> {
+        if runtime == "proton" {
+            if architecture_group(machine) != "x86_64" {
+                return Err(PackliftError::Message(
+                    "Automatic Proton installation currently requires a 64-bit PC.".into(),
+                ));
+            }
+            let bundled = Path::new("/app/bin/umu-run");
+            if self.runner.sandbox {
+                let temporary = self.data.join("umu-run.tmp");
+                fs::copy(bundled, &temporary).map_err(|_| {
+                    PackliftError::Message(
+                        "UMU Launcher is missing from this Packlift build.".into(),
+                    )
+                })?;
+                fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+                fs::rename(temporary, self.data.join("umu-run"))?;
+            } else if !self.runner.available("umu-run") {
+                return Err(PackliftError::Message(
+                    "Install UMU Launcher on the host before using Proton.".into(),
+                ));
+            }
+            return Ok("proton".into());
+        }
+        if runtime == "wine" && self.runner.available("wine") {
+            return Ok("wine".into());
+        }
+        if self.runner.sandbox {
+            let info = self.runner.run(
+                &["flatpak".into(), "info".into(), FLATPAK_WINE.into()],
+                false,
+                true,
+                false,
+            )?;
+            if !info.status.success() {
+                let _ = self.runner.run(
+                    &[
+                        "flatpak".into(),
+                        "remote-add".into(),
+                        "--user".into(),
+                        "--if-not-exists".into(),
+                        "flathub".into(),
+                        "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+                    ],
+                    false,
+                    true,
+                    true,
+                )?;
+                self.runner.run(
+                    &[
+                        "flatpak".into(),
+                        "install".into(),
+                        "--user".into(),
+                        "--noninteractive".into(),
+                        "flathub".into(),
+                        FLATPAK_WINE.into(),
+                    ],
+                    false,
+                    true,
+                    true,
+                )?;
+            }
+            return Ok(FLATPAK_WINE.into());
+        }
+        Err(PackliftError::Message(
+            "Wine was not found on the host. Install Wine or select Proton.".into(),
+        ))
+    }
+
+    pub fn uninstall_game(&self, app: &Value) -> Result<()> {
+        let _operation = operation(&self.data)?;
+        remove_exports(app);
+        self.registry.remove(app)?;
+        Ok(())
+    }
+
+    pub fn uninstall(&self, app: &Value) -> Result<()> {
+        let _operation = operation(&self.data)?;
+        let method = app["method"].as_str().unwrap_or("");
+        if method == "native" || method == "toolbox" {
+            let manager = app["manager"].as_str().unwrap_or("");
+            let target = app["target"].as_str().unwrap_or("");
+            let container = app["container"].as_str().unwrap_or("");
+            if already_installed(&self.runner, manager, target, container)? {
+                let base: Vec<String> = match manager {
+                    "apt" => ["apt-get", "remove", "-y", "--"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    "dnf" => ["dnf", "remove", "-y", "--"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    "zypper" => ["zypper", "--non-interactive", "remove", "--"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    "pacman" => ["pacman", "-R", "--noconfirm", "--"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    _ => {
+                        return Err(PackliftError::Message(
+                            "Unsupported package manager.".into(),
+                        ))
+                    }
+                };
+                let mut command = base;
+                command.push(target.into());
+                elevated(&self.runner, container, &command)?;
+            }
+        }
+        remove_exports(app);
+        self.registry.remove(app)?;
+        Ok(())
+    }
+}
+
+fn sha256_bytes(value: &[u8]) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(format!("{:x}", Sha256::digest(value)))
+}
+
+fn read_rpm_header(
+    file: &mut fs::File,
+) -> Result<(std::collections::HashMap<u32, (u32, u32, u32)>, Vec<u8>)> {
+    use std::io::Read;
+    let mut intro = [0_u8; 16];
+    file.read_exact(&mut intro)
+        .map_err(|_| PackliftError::Message("The RPM package metadata is damaged.".into()))?;
+    if intro[..4] != [0x8e, 0xad, 0xe8, 0x01] {
+        return Err(PackliftError::Message(
+            "The RPM package metadata is damaged.".into(),
+        ));
+    }
+    let count = u32::from_be_bytes(intro[8..12].try_into().unwrap()) as usize;
+    let size = u32::from_be_bytes(intro[12..16].try_into().unwrap()) as usize;
+    if count > 65_536 || size > 32 * 1024 * 1024 {
+        return Err(PackliftError::Message(
+            "The RPM metadata is too large to inspect safely.".into(),
+        ));
+    }
+    let mut index = vec![0_u8; count * 16];
+    let mut data = vec![0_u8; size];
+    file.read_exact(&mut index)?;
+    file.read_exact(&mut data)?;
+    let tags = index
+        .chunks_exact(16)
+        .map(|entry| {
+            (
+                u32::from_be_bytes(entry[0..4].try_into().unwrap()),
+                (
+                    u32::from_be_bytes(entry[4..8].try_into().unwrap()),
+                    u32::from_be_bytes(entry[8..12].try_into().unwrap()),
+                    u32::from_be_bytes(entry[12..16].try_into().unwrap()),
+                ),
+            )
+        })
+        .collect();
+    Ok((tags, data))
+}
+
+fn rpm_strings(
+    tags: &std::collections::HashMap<u32, (u32, u32, u32)>,
+    data: &[u8],
+    tag: u32,
+) -> Vec<String> {
+    let Some((kind, offset, length)) = tags.get(&tag).copied() else {
+        return Vec::new();
+    };
+    if !matches!(kind, 6 | 8 | 9) || offset as usize >= data.len() || length > 65_536 {
+        return Vec::new();
+    }
+    let values = data[offset as usize..]
+        .split(|byte| *byte == 0)
+        .take(if kind == 6 { 1 } else { length as usize })
+        .filter(|value| !value.is_empty())
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .collect();
+    values
+}
+
+fn rpm_string(
+    tags: &std::collections::HashMap<u32, (u32, u32, u32)>,
+    data: &[u8],
+    tag: u32,
+) -> Option<String> {
+    rpm_strings(tags, data, tag).into_iter().next()
+}
+
+struct Wine {
+    runner: Runner,
+    runtime: String,
+    prefix: PathBuf,
+    integrations: PathBuf,
+    umu: bool,
+    flatpak: bool,
+}
+
+impl Wine {
+    fn new(
+        runner: Runner,
+        runtime: String,
+        data: &Path,
+        _applications: &Path,
+        _machine: &str,
+    ) -> Self {
+        let root = data.join("wine");
+        Self {
+            runner,
+            umu: runtime == "proton",
+            flatpak: runtime == FLATPAK_WINE,
+            runtime,
+            prefix: root.join("prefix"),
+            integrations: root.join("desktop"),
+        }
+    }
+
+    fn command(&self, tool: &str, args: &[String], cwd: Option<&Path>) -> Vec<String> {
+        let mut values = vec![("WINEPREFIX", self.prefix.to_string_lossy().to_string())];
+        if self.umu {
+            values.push(("GAMEID", "umu-default".into()));
+            values.push((
+                "UMU_FOLDERS_PATH",
+                self.runner.data.to_string_lossy().to_string(),
+            ));
+        }
+        values.push((
+            "XDG_DATA_HOME",
+            self.integrations.to_string_lossy().to_string(),
+        ));
+        if self.umu {
+            if self.runner.sandbox {
+                let mut command = vec![
+                    "flatpak-spawn".into(),
+                    "--host".into(),
+                    format!(
+                        "--directory={}",
+                        cwd.unwrap_or(&crate::system::home_dir()).display()
+                    ),
+                ];
+                command.extend(
+                    values
+                        .iter()
+                        .map(|(key, value)| format!("--env={key}={value}")),
+                );
+                command.push(self.runner.data.join("umu-run").to_string_lossy().into());
+                if tool != "wine" {
+                    command.push(tool.into());
+                }
+                command.extend(args.iter().cloned());
+                return command;
+            }
+            let mut command = vec!["env".into()];
+            if let Some(cwd) = cwd {
+                command.extend(["-C".into(), cwd.to_string_lossy().into()]);
+            }
+            command.extend(values.iter().map(|(key, value)| format!("{key}={value}")));
+            command.push("umu-run".into());
+            if tool != "wine" {
+                command.push(tool.into());
+            }
+            command.extend(args.iter().cloned());
+            return command;
+        }
+        if self.flatpak {
+            let mut command = vec![
+                "flatpak".into(),
+                "run".into(),
+                format!("--command={tool}"),
+                "--filesystem=home".into(),
+            ];
+            command.extend(
+                values
+                    .iter()
+                    .map(|(key, value)| format!("--env={key}={value}")),
+            );
+            command.push(self.runtime.clone());
+            command.extend(args.iter().cloned());
+            return command;
+        }
+        let mut command = vec!["env".into()];
+        if let Some(cwd) = cwd {
+            command.extend(["-C".into(), cwd.to_string_lossy().into()]);
+        }
+        command.extend(values.iter().map(|(key, value)| format!("{key}={value}")));
+        command.push(if tool == "wine" {
+            self.runtime.clone()
+        } else {
+            tool.into()
+        });
+        command.extend(args.iter().cloned());
+        command
+    }
+
+    fn prepare(&self) -> Result<()> {
+        fs::create_dir_all(&self.prefix)?;
+        let runtime = if self.umu { "wineboot.exe" } else { "wineboot" };
+        let args = self.command(runtime, &["--init".into()], None);
+        self.runner
+            .run(&args, self.umu && self.runner.sandbox, true, true)?;
+        self.wait()
+    }
+
+    fn wait(&self) -> Result<()> {
+        let args = self.command("wineserver", &["-w".into()], None);
+        self.runner
+            .run(&args, self.umu && self.runner.sandbox, true, true)?;
+        Ok(())
+    }
+}
+
+fn short_hash(value: &str) -> Result<String> {
+    Ok(sha256_bytes(value.as_bytes())?[..20].to_owned())
+}
+
+fn valid_package_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && characters.all(|c| c.is_ascii_alphanumeric() || ".+_-".contains(c))
+}
+
+fn package_prefix(container: &str) -> Vec<String> {
+    if container.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            "toolbox".into(),
+            "run".into(),
+            "--container".into(),
+            container.into(),
+        ]
+    }
+}
+
+fn package_capture(runner: &Runner, container: &str, args: &[String]) -> Result<String> {
+    let mut command = package_prefix(container);
+    command.extend(args.iter().cloned());
+    runner.capture(&command, false)
+}
+
+fn elevated(runner: &Runner, container: &str, args: &[String]) -> Result<()> {
+    let mut command = package_prefix(container);
+    if container.is_empty() {
+        if !runner.available("pkexec") {
+            return Err(PackliftError::Message(
+                "Install polkit and start a desktop authentication agent first.".into(),
+            ));
+        }
+        command.push("pkexec".into());
+    } else {
+        command.push("sudo".into());
+    }
+    command.extend(args.iter().cloned());
+    runner.run(&command, false, true, true)?;
+    Ok(())
+}
+
+fn package_target(package: &Package, manager: &str) -> String {
+    match manager {
+        "apt" if package.architecture != "all" => {
+            format!("{}:{}", package.identifier, package.architecture)
+        }
+        "dnf" | "zypper" => format!("{}.{}", package.identifier, package.architecture),
+        _ => package.identifier.clone(),
+    }
+}
+
+fn already_installed(
+    runner: &Runner,
+    manager: &str,
+    target: &str,
+    container: &str,
+) -> Result<bool> {
+    let args: Vec<String> = match manager {
+        "apt" => ["dpkg-query", "-W", "-f=${Status}"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([target.into()])
+            .collect(),
+        "dnf" | "zypper" => vec!["rpm".into(), "-q".into(), target.into()],
+        "pacman" => vec!["pacman".into(), "-Q".into(), target.into()],
+        _ => return Ok(false),
+    };
+    let mut command = package_prefix(container);
+    command.extend(args);
+    let result = runner.run(&command, false, true, false)?;
+    if !result.status.success() {
+        return Ok(false);
+    }
+    if manager == "apt" {
+        let status = runner.capture(&command, false)?;
+        Ok(!status
+            .split_whitespace()
+            .last()
+            .is_none_or(|v| v == "not-installed" || v == "config-files"))
+    } else {
+        Ok(true)
+    }
+}
+
+fn system_launchers(
+    runner: &Runner,
+    package: &Package,
+    manager: &str,
+    target: &str,
+    container: &str,
+) -> Result<Vec<(String, Vec<String>, String, bool)>> {
+    let files_command = match manager {
+        "apt" => vec!["dpkg-query".into(), "-L".into(), target.into()],
+        "dnf" | "zypper" => vec!["rpm".into(), "-ql".into(), target.into()],
+        "pacman" => vec!["pacman".into(), "-Qlq".into(), target.into()],
+        _ => vec![],
+    };
+    let files: Vec<String> = package_capture(runner, container, &files_command)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut launchers = Vec::new();
+    for path in files.iter().filter(|path| {
+        (path.starts_with("/usr/share/applications/") || path.starts_with("/opt/"))
+            && path.ends_with(".desktop")
+    }) {
+        let content = package_capture(
+            runner,
+            container,
+            &["cat".into(), "--".into(), path.clone()],
+        )
+        .unwrap_or_default();
+        let mut name = String::new();
+        let mut icon = String::new();
+        let mut exec = String::new();
+        let mut terminal = false;
+        let mut desktop_application = false;
+        let mut inside_entry = false;
+        for line in content.lines() {
+            if line.starts_with('[') {
+                inside_entry = line == "[Desktop Entry]";
+                continue;
+            }
+            if !inside_entry {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                match key {
+                    "Type" => desktop_application = value == "Application",
+                    "Name" => {
+                        if name.is_empty() {
+                            name = value.to_owned();
+                        }
+                    }
+                    "Exec" => exec = value.to_owned(),
+                    "Icon" => icon = value.to_owned(),
+                    "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
+                    "NoDisplay" if value.eq_ignore_ascii_case("true") => {
+                        desktop_application = false
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !desktop_application || exec.is_empty() {
+            continue;
+        }
+        let arguments = shlex::split(&exec)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|arg| !arg.chars().any(|ch| ch == '%'))
+            .collect::<Vec<_>>();
+        if arguments.is_empty() {
+            continue;
+        }
+        let candidate = files
+            .iter()
+            .find(|p| {
+                Path::new(p)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .is_some_and(|filename| {
+                        filename
+                            == Path::new(&icon)
+                                .file_name()
+                                .and_then(|v| v.to_str())
+                                .unwrap_or("")
+                    })
+            })
+            .cloned()
+            .unwrap_or(icon);
+        let mut argv = package_prefix(container);
+        argv.extend(arguments);
+        launchers.push((
+            if name.is_empty() {
+                package.name.clone()
+            } else {
+                name
+            },
+            argv,
+            candidate,
+            terminal,
+        ));
+    }
+    if launchers.is_empty() {
+        let executable = files
+            .iter()
+            .find(|path| {
+                ["/usr/bin", "/usr/local/bin", "/bin"].contains(
+                    &Path::new(path)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or(""),
+                )
+            })
+            .ok_or_else(|| {
+                PackliftError::Message(
+                    "The package did not provide an application launcher or executable.".into(),
+                )
+            })?;
+        let mut argv = package_prefix(container);
+        argv.push(executable.clone());
+        launchers.push((package.name.clone(), argv, String::new(), true));
+    }
+    Ok(launchers)
+}
+
+fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
+    let mut probe = fs::File::open(path)?;
+    let mut magic = [0_u8; 6];
+    let count = std::io::Read::read(&mut probe, &mut magic)?;
+    drop(probe);
+    let input: Box<dyn std::io::Read> = if magic[..count].starts_with(b"\x1f\x8b") {
+        Box::new(flate2::read::GzDecoder::new(fs::File::open(path)?))
+    } else if magic[..count].starts_with(b"\xfd7zXZ\0") {
+        Box::new(xz2::read::XzDecoder::new(fs::File::open(path)?))
+    } else {
+        Box::new(fs::File::open(path)?)
+    };
+    let mut archive = tar::Archive::new(input);
+    let mut executable_files = Vec::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let relative = entry.path()?.into_owned();
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(PackliftError::Message(
+                "The archive contains an invalid file name.".into(),
+            ));
+        }
+        let target = destination.join(relative);
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(PackliftError::Message(
+                "The archive contains a link or special file. Use an AppImage or a system package."
+                    .into(),
+            ));
+        }
+        let mode = entry.header().mode().unwrap_or(0);
+        entry.unpack(&target)?;
+        if mode & 0o111 != 0 {
+            let mut header = [0_u8; 20];
+            let count = fs::File::open(&target)
+                .and_then(|mut file| std::io::Read::read(&mut file, &mut header))
+                .unwrap_or(0);
+            if header[..count].starts_with(b"#!")
+                || !crate::core::elf_architecture(&header[..count]).is_empty()
+            {
+                executable_files.push(target);
+            }
+        }
+        if executable_files.len() > 1024 {
+            return Err(PackliftError::Message(
+                "The archive contains too many executable files.".into(),
+            ));
+        }
+    }
+    Ok(executable_files)
+}
+
+fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Result<()> {
+    if depth > 10 || !directory.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.file_type()?;
+        if metadata.is_dir() {
+            collect_exes(&path, output, depth + 1)?;
+        } else if metadata.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            output.push(path);
+        }
+        if output.len() > 2048 {
+            return Err(PackliftError::Message(
+                "The installer created too many executable files to inspect.".into(),
+            ));
+        }
+    }
+    Ok(())
+}

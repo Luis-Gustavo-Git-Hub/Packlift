@@ -1,0 +1,41 @@
+[package]
+name = "packlift"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A Linux package installer and Windows game launcher"
+license = "GPL-3.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "packlift"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:adw", "dep:gio", "dep:glib", "dep:gtk"]
+
+[dependencies]
+adw = { package = "libadwaita", version = "0.7", features = ["v1_4"], optional = true }
+gio = { version = "0.20", optional = true }
+glib = { version = "0.20", optional = true }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"], optional = true }
+regex = "1.11"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+fs2 = "0.4"
+flate2 = "1.0"
+xz2 = "0.1"
+tar = "0.4"
+shlex = "1.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
