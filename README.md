@@ -44,7 +44,9 @@ Close programs using the shared prefix before installing, uninstalling, or repai
 
 Native packages use the host distribution's package manager and request authorization through polkit. Toolbx and Podman must be installed on the host for container-based packages. Packlift reuses one container per distribution and forwards the graphical session, audio, and home directory to programs running inside it. On Fedora OSTree systems, RPM packages use Toolbx. Set `FLATAPK_UBUNTU_IMAGE`, `FLATAPK_FEDORA_IMAGE`, or `FLATAPK_ARCH_IMAGE` to override the default container images.
 
-In the GitHub Flatpak build, choose **Enable access to your system…** and copy the command shown in the dialog. Run it in your terminal as your user and reopen Packlift. This grants Packlift permission to run host commands with your account's access for Toolbx, native package management, and Wine or Proton. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
+The GitHub Flatpak opens in sandbox mode when host access is unavailable. In this mode it can register and launch compatible type 2 AppImages and Linux TAR archives in its private library. Compatibility depends on the libraries and services available inside the Flatpak. The sandbox library and its logs are separate from the host library.
+
+To use Toolbx, native package managers or Windows runtimes in the GitHub Flatpak, choose **Enable access to your system…** and copy the command shown in the dialog. Run it in your terminal as your user and reopen Packlift. This grants Packlift permission to run host commands with your account's access for Toolbx, native package management, and Wine or Proton. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
 
 ## Package integrity
 
@@ -59,6 +61,8 @@ cargo build --locked --features gui
 cargo run --locked --features gui
 cargo run --locked --features gui -- /path/to/package.deb
 ```
+
+The `sandbox-only` Cargo feature hides the host access prompt and keeps the Flatpak in sandbox mode. Build it with `cargo build --locked --features gui,sandbox-only`.
 
 All application and CI integration code is written in Rust. `make test` runs the Rust library test target. The Flatpak build uses the GNOME SDK Rust extension and the checked-in Cargo lockfile and crate source list.
 

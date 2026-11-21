@@ -4,7 +4,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use fs2::FileExt;
@@ -26,7 +26,7 @@ pub struct Runner {
 
 impl Runner {
     pub fn new(data: Option<PathBuf>, output: LogHandler) -> Result<Self> {
-        let data = data.unwrap_or_else(|| data_home().join("flatapk"));
+        let data = data.unwrap_or_else(packlift_data_dir);
         fs::create_dir_all(&data)?;
         let _ = fs::set_permissions(&data, fs::Permissions::from_mode(0o700));
         Ok(Self {
@@ -116,7 +116,15 @@ impl Runner {
     }
 
     pub fn start(&self, args: &[String]) -> Result<()> {
-        let command = self.command(args, false, true);
+        self.start_with_scope(args, false)
+    }
+
+    pub fn start_in_sandbox(&self, args: &[String]) -> Result<()> {
+        self.start_with_scope(args, true)
+    }
+
+    fn start_with_scope(&self, args: &[String], local: bool) -> Result<()> {
+        let command = self.command(args, local, true);
         let shell = command
             .iter()
             .map(|value| shell_quote(value))
@@ -247,6 +255,27 @@ impl Runner {
     pub fn log_path(&self) -> &Path {
         &self.log_path
     }
+}
+
+pub fn host_access_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        !Path::new("/.flatpak-info").is_file()
+            || (!cfg!(feature = "sandbox-only")
+                && Command::new("flatpak-spawn")
+                    .args(["--host", "/usr/bin/true"])
+                    .output()
+                    .is_ok_and(|output| output.status.success()))
+    })
+}
+
+pub fn packlift_data_dir() -> PathBuf {
+    if !host_access_available() {
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME").filter(|path| !path.is_empty()) {
+            return PathBuf::from(data).join("flatapk");
+        }
+    }
+    data_home().join("flatapk")
 }
 
 pub fn data_home() -> PathBuf {

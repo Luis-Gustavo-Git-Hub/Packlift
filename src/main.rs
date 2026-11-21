@@ -1,33 +1,15 @@
 use adw::prelude::*;
 use gtk::prelude::*;
-use std::{
-    cell::RefCell,
-    path::Path,
-    rc::Rc,
-    sync::{Arc, OnceLock},
-    thread,
-    time::Duration,
-};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
     core::{Package, PackliftError, Result},
     installer::Installer,
-    system::LogHandler,
+    system::{host_access_available, packlift_data_dir, LogHandler},
 };
 use serde_json::Value;
 
 const APP_ID: &str = "io.github.flatapk.Installer";
-
-fn host_access_available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        !Path::new("/.flatpak-info").is_file()
-            || std::process::Command::new("flatpak-spawn")
-                .args(["--host", "/usr/bin/true"])
-                .output()
-                .is_ok_and(|output| output.status.success())
-    })
-}
 
 fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     let command = format!("flatpak override --user --talk-name=org.freedesktop.Flatpak {APP_ID}");
@@ -88,9 +70,6 @@ fn main() -> glib::ExitCode {
         for file in files {
             if let Some(path) = file.path() {
                 open_package(app, &path);
-                if !host_access_available() {
-                    break;
-                }
             }
         }
     });
@@ -107,16 +86,11 @@ fn installer_with_output(logger: LogHandler) -> Result<Installer> {
 }
 
 fn build_home(app: &adw::Application) {
-    present_home(app);
-}
-
-fn present_home(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(640, 470);
     render_home(app, &window);
     window.present();
-    window
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
@@ -141,6 +115,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     content.set_margin_start(18);
     content.set_margin_end(18);
     if !host_access_available() {
+        content.append(&notice_row("dialog-information-symbolic", "Sandbox mode can open type 2 AppImages and Linux TAR archives. Installed programs appear in the Packlift library.", "dim-label"));
+    }
+    if !host_access_available() && !cfg!(feature = "sandbox-only") {
         let enable = gtk::Button::with_label("Enable access to your system…");
         enable.add_css_class("suggested-action");
         enable.set_halign(gtk::Align::Start);
@@ -151,9 +128,6 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             }
         });
         content.append(&enable);
-        toolbar.set_content(Some(&content));
-        window.set_content(Some(&toolbar));
-        return;
     }
     let open = gtk::Button::with_label("Open package");
     open.add_css_class("suggested-action");
@@ -298,7 +272,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             );
         }
     });
-    content.append(&clean);
+    if host_access_available() {
+        content.append(&clean);
+    }
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&content));
@@ -307,15 +283,6 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
-    if !host_access_available() {
-        let window = app
-            .active_window()
-            .and_downcast::<adw::ApplicationWindow>()
-            .unwrap_or_else(|| present_home(app));
-        window.present();
-        show_host_access_dialog(&window);
-        return;
-    }
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(470, 440);
@@ -556,6 +523,18 @@ fn open_package(app: &adw::Application, path: &Path) {
             body.append(&actions);
         }
         Err(error) => {
+            if matches!(error, PackliftError::HostAccessRequired) && !cfg!(feature = "sandbox-only")
+            {
+                let enable = gtk::Button::with_label("Enable access to your system…");
+                enable.set_halign(gtk::Align::Start);
+                let parent = window.downgrade();
+                enable.connect_clicked(move |_| {
+                    if let Some(window) = parent.upgrade() {
+                        show_host_access_dialog(&window);
+                    }
+                });
+                body.append(&enable);
+            }
             let title = gtk::Label::new(Some("Could not open package"));
             title.add_css_class("title-2");
             title.set_xalign(0.0);
@@ -980,15 +959,13 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
     dialog.add_button("Copy log", gtk::ResponseType::Apply);
     dialog.connect_response(|dialog, response| {
         if response == gtk::ResponseType::Help {
-            let folder = gio::File::for_path(packlift::system::data_home().join("flatapk"));
+            let folder = gio::File::for_path(packlift_data_dir());
             let _ =
                 gio::AppInfo::launch_default_for_uri(&folder.uri(), None::<&gio::AppLaunchContext>);
             return;
         }
         if response == gtk::ResponseType::Apply {
-            let path = packlift::system::data_home()
-                .join("flatapk")
-                .join("flatapk.log");
+            let path = packlift_data_dir().join("flatapk.log");
             let contents = std::fs::read_to_string(path)
                 .unwrap_or_else(|error| format!("Could not read the Packlift log: {error}"));
             if let Some(display) = gtk::gdk::Display::default() {
@@ -1111,9 +1088,7 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
     body.set_margin_bottom(12);
     body.set_margin_start(12);
     body.set_margin_end(12);
-    let log_path = packlift::system::data_home()
-        .join("flatapk")
-        .join("flatapk.log");
+    let log_path = packlift_data_dir().join("flatapk.log");
     let log = std::rc::Rc::new(gtk::TextView::new());
     log.set_editable(false);
     log.set_cursor_visible(false);

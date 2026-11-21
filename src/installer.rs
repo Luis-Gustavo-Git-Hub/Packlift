@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use crate::{
     core::{architecture_group, detect, Package, PackliftError, Result},
     system::{
-        desktop_exec, export_desktop, export_desktop_with_wm_class, operation, remove_exports,
-        sha256, Registry, Runner,
+        desktop_exec, export_desktop, export_desktop_with_wm_class, host_access_available,
+        operation, packlift_data_dir, remove_exports, sha256, Registry, Runner,
     },
 };
 
@@ -30,7 +30,7 @@ impl Installer {
         data: Option<PathBuf>,
         applications: Option<PathBuf>,
     ) -> Result<Self> {
-        let data = data.unwrap_or_else(|| crate::system::data_home().join("flatapk"));
+        let data = data.unwrap_or_else(packlift_data_dir);
         let applications =
             applications.unwrap_or_else(|| crate::system::data_home().join("applications"));
         let runner = Runner::new(Some(data.clone()), output)?;
@@ -41,7 +41,9 @@ impl Installer {
             runner,
             registry,
         };
-        installer.refresh_windows_menu_entries();
+        if host_access_available() {
+            installer.refresh_windows_menu_entries();
+        }
         Ok(installer)
     }
 
@@ -136,6 +138,15 @@ impl Installer {
         self.runner
             .write(&format!("Analyzing package: {}", path.display()));
         let (kind, architecture) = detect(path)?;
+        let sandbox_only = !host_access_available();
+        if sandbox_only && !matches!(kind.as_str(), "appimage" | "tar") {
+            return Err(PackliftError::HostAccessRequired);
+        }
+        if sandbox_only && kind == "appimage" && appimage_offset(path)?.is_none() {
+            return Err(PackliftError::Message(
+                "Sandbox mode requires a type 2 AppImage.".into(),
+            ));
+        }
         let mut package = Package {
             path: path.to_owned(),
             kind: kind.clone(),
@@ -169,25 +180,7 @@ impl Installer {
                 "The package is missing required name, version, or architecture metadata.".into(),
             ));
         }
-        let release = self
-            .runner
-            .capture(&["cat".into(), "/etc/os-release".into()], false)
-            .unwrap_or_default();
-        let machine = if self.runner.sandbox {
-            self.runner.capture(
-                &[
-                    "flatpak-spawn".into(),
-                    "--host".into(),
-                    "uname".into(),
-                    "-m".into(),
-                ],
-                true,
-            )?
-        } else {
-            std::env::consts::ARCH.to_owned()
-        };
-        let host = crate::core::host_info(&release, machine.trim(), self.immutable_host()?);
-        let plan = crate::core::plan_for(&package, &host)?;
+        let (plan, _) = self.package_plan(&package)?;
         Ok((package, plan))
     }
 
@@ -240,7 +233,7 @@ impl Installer {
                     signature.display().to_string(),
                     package.path.display().to_string(),
                 ],
-                false,
+                !host_access_available(),
             )?;
             package.signature = "verified".into();
         }
@@ -620,13 +613,7 @@ impl Installer {
     pub fn install_package(&self, package: &Package, runtime: &str) -> Result<Value> {
         self.runner
             .write("Checking package compatibility with this system");
-        let machine = self.machine()?;
-        let release = self
-            .runner
-            .capture(&["cat".into(), "/etc/os-release".into()], false)
-            .unwrap_or_default();
-        let host = crate::core::host_info(&release, &machine, self.immutable_host()?);
-        let plan = crate::core::plan_for(package, &host)?;
+        let (plan, machine) = self.package_plan(package)?;
         match plan.method.as_str() {
             "wine" => self.install_windows_program(package, runtime, &machine),
             "local" => self.install_local(package, &machine),
@@ -635,6 +622,24 @@ impl Installer {
                 "Unsupported package installation plan.".into(),
             )),
         }
+    }
+
+    fn package_plan(&self, package: &Package) -> Result<(crate::core::Plan, String)> {
+        let host = if host_access_available() {
+            let machine = self.machine()?;
+            let release = self
+                .runner
+                .capture(&["cat".into(), "/etc/os-release".into()], false)
+                .unwrap_or_default();
+            crate::core::host_info(&release, &machine, self.immutable_host()?)
+        } else {
+            if !matches!(package.kind.as_str(), "appimage" | "tar") {
+                return Err(PackliftError::HostAccessRequired);
+            }
+            crate::core::host_info("", std::env::consts::ARCH, false)
+        };
+        let plan = crate::core::plan_for(package, &host)?;
+        Ok((plan, host.1))
     }
 
     fn install_system_package(
@@ -1051,7 +1056,63 @@ fi"#
         }
         let directory = self.data.join("installed").join(&identifier);
         fs::create_dir_all(&directory)?;
-        let (argv, terminal) = if package.kind == "appimage" {
+        let sandbox_only = !host_access_available();
+        let result =
+            self.install_local_payload(package, machine, &identifier, &directory, sandbox_only);
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&directory);
+        }
+        result
+    }
+
+    fn install_local_payload(
+        &self,
+        package: &Package,
+        machine: &str,
+        identifier: &str,
+        directory: &Path,
+        sandbox_only: bool,
+    ) -> Result<Value> {
+        let (argv, terminal) = if package.kind == "appimage" && sandbox_only {
+            let offset = appimage_offset(&package.path)?.ok_or_else(|| {
+                PackliftError::Message("Sandbox mode requires a type 2 AppImage.".into())
+            })?;
+            let payload = directory.join("payload");
+            self.runner.run(
+                &[
+                    "unsquashfs".into(),
+                    "-no-progress".into(),
+                    "-o".into(),
+                    offset.to_string(),
+                    "-d".into(),
+                    payload.to_string_lossy().into_owned(),
+                    package.path.to_string_lossy().into_owned(),
+                ],
+                true,
+                true,
+                true,
+            )?;
+            let app_run = payload.join("AppRun");
+            let resolved = fs::canonicalize(&app_run).map_err(|_| {
+                PackliftError::Message("The AppImage has no usable AppRun entry.".into())
+            })?;
+            if !resolved.starts_with(fs::canonicalize(&payload)?) || !resolved.is_file() {
+                return Err(PackliftError::Message(
+                    "The AppImage AppRun points outside its payload or is not a file.".into(),
+                ));
+            }
+            (
+                vec![
+                    "env".into(),
+                    "-C".into(),
+                    payload.to_string_lossy().into_owned(),
+                    format!("APPDIR={}", payload.display()),
+                    format!("ARGV0={}", app_run.display()),
+                    app_run.to_string_lossy().into_owned(),
+                ],
+                package.terminal,
+            )
+        } else if package.kind == "appimage" {
             let target = directory.join("program.AppImage");
             fs::copy(&package.path, &target)?;
             fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
@@ -1099,18 +1160,25 @@ fi"#
                 "This local package format is not available in the Rust build yet.".into(),
             ));
         };
-        let export = self.applications.join(format!(
-            "io.github.flatapk.Installer.{identifier}.0.desktop"
-        ));
         let icon = package
             .icon
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        export_desktop(&export, &package.name, &argv, &icon, terminal, "Utility")?;
-        self.runner.write("Creating the application menu shortcut");
+        let export = if sandbox_only {
+            self.runner
+                .write("Registering the application in the sandbox library");
+            None
+        } else {
+            let path = self.applications.join(format!(
+                "io.github.flatapk.Installer.{identifier}.0.desktop"
+            ));
+            export_desktop(&path, &package.name, &argv, &icon, terminal, "Utility")?;
+            self.runner.write("Creating the application menu shortcut");
+            Some(path)
+        };
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
-            "method":"local","source":package.path,"digest":package.digest,"directory":directory,
+            "method":"local","sandbox_only":sandbox_only,"source":package.path,"digest":package.digest,"directory":directory,
             "exports":[{"desktop":export,"name":package.name,"icon":icon,"argv":argv,"terminal":terminal}]});
         self.registry.save(&app)?;
         Ok(app)
@@ -1493,7 +1561,13 @@ fi"#
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        self.runner.start(&command)
+        if app["sandbox_only"].as_bool() == Some(true) {
+            self.runner.start_in_sandbox(&command)
+        } else if host_access_available() {
+            self.runner.start(&command)
+        } else {
+            Err(PackliftError::HostAccessRequired)
+        }
     }
 
     fn machine(&self) -> Result<String> {
@@ -3028,6 +3102,56 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn sandbox_archive_registers_launches_and_removes_without_a_desktop_file() {
+        use super::{fs, Installer, Package};
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!(
+            "packlift-sandbox-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("sample.tar");
+        let mut archive = tar::Builder::new(fs::File::create(&source).unwrap());
+        archive
+            .append_path_with_name("/usr/bin/true", "sample")
+            .unwrap();
+        archive.finish().unwrap();
+
+        let applications = root.join("applications");
+        let installer = Installer::new(
+            Arc::new(|_| {}),
+            Some(root.join("data")),
+            Some(applications.clone()),
+        )
+        .unwrap();
+        let directory = installer.data.join("installed/sample");
+        let package = Package {
+            path: source,
+            kind: "tar".into(),
+            name: "Sample".into(),
+            ..Package::default()
+        };
+        let record = installer
+            .install_local_payload(&package, std::env::consts::ARCH, "sample", &directory, true)
+            .unwrap();
+
+        assert!(record["exports"][0]["desktop"].is_null());
+        assert!(!applications.exists());
+        assert_eq!(installer.registry.apps().unwrap().len(), 1);
+        installer.launch(&record).unwrap();
+        installer.uninstall(&record).unwrap();
+        assert!(!directory.exists());
+        assert!(installer.registry.apps().unwrap().is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn proton_menu_shortcut_uses_a_host_command_and_preserves_paths() {

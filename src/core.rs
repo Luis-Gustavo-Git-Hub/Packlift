@@ -13,6 +13,8 @@ use xz2::read::XzDecoder;
 
 #[derive(Debug, Error)]
 pub enum PackliftError {
+    #[error("This format needs host integration. Sandbox mode supports type 2 AppImages and Linux TAR archives.")]
+    HostAccessRequired,
     #[error("{0}")]
     Message(String),
     #[error("{0}")]
