@@ -7,6 +7,7 @@ use packlift::{
     installer::Installer,
     system::LogHandler,
 };
+use serde_json::Value;
 
 const APP_ID: &str = "io.github.flatapk.Installer";
 
@@ -93,17 +94,20 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             for record in apps {
                 let name = record["name"].as_str().unwrap_or("Program");
                 let game = record["game_shortcut"].as_bool().unwrap_or(false);
+                let method = record["method"].as_str().unwrap_or("local");
                 let runtime = if record["runtime"].as_str().unwrap_or("") == "proton" {
                     "Proton"
                 } else {
                     "Wine"
                 };
+                let version = record["version"].as_str().filter(|value| !value.is_empty());
                 let row = adw::ActionRow::builder()
                     .title(name)
-                    .subtitle(if game {
-                        format!("Game shortcut · {runtime}")
-                    } else {
-                        "Installed program".into()
+                    .subtitle(match (game, version) {
+                        (true, Some(version)) => format!("Game shortcut · {runtime} · {version}"),
+                        (true, None) => format!("Game shortcut · {runtime}"),
+                        (false, Some(version)) => format!("{method} · {version}"),
+                        (false, None) => method.to_owned(),
                     })
                     .build();
                 if let Some(icon) = record["exports"][0]["icon"].as_str() {
@@ -129,8 +133,13 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 });
                 row.add_suffix(&launch);
                 {
-                    let remove =
-                        gtk::Button::with_label(if game { "Remove shortcut" } else { "Uninstall" });
+                    let remove = gtk::Button::with_label(if game {
+                        "Remove shortcut"
+                    } else if method == "wine" {
+                        "Remove from Packlift"
+                    } else {
+                        "Uninstall"
+                    });
                     remove.set_valign(gtk::Align::Center);
                     let record_to_remove = record.clone();
                     let app = app.clone();
@@ -154,6 +163,25 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         Err(error) => programs.set_description(Some(&error.to_string())),
     }
     content.append(&programs);
+    let clean = gtk::Button::with_label("Clean unused environments");
+    clean.set_halign(gtk::Align::Start);
+    let app = app.clone();
+    let weak_window = window.downgrade();
+    clean.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            run_job(
+                &app,
+                &window,
+                "Cleaning unused environments",
+                move |logger| {
+                    installer_with_output(logger)?
+                        .clean_unused_environments()
+                        .map(|_| None)
+                },
+            );
+        }
+    });
+    content.append(&clean);
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&content));
@@ -181,6 +209,18 @@ fn open_package(app: &adw::Application, path: &Path) {
                 "{} · {}",
                 package.kind.to_uppercase(),
                 package.architecture
+            ))));
+            let version = if package.version.is_empty() {
+                "Version unavailable".to_owned()
+            } else {
+                package.version.clone()
+            };
+            let bytes = std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            body.append(&gtk::Label::new(Some(&format!(
+                "{version} · {}",
+                human_size(bytes)
             ))));
             let integrity = if package.signature == "verified" {
                 gtk::Label::new(Some("Signature verified with a trusted key."))
@@ -216,6 +256,12 @@ fn open_package(app: &adw::Application, path: &Path) {
                 note.add_css_class("dim-label");
                 note.set_wrap(true);
                 body.append(&note);
+                let isolation = gtk::Label::new(Some(
+                    "Windows programs can access your home folder while running through Wine or Proton.",
+                ));
+                isolation.add_css_class("dim-label");
+                isolation.set_wrap(true);
+                body.append(&isolation);
             }
             let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             actions.set_halign(gtk::Align::End);
@@ -251,7 +297,7 @@ fn open_package(app: &adw::Application, path: &Path) {
                     run_job(&app, &window, "Installing program", move |logger| {
                         installer_with_output(logger)?
                             .install_package(&package, &runtime)
-                            .map(|_| ())
+                            .map(Some)
                     });
                 }
             });
@@ -306,7 +352,9 @@ fn choose_windows_action(
                     let package = package.clone();
                     let runtime = runtime.clone();
                     run_job(&app, &window, "Installing program or game", move |logger| {
-                        installer_with_output(logger)?.install_windows(&package, &runtime)
+                        installer_with_output(logger)?
+                            .install_windows(&package, &runtime)
+                            .map(Some)
                     });
                 }
                 gtk::ResponseType::Apply => {
@@ -319,7 +367,7 @@ fn choose_windows_action(
                         move |logger| {
                             installer_with_output(logger)?
                                 .add_game(&package, &runtime)
-                                .map(|_| ())
+                                .map(Some)
                         },
                     );
                 }
@@ -332,7 +380,7 @@ fn choose_windows_action(
 
 fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &str, task: F)
 where
-    F: FnOnce(LogHandler) -> Result<()> + Send + 'static,
+    F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(30);
@@ -345,6 +393,10 @@ where
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
     body.append(&stage);
+    let progress = gtk::ProgressBar::new();
+    progress.set_show_text(false);
+    progress.set_fraction(0.08);
+    body.append(&progress);
     let spinner = gtk::Spinner::new();
     spinner.start();
     body.append(&spinner);
@@ -377,7 +429,7 @@ where
 
     enum JobEvent {
         Log(String),
-        Finished(Result<()>),
+        Finished(Result<Option<Value>>),
     }
     let (sender, receiver) = std::sync::mpsc::channel::<JobEvent>();
     thread::spawn(move || {
@@ -392,15 +444,19 @@ where
     glib::timeout_add_local(Duration::from_millis(120), move || loop {
         match receiver.try_recv() {
             Ok(JobEvent::Log(line)) => {
+                let (label, fraction) = installation_stage(&line);
+                stage.set_text(label);
+                progress.set_fraction(fraction);
                 log.borrow_mut().push(line);
                 buffer.set_text(&log.borrow().join("\n"));
             }
             Ok(JobEvent::Finished(result)) => {
+                progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
-                    if let Err(error) = result {
-                        show_error(&window, &error.to_string());
-                    } else {
-                        render_home(&app, &window);
+                    match result {
+                        Err(error) => show_error(&window, &error.to_string()),
+                        Ok(Some(record)) => show_success(&app, &window, &record),
+                        Ok(None) => render_home(&app, &window),
                     }
                 }
                 return glib::ControlFlow::Break;
@@ -409,6 +465,90 @@ where
             Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
         }
     });
+}
+
+fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    body.set_margin_top(30);
+    body.set_margin_bottom(24);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    let icon = gtk::Image::from_icon_name("emblem-ok-symbolic");
+    icon.set_pixel_size(48);
+    icon.add_css_class("success");
+    body.append(&icon);
+    let title = gtk::Label::new(Some("Installation complete"));
+    title.add_css_class("title-2");
+    body.append(&title);
+    let name = record["name"].as_str().unwrap_or("Program");
+    let description = gtk::Label::new(Some(&format!("{name} is ready in Packlift.")));
+    description.set_wrap(true);
+    body.append(&description);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let close = gtk::Button::with_label("Close");
+    let close_app = app.clone();
+    let weak_window = window.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            render_home(&close_app, &window);
+        }
+    });
+    actions.append(&close);
+    let open = gtk::Button::with_label("Open program");
+    open.add_css_class("suggested-action");
+    let record = record.clone();
+    let open_app = app.clone();
+    let weak_window = window.downgrade();
+    open.connect_clicked(move |_| {
+        if let Err(error) = installer().and_then(|manager| manager.launch(&record)) {
+            if let Some(window) = weak_window.upgrade() {
+                show_error(&window, &error.to_string());
+            }
+        } else if let Some(window) = weak_window.upgrade() {
+            render_home(&open_app, &window);
+        }
+    });
+    actions.append(&open);
+    body.append(&actions);
+    window.set_content(Some(&body));
+}
+
+fn installation_stage(line: &str) -> (&'static str, f64) {
+    let line = line.to_ascii_lowercase();
+    if line.contains("analyzing") {
+        ("Analyzing the package", 0.12)
+    } else if line.contains("compatibility") {
+        ("Checking compatibility", 0.25)
+    } else if line.contains("environment") || line.contains("toolbox") || line.contains("prefix") {
+        ("Preparing the installation environment", 0.38)
+    } else if line.contains("download")
+        || line.contains("flatpak install")
+        || line.contains("pulling")
+    {
+        ("Downloading dependencies", 0.54)
+    } else if line.contains("shortcut") || line.contains("menu") {
+        ("Creating application shortcuts", 0.90)
+    } else if line.contains("install") || line.contains("package") {
+        ("Installing the program", 0.72)
+    } else {
+        ("Working…", 0.64)
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
 }
 
 fn show_error(window: &adw::ApplicationWindow, message: &str) {
@@ -461,7 +601,11 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
             }
             .to_owned();
             let weak_window = weak_window.clone();
-            let task = move |logger| installer_with_output(logger)?.save_preferences(&runtime);
+            let task = move |logger| {
+                installer_with_output(logger)
+                    .and_then(|manager| manager.save_preferences(&runtime))
+                    .map(|_| None)
+            };
             if let Some(window) = weak_window.upgrade() {
                 if let Some(app) = window.application().and_downcast::<adw::Application>() {
                     run_job(&app, &window, "Saving settings", task);

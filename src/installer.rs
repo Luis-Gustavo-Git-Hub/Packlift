@@ -69,6 +69,8 @@ impl Installer {
     }
 
     pub fn probe(&self, path: &Path) -> Result<(Package, crate::core::Plan)> {
+        self.runner
+            .write(&format!("Analyzing package: {}", path.display()));
         let (kind, architecture) = detect(path)?;
         let mut package = Package {
             path: path.to_owned(),
@@ -378,6 +380,8 @@ impl Installer {
     }
 
     pub fn install_package(&self, package: &Package, runtime: &str) -> Result<Value> {
+        self.runner
+            .write("Checking package compatibility with this system");
         let machine = self.machine()?;
         let release = self
             .runner
@@ -398,6 +402,11 @@ impl Installer {
 
     fn install_system_package(&self, package: &Package, plan: &crate::core::Plan) -> Result<Value> {
         let _operation = operation(&self.data)?;
+        self.runner.write(if plan.method == "toolbox" {
+            "Preparing the package container environment"
+        } else {
+            "Preparing native package installation"
+        });
         let container = if plan.method == "toolbox" {
             self.ensure_toolbox(&plan.family)?
         } else {
@@ -424,6 +433,7 @@ impl Installer {
             }
         }
         let source = package.path.to_string_lossy().into_owned();
+        self.runner.write("Downloading package dependencies");
         if plan.manager == "apt" {
             elevated(
                 &self.runner,
@@ -474,12 +484,14 @@ impl Installer {
             }
         };
         command.push(source);
+        self.runner.write("Installing the system package");
         elevated(&self.runner, &container, &command)?;
         let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
         let directory = self.data.join("installed").join(&identifier);
         fs::create_dir_all(&directory)?;
         let launchers =
             system_launchers(&self.runner, package, &plan.manager, &target, &container)?;
+        self.runner.write("Creating application menu shortcuts");
         let exports = self.write_exports(&identifier, &launchers, "Utility")?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":plan.method,"manager":plan.manager,"target":target,"container":container,
@@ -489,6 +501,8 @@ impl Installer {
     }
 
     fn ensure_toolbox(&self, family: &str) -> Result<String> {
+        self.runner
+            .write(&format!("Preparing the {family} Toolbox environment"));
         if !self.runner.available("toolbox") || !self.runner.available("podman") {
             return Err(PackliftError::Message(
                 "Install Toolbox and Podman on the host before continuing.".into(),
@@ -567,6 +581,7 @@ impl Installer {
 
     fn install_local(&self, package: &Package, machine: &str) -> Result<Value> {
         let _operation = operation(&self.data)?;
+        self.runner.write("Installing the local application files");
         let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
         if self
             .registry
@@ -639,6 +654,7 @@ impl Installer {
             terminal,
             "Utility",
         )?;
+        self.runner.write("Creating the application menu shortcut");
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"local","source":package.path,"digest":package.digest,"directory":directory,
             "exports":[{"desktop":export,"name":package.name,"icon":"application-x-executable","argv":argv,"terminal":terminal}]});
@@ -656,6 +672,8 @@ impl Installer {
             return Err(PackliftError::Message("Choose a Windows installer.".into()));
         }
         let _operation = operation(&self.data)?;
+        self.runner
+            .write("Preparing the shared Windows runtime environment");
         let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
         if self
             .registry
@@ -687,9 +705,12 @@ impl Installer {
             vec![package.path.to_string_lossy().into_owned()]
         };
         let command = wine.command("wine", &arguments, Some(cwd));
+        self.runner.write("Running the Windows installer");
         self.runner
             .run(&command, wine.umu && self.runner.sandbox, true, true)?;
         wine.wait()?;
+        self.runner
+            .write("Registering the installed program in Packlift");
         let prefix = self.data.join("wine/prefix/drive_c");
         let mut executables = Vec::new();
         collect_exes(&prefix.join("Program Files"), &mut executables, 0)?;
@@ -708,6 +729,7 @@ impl Installer {
         });
         let target = executables.into_iter().next().ok_or_else(|| PackliftError::Message(
             "The installer finished, but Packlift could not find the installed program. Add its game executable from the file manager.".into()))?;
+        let windows_directory = windows_install_directory(&target, &prefix);
         let export = self.applications.join(format!(
             "io.github.flatapk.Installer.{identifier}.0.desktop"
         ));
@@ -728,7 +750,7 @@ impl Installer {
         fs::create_dir_all(&metadata_directory)?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
-            "installer":package.path,"runtime":wine.runtime,"exports":[{"desktop":export,"name":package.name,
+            "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":package.name,
             "icon":"application-x-executable","argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
         self.registry.save(&app)?;
         Ok(app)
@@ -741,6 +763,8 @@ impl Installer {
             ));
         }
         let _operation = operation(&self.data)?;
+        self.runner
+            .write("Preparing the shared Windows runtime environment");
         let digest = sha256(&package.path)?;
         let identifier = format!(
             "{}",
@@ -789,6 +813,7 @@ impl Installer {
             false,
             "Game",
         )?;
+        self.runner.write("Creating the game menu shortcut");
         let app = json!({
             "id": identifier, "name": package.name, "version": package.version,
             "architecture": package.architecture, "source": package.path,
@@ -802,10 +827,9 @@ impl Installer {
         Ok(app)
     }
 
-    pub fn install_windows(&self, package: &Package, runtime: &str) -> Result<()> {
+    pub fn install_windows(&self, package: &Package, runtime: &str) -> Result<Value> {
         let machine = self.machine()?;
         self.install_windows_program(package, runtime, &machine)
-            .map(|_| ())
     }
 
     pub fn launch(&self, app: &Value) -> Result<()> {
@@ -823,8 +847,7 @@ impl Installer {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        self.runner.run(&command, false, true, true)?;
-        Ok(())
+        self.runner.start(&command)
     }
 
     fn machine(&self) -> Result<String> {
@@ -919,6 +942,7 @@ impl Installer {
     pub fn uninstall_game(&self, app: &Value) -> Result<()> {
         let _operation = operation(&self.data)?;
         remove_exports(app);
+        self.remove_managed_directory(app, "games")?;
         self.registry.remove(app)?;
         Ok(())
     }
@@ -958,11 +982,111 @@ impl Installer {
                 command.push(target.into());
                 elevated(&self.runner, container, &command)?;
             }
+        } else if method == "local" {
+            self.remove_managed_directory(app, "installed")?;
+        } else if method == "wine" && !app["game_shortcut"].as_bool().unwrap_or(false) {
+            if let Some(target) = app["windows_directory"].as_str().map(PathBuf::from) {
+                let prefix = self.data.join("wine/prefix/drive_c");
+                let permitted = target.starts_with(prefix.join("Program Files"))
+                    || target.starts_with(prefix.join("Program Files (x86)"));
+                let claimed_elsewhere = self.registry.apps()?.iter().any(|other| {
+                    other["id"] != app["id"]
+                        && other["windows_directory"]
+                            .as_str()
+                            .is_some_and(|path| Path::new(path) == target)
+                });
+                if permitted && !claimed_elsewhere && target.is_dir() {
+                    fs::remove_dir_all(&target)?;
+                }
+            }
+            self.remove_managed_directory(app, "windows")?;
         }
         remove_exports(app);
         self.registry.remove(app)?;
         Ok(())
     }
+
+    pub fn clean_unused_environments(&self) -> Result<Vec<String>> {
+        let _operation = operation(&self.data)?;
+        let used = self
+            .registry
+            .apps()?
+            .iter()
+            .filter_map(|app| app["container"].as_str())
+            .map(str::to_owned)
+            .collect::<std::collections::HashSet<_>>();
+        let mut removed = Vec::new();
+        for name in self.registry.containers()? {
+            if used.contains(&name) {
+                continue;
+            }
+            let exists = self.runner.run(
+                &[
+                    "podman".into(),
+                    "container".into(),
+                    "exists".into(),
+                    name.clone(),
+                ],
+                false,
+                true,
+                false,
+            )?;
+            match exists.status.code() {
+                Some(0) => {
+                    self.runner.run(
+                        &[
+                            "toolbox".into(),
+                            "rm".into(),
+                            "--force".into(),
+                            name.clone(),
+                        ],
+                        false,
+                        true,
+                        true,
+                    )?;
+                    self.runner
+                        .write(&format!("Removed unused Toolbox environment {name}"));
+                }
+                Some(1) => {
+                    self.runner
+                        .write(&format!("Removed stale environment record {name}"));
+                }
+                _ => {
+                    return Err(PackliftError::Message(
+                        "Podman could not check the unused Toolbox environment.".into(),
+                    ));
+                }
+            }
+            self.registry.remove_container(&name)?;
+            removed.push(name);
+        }
+        Ok(removed)
+    }
+
+    fn remove_managed_directory(&self, app: &Value, expected_parent: &str) -> Result<()> {
+        let Some(directory) = app["directory"].as_str() else {
+            return Ok(());
+        };
+        let directory = PathBuf::from(directory);
+        let expected = self.data.join(expected_parent);
+        if directory.starts_with(expected) && directory.is_dir() {
+            fs::remove_dir_all(directory)?;
+        }
+        Ok(())
+    }
+}
+
+fn windows_install_directory(executable: &Path, prefix: &Path) -> Option<PathBuf> {
+    for root in [
+        prefix.join("Program Files"),
+        prefix.join("Program Files (x86)"),
+    ] {
+        if let Ok(relative) = executable.strip_prefix(&root) {
+            let first = relative.components().next()?;
+            return Some(root.join(first));
+        }
+    }
+    None
 }
 
 fn sha256_bytes(value: &[u8]) -> Result<String> {

@@ -96,6 +96,34 @@ impl Runner {
         Ok(output)
     }
 
+    pub fn start(&self, args: &[String]) -> Result<()> {
+        let command = self.command(args, false, true);
+        let shell = command
+            .iter()
+            .map(|value| shell_quote(value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.write(&format!("{} $ {shell}", chrono_timestamp()));
+        let mut child = Command::new(&command[0])
+            .args(&command[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                PackliftError::Message(format!(
+                    "Could not start {}: {error}",
+                    args.first().map(String::as_str).unwrap_or("program")
+                ))
+            })?;
+        let runner = self.clone();
+        std::thread::spawn(move || match child.wait() {
+            Ok(status) => runner.write(&format!("Program exited with status {status}")),
+            Err(error) => runner.write(&format!("Could not observe program exit: {error}")),
+        });
+        Ok(())
+    }
+
     pub fn capture(&self, args: &[String], local: bool) -> Result<String> {
         let command = self.command(args, local, true);
         let shell = command
