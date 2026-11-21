@@ -1240,7 +1240,10 @@ impl Installer {
             "Game",
             Some(wm_class),
         )?;
-        self.runner.write("Creating the game menu shortcut");
+        self.runner.write(&format!(
+            "Created game menu shortcut {} with icon {menu_icon}",
+            export_path.display()
+        ));
         let app = json!({
             "id": identifier, "name": package.name, "version": package.version,
             "architecture": package.architecture, "source": package.path,
@@ -1293,28 +1296,16 @@ impl Installer {
         fs::create_dir_all(&directory)?;
         let icon = directory.join(format!("packlift-{identifier}.{extension}"));
         fs::write(&icon, bytes)?;
-        let hicolor = directory
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or(&directory);
-        let _ = self.runner.run(
-            &[
-                "gtk-update-icon-cache".into(),
-                "-f".into(),
-                "-t".into(),
-                hicolor.to_string_lossy().into_owned(),
-            ],
-            false,
-            true,
-            false,
-        );
-        Ok((
-            format!("packlift-{identifier}"),
-            Some(icon.to_string_lossy().into_owned()),
-        ))
+        self.runner
+            .write(&format!("Exported Windows menu icon to {}", icon.display()));
+        let path = icon.to_string_lossy().into_owned();
+        Ok((path.clone(), Some(path)))
     }
 
     fn refresh_windows_menu_entries(&self) {
+        let Ok(_operation) = operation(&self.data) else {
+            return;
+        };
         let Ok(apps) = self.registry.apps() else {
             return;
         };
@@ -1344,39 +1335,46 @@ impl Installer {
             };
             let current_icon_file = app["exports"][0]["menu_icon_file"]
                 .as_str()
-                .filter(|path| Path::new(path).is_file())
-                .map(str::to_owned);
-            let current_icon_name = app["exports"][0]["menu_icon"].as_str().map(str::to_owned);
-            let needs_wm_class = std::fs::read_to_string(&desktop)
-                .map(|contents| {
-                    !contents
-                        .lines()
-                        .any(|line| line.starts_with("StartupWMClass="))
+                .filter(|path| {
+                    let path = Path::new(path);
+                    path.is_absolute()
+                        && path.is_file()
+                        && matches!(
+                            path.extension().and_then(|ext| ext.to_str()),
+                            Some("png" | "svg" | "xpm")
+                        )
                 })
-                .unwrap_or(true);
-            let needs_menu_icon = Path::new(&icon).is_file()
-                && (current_icon_file.is_none() || current_icon_name.is_none());
-            if !needs_wm_class && !needs_menu_icon {
-                continue;
-            }
-            let (menu_icon, menu_icon_file) = if needs_menu_icon {
+                .map(str::to_owned);
+            let shortcut = fs::read_to_string(&desktop).unwrap_or_default();
+            let old_icon = shortcut.lines().find_map(|line| line.strip_prefix("Icon="));
+            let old_class = shortcut
+                .lines()
+                .find_map(|line| line.strip_prefix("StartupWMClass="));
+            let (menu_icon, menu_icon_file) = if let Some(path) = current_icon_file {
+                (path.clone(), Some(path))
+            } else if Path::new(&icon).is_file() {
                 match self.export_menu_icon(&identifier, Some(Path::new(&icon))) {
                     Ok(result) => result,
-                    Err(_) => continue,
+                    Err(error) => {
+                        self.runner.write(&format!(
+                            "Could not restore the menu icon for {name}: {error}"
+                        ));
+                        continue;
+                    }
                 }
             } else {
-                (
-                    current_icon_name.unwrap_or_else(|| icon.clone()),
-                    current_icon_file,
-                )
+                ("application-x-executable".into(), None)
             };
+            if old_icon == Some(menu_icon.as_str()) && old_class == Some(wm_class) {
+                continue;
+            }
             let argv = arguments
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
             let terminal = app["exports"][0]["terminal"].as_bool().unwrap_or(false);
-            if export_desktop_with_wm_class(
+            match export_desktop_with_wm_class(
                 Path::new(&desktop),
                 &name,
                 &argv,
@@ -1388,14 +1386,24 @@ impl Installer {
                     "Utility"
                 },
                 Some(wm_class),
-            )
-            .is_ok()
-            {
-                if let Some(icon_file) = menu_icon_file {
-                    app["exports"][0]["menu_icon_file"] = json!(icon_file);
-                    app["exports"][0]["menu_icon"] = json!(menu_icon);
+            ) {
+                Ok(()) => {
+                    if let Some(icon_file) = menu_icon_file {
+                        app["exports"][0]["menu_icon_file"] = json!(icon_file);
+                        app["exports"][0]["menu_icon"] = json!(menu_icon);
+                    }
+                    if let Err(error) = self.registry.save(&app) {
+                        self.runner.write(&format!(
+                            "Could not save the repaired shortcut for {name}: {error}"
+                        ));
+                    }
+                    self.runner.write(&format!(
+                        "Repaired Windows shortcut {desktop} with icon {menu_icon}"
+                    ));
                 }
-                let _ = self.registry.save(&app);
+                Err(error) => self.runner.write(&format!(
+                    "Could not repair Windows shortcut {desktop}: {error}"
+                )),
             }
         }
     }
