@@ -1,19 +1,21 @@
 # Packlift
 
-Packlift abre arquivos de pacote em uma interface GTK4 e libadwaita. Ele mostra a origem, a arquitetura e o método de instalação antes de executar qualquer instalador. Depois, cria atalhos no menu de aplicativos e registra os programas que gerencia.
+Packlift is a GTK4 and libadwaita app for installing Linux packages and adding Windows games to your desktop menu. It checks a package's origin, architecture, and installation method before making changes, then tracks the programs it manages.
 
-| Arquivo | Instalação |
+## Supported formats
+
+| Format | Installation method |
 | --- | --- |
-| `.deb` | APT em Debian e Ubuntu. Em outras distribuições, Toolbx com Ubuntu 24.04. |
-| `.rpm` | DNF em Fedora e derivados de RHEL, ou Zypper em openSUSE. Em outras distribuições, Toolbx com Fedora. |
-| `.pkg.tar.zst` | Pacman em Arch Linux, ou em uma imagem Toolbx do Arch. |
-| `.AppImage` | Cópia executável no diretório de dados do Packlift. AppImages de tipo 2 abrem no modo de extração. |
-| `.tar.gz`, `.tar.xz` | Extração local e identificação do executável. O Packlift pergunta quando encontra mais de uma opção. |
-| `.exe`, `.msi`, `.setup` | Wine em um prefixo compartilhado, com atalhos convertidos para o desktop Linux. |
+| `.deb` | APT on Debian and Ubuntu. Other distributions use an Ubuntu 24.04 Toolbx container. |
+| `.rpm` | DNF on Fedora and RHEL-based distributions, or Zypper on openSUSE. Other distributions use a Fedora Toolbx container. |
+| `.pkg.tar.zst` | Pacman on Arch Linux or in an Arch Toolbx container. |
+| `.AppImage` | Stored as an executable in Packlift's data directory. Type 2 AppImages run in extraction mode. |
+| `.tar.gz`, `.tar.xz` | Extracted locally. Packlift asks you to choose when it finds multiple executables. |
+| `.exe`, `.msi`, `.setup` | Run a Windows installer with Wine or Proton. Existing `.exe` games can be added directly to the applications menu. |
 
-## Instalar o Packlift
+## Install Packlift
 
-O [GitHub Actions](https://github.com/Luis-Gustavo-Git-Hub/flatapk/actions) compila o arquivo `Packlift-x86_64.flatpak`. Baixe o artefato de um build concluído, extraia o ZIP e execute:
+The [GitHub Actions builds](https://github.com/Luis-Gustavo-Git-Hub/packlift/actions) produce `Packlift-x86_64.flatpak`. Download the ZIP artifact from a completed build, extract it, and run:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -22,40 +24,44 @@ flatpak install --user ./Packlift-x86_64.flatpak
 flatpak run io.github.flatapk.Installer
 ```
 
-Abra um pacote pelo gerenciador de arquivos com **Abrir com Packlift** ou pelo botão **Abrir pacote**. Se quiser usar o duplo clique sempre, escolha Packlift como aplicativo padrão para o formato nas propriedades do arquivo. Abra o Packlift sem selecionar um arquivo para gerenciar os programas instalados.
+Open a package from your file manager with **Open With Packlift**, use **Open package**, or launch Packlift without a file to manage installed programs. Set Packlift as the default app for a file format if you want to open that format with a double-click.
 
-Se clicar no ícone de um AppImage e nenhuma janela aparecer, tente **Abrir** na lista de programas do Packlift. Se a execução encerrar com erro, a saída estará em **Ver detalhes**.
+If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **Show details** for its launch output.
 
-Pacotes nativos usam o gerenciador da distribuição e solicitam autorização via polkit. O Toolbx precisa estar instalado no host junto com o Podman. O Packlift reutiliza um ambiente por distribuição e usa Toolbx para repassar a sessão gráfica, o áudio e o diretório pessoal ao programa. Em sistemas Fedora baseados em OSTree, o Packlift usa Toolbx para RPMs. Os nomes das imagens podem ser configurados por `FLATAPK_UBUNTU_IMAGE`, `FLATAPK_FEDORA_IMAGE` e `FLATAPK_ARCH_IMAGE`.
+## Windows games and programs
 
-### Windows
+On x86-64, Packlift installs Wine WoW64 from Flathub for your account when a host Wine runtime is unavailable. The initial download requires an internet connection. Packlift keeps its shared prefix at `~/.local/share/flatapk/wine/prefix` with the default XDG data directory.
 
-Em x86-64, o Packlift instala o Wine WoW64 do Flathub para sua conta quando o Wine do sistema estiver ausente. A primeira instalação requer internet e baixa também o runtime do Wine. O prefixo compartilhado fica em `~/.local/share/flatapk/wine/prefix` com o XDG padrão. O painel **Opções avançadas** aceita o caminho absoluto de um executável Wine ou do script `proton` instalado no host. Algumas distribuições de Proton exigem Steam e um runtime compatível no host.
+For a Windows `.exe`, choose **Install** to select between running a Windows setup program and adding an already-extracted game to the applications menu. The game shortcut launches the executable from its original folder, where its DLLs and other game files remain available. Packlift can use the Windows icon embedded in the executable. Removing a game shortcut leaves the game files in place.
 
-Para um jogo já extraído, abra o executável `.exe` do jogo no Packlift e escolha **Adicionar jogo ao menu**. O atalho inicia o jogo na pasta do executável e mantém acesso aos arquivos da pasta pessoal. Para jogos em uma unidade externa, o Wine do Flathub recebe acesso à pasta do executável. A opção **Remover atalho** mantém os arquivos do jogo na pasta original.
+Choose Wine or Proton in the package's advanced options. Use the gear button in Packlift to set a default for new Windows programs, or open a program's settings to change its runtime and launch environment. To use Proton, select its executable on the host. Some Proton distributions require Steam and a compatible host runtime.
 
-O Packlift procura referências a componentes comuns do Windows e usa Winetricks quando detecta uma dependência conhecida. Instaladores compactados e jogos podem exigir ajustes manuais. Configure variáveis por programa, incluindo `WINEDLLOVERRIDES`, na lista de programas instalados.
+Packlift checks for common Windows components and uses Winetricks when it finds a known dependency. Compressed installers and games may need manual configuration. Set per-program variables such as `WINEDLLOVERRIDES` from the program settings.
 
-Feche os programas do prefixo compartilhado antes de instalar, desinstalar ou reparar. Uma instalação malsucedida restaura a cópia anterior do prefixo quando possível. A última instalação do Windows pode ser desfeita pelo painel principal. O reparo recria o prefixo e executa novamente os instaladores preservados. O reparo pode exigir interação com os instaladores e apagar configurações ou documentos que estejam dentro do prefixo. A desinstalação normal usa o desinstalador registrado pelo programa quando disponível e preserva o prefixo compartilhado.
+Close programs using the shared prefix before installing, uninstalling, or repairing. When possible, a failed installation restores the previous prefix. The latest Windows installation can be undone from the maintenance menu. Repairing the shared prefix re-runs saved installers and may require interaction; settings or documents inside the old prefix can be lost. Normal uninstallation uses the program's registered uninstaller when available and preserves the shared prefix.
 
-### Integridade e permissões
+## Linux containers and permissions
 
-O manifesto permite que o Packlift execute ferramentas no host via `flatpak-spawn --host`, acesse arquivos na pasta pessoal e escreva atalhos no menu do sistema. Os aplicativos iniciados via Toolbx ou Wine têm acesso à pasta pessoal. Instale apenas pacotes de origens confiáveis.
+Native packages use the host distribution's package manager and request authorization through polkit. Toolbx and Podman must be installed on the host for container-based packages. Packlift reuses one container per distribution and forwards the graphical session, audio, and home directory to programs running inside it. On Fedora OSTree systems, RPM packages use Toolbx. Set `FLATAPK_UBUNTU_IMAGE`, `FLATAPK_FEDORA_IMAGE`, or `FLATAPK_ARCH_IMAGE` to override the default container images.
 
-O Packlift calcula o SHA-256 do arquivo preparado para instalação e verifica um arquivo vizinho com sufixo `.sha256` quando presente. Uma assinatura RPM é verificada com as chaves conhecidas pelo `rpmkeys` no host. Para assinaturas GPG separadas `.sig` e `.asc`, coloque um chaveiro OpenPGP com as chaves que você verificou em `~/.local/share/flatapk/trustedkeys.gpg` ou na pasta equivalente do XDG. A janela informa quando a assinatura do pacote não pôde ser verificada. Consulte os detalhes da operação ou o arquivo `flatapk.log` na pasta de dados do Packlift.
+The Flatpak manifest lets Packlift run host commands through `flatpak-spawn --host`, access files in your home directory, and write application shortcuts. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
 
-## Desenvolver
+## Package integrity
 
-Requisitos para rodar a partir do código: Python 3.11+, PyGObject com GTK 4.10+ e libadwaita 1.4+, `bsdtar`/libarchive e as ferramentas dos formatos que deseja usar (`dpkg-deb`, `msiinfo`, `unsquashfs`, `zstd`). Para compilar as traduções, instale gettext.
+Packlift calculates the SHA-256 digest of the package prepared for installation and checks a neighboring `.sha256` file when present. RPM signatures are checked against keys trusted by the host's `rpmkeys`. For detached `.sig` or `.asc` signatures, place a GPG keyring containing keys you have verified at `~/.local/share/flatapk/trustedkeys.gpg` or the equivalent XDG path. Packlift warns when it cannot verify a package signature. Operation details and `flatapk.log` are stored in Packlift's data directory.
+
+## Development
+
+To run from source, install Python 3.11 or later, PyGObject with GTK 4.10 or later and libadwaita 1.4 or later, `bsdtar`/libarchive, and any tools for the package formats you want to use (`dpkg-deb`, `msiinfo`, `unsquashfs`, and `zstd`). Install gettext to compile translations.
 
 ```sh
 make locale
 python3 -m flatapk
-python3 -m flatapk /caminho/para/programa.deb
+python3 -m flatapk /path/to/package.deb
 make test
 ```
 
-Para compilar o Flatpak x86-64 localmente, adicione o Flathub e execute:
+To build the x86-64 Flatpak locally, add Flathub and run:
 
 ```sh
 flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-clean \
@@ -63,10 +69,8 @@ flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-c
 flatpak build-bundle flatpak-repo Packlift-x86_64.flatpak io.github.flatapk.Installer
 ```
 
-O runtime GNOME distribuído neste manifesto é x86-64. A execução nativa do código em um host x86 de 32 bits depende da disponibilidade de GTK, Wine e do gerenciador correspondente. As imagens atuais de Fedora e Arch usadas pelo Toolbx exigem um host de 64 bits. Em x86-64, pacotes i386 usam o multiarch de APT e pacotes i686 dependem das bibliotecas oferecidas pela distribuição RPM. O Packlift recusa arquivos especiais e links que apontam para fora do diretório do programa durante a extração.
+The GNOME runtime in this manifest targets x86-64. Running native code on a 32-bit x86 host depends on the availability of GTK, Wine, and the relevant package manager. The current Fedora and Arch Toolbx images require a 64-bit host. On x86-64, i386 packages use APT multiarch support, while i686 RPM packages depend on libraries provided by the distribution. Packlift rejects special files and archive links that point outside the program directory.
 
-A suíte automatizada exerce detecção por cabeçalho, planos de instalação, metadados de pacote real, arquivos locais, registro, atalhos, integridade, concorrência e recuperação do Wine. Para validar os fluxos externos, use sessões gráficas em Fedora e Ubuntu com Toolbx e em um host com Wine WoW64. O desempenho desses fluxos depende da imagem, dos repositórios e dos instaladores usados. Atualizações automáticas e prefixos isolados por programa estão previstas para a v2.
+## License
 
-## Licença
-
-GPL-3.0. Consulte o arquivo [LICENSE](LICENSE).
+GPL-3.0-only. See [LICENSE](LICENSE).
