@@ -397,6 +397,18 @@ pub fn export_desktop(
     terminal: bool,
     category: &str,
 ) -> Result<()> {
+    export_desktop_with_wm_class(path, name, argv, icon, terminal, category, None)
+}
+
+pub fn export_desktop_with_wm_class(
+    path: &Path,
+    name: &str,
+    argv: &[String],
+    icon: &str,
+    terminal: bool,
+    category: &str,
+    wm_class: Option<&str>,
+) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| PackliftError::Message("Invalid desktop shortcut path.".into()))?;
@@ -406,8 +418,11 @@ pub fn export_desktop(
         .map(|s| desktop_exec_arg(s))
         .collect::<Vec<_>>()
         .join(" ");
-    let data = format!("[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nTerminal={}\nCategories={};\nX-Flatapk-Managed=true\n",
-        desktop_string(name), exec, desktop_string(icon), if terminal { "true" } else { "false" }, desktop_string(category));
+    let wm_class = wm_class
+        .map(|class| format!("StartupWMClass={}\n", desktop_string(class)))
+        .unwrap_or_default();
+    let data = format!("[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nTerminal={}\nCategories={};\n{}X-Flatapk-Managed=true\n",
+        desktop_string(name), exec, desktop_string(icon), if terminal { "true" } else { "false" }, desktop_string(category), wm_class);
     let temporary = path.with_extension("tmp");
     fs::write(&temporary, data)?;
     fs::rename(temporary, path)?;

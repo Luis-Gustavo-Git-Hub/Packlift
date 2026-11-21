@@ -8,7 +8,10 @@ use serde_json::{json, Value};
 
 use crate::{
     core::{architecture_group, detect, Package, PackliftError, Result},
-    system::{export_desktop, operation, remove_exports, sha256, Registry, Runner},
+    system::{
+        export_desktop, export_desktop_with_wm_class, operation, remove_exports, sha256,
+        Registry, Runner,
+    },
 };
 
 const FLATPAK_WINE: &str = "org.winehq.Wine//wow64-25.08";
@@ -38,7 +41,7 @@ impl Installer {
             runner,
             registry,
         };
-        installer.refresh_game_menu_icons();
+        installer.refresh_windows_menu_entries();
         Ok(installer)
     }
 
@@ -940,7 +943,19 @@ impl Installer {
             .unwrap_or_else(|| "application-x-executable".into());
         let (menu_icon, menu_icon_file) =
             self.export_menu_icon(&identifier, package.icon.as_deref())?;
-        export_desktop(&export, &package.name, &argv, &menu_icon, false, "Utility")?;
+        let wm_class = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        export_desktop_with_wm_class(
+            &export,
+            &package.name,
+            &argv,
+            &menu_icon,
+            false,
+            "Utility",
+            Some(wm_class),
+        )?;
         let metadata_directory = self.data.join("windows").join(&identifier);
         fs::create_dir_all(&metadata_directory)?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
@@ -1007,13 +1022,19 @@ impl Installer {
             .unwrap_or_else(|| "application-x-executable".into());
         let (menu_icon, menu_icon_file) =
             self.export_menu_icon(&identifier, package.icon.as_deref())?;
-        export_desktop(
+        let wm_class = package
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        export_desktop_with_wm_class(
             &export_path,
             &package.name,
             &argv,
             &menu_icon,
             false,
             "Game",
+            Some(wm_class),
         )?;
         self.runner.write("Creating the game menu shortcut");
         let app = json!({
@@ -1057,42 +1078,54 @@ impl Installer {
         Ok((path.clone(), Some(path)))
     }
 
-    fn refresh_game_menu_icons(&self) {
+    fn refresh_windows_menu_entries(&self) {
         let Ok(apps) = self.registry.apps() else {
             return;
         };
         for mut app in apps {
-            if !app["game_shortcut"].as_bool().unwrap_or(false) {
+            if app["method"].as_str() != Some("wine") {
                 continue;
             }
-            let Some(icon) = app["exports"][0]["icon"].as_str().map(str::to_owned) else {
+            let (Some(icon), Some(desktop), Some(name), Some(arguments), Some(executable)) = (
+                app["exports"][0]["icon"].as_str().map(str::to_owned),
+                app["exports"][0]["desktop"].as_str().map(str::to_owned),
+                app["exports"][0]["name"].as_str().map(str::to_owned),
+                app["exports"][0]["argv"].as_array().cloned(),
+                app["exports"][0]["wine_args"][0]
+                    .as_str()
+                    .map(str::to_owned),
+            ) else {
                 continue;
             };
-            let source = Path::new(&icon);
-            if !source.is_file() {
-                continue;
-            }
-            if app["exports"][0]["menu_icon_file"]
-                .as_str()
-                .is_some_and(|path| Path::new(path).is_file())
-            {
-                continue;
-            }
             let Some(identifier) = app["id"].as_str().map(str::to_owned) else {
                 continue;
             };
-            let Ok((menu_icon, menu_icon_file)) =
-                self.export_menu_icon(&identifier, Some(source))
+            let Some(wm_class) = Path::new(&executable)
+                .file_name()
+                .and_then(|name| name.to_str())
             else {
                 continue;
             };
-            let (Some(desktop), Some(icon_file), Some(name), Some(arguments)) = (
-                app["exports"][0]["desktop"].as_str().map(str::to_owned),
-                menu_icon_file,
-                app["exports"][0]["name"].as_str().map(str::to_owned),
-                app["exports"][0]["argv"].as_array().cloned(),
-            ) else {
+            let current_icon = app["exports"][0]["menu_icon_file"]
+                .as_str()
+                .filter(|path| Path::new(path).is_file())
+                .map(str::to_owned);
+            let needs_wm_class = std::fs::read_to_string(&desktop)
+                .map(|contents| !contents.lines().any(|line| line.starts_with("StartupWMClass=")))
+                .unwrap_or(true);
+            let needs_menu_icon = Path::new(&icon).is_file() && current_icon.is_none();
+            if !needs_wm_class && !needs_menu_icon {
                 continue;
+            }
+            let (menu_icon, menu_icon_file) = if let Some(path) = current_icon {
+                (path.clone(), Some(path))
+            } else if Path::new(&icon).is_file() {
+                match self.export_menu_icon(&identifier, Some(Path::new(&icon))) {
+                    Ok(result) => result,
+                    Err(_) => continue,
+                }
+            } else {
+                (icon.clone(), None)
             };
             let argv = arguments
                 .iter()
@@ -1100,17 +1133,24 @@ impl Installer {
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
             let terminal = app["exports"][0]["terminal"].as_bool().unwrap_or(false);
-            if export_desktop(
+            if export_desktop_with_wm_class(
                 Path::new(&desktop),
                 &name,
                 &argv,
                 &menu_icon,
                 terminal,
-                "Game",
+                if app["game_shortcut"].as_bool().unwrap_or(false) {
+                    "Game"
+                } else {
+                    "Utility"
+                },
+                Some(wm_class),
             )
             .is_ok()
             {
-                app["exports"][0]["menu_icon_file"] = json!(icon_file);
+                if let Some(icon_file) = menu_icon_file {
+                    app["exports"][0]["menu_icon_file"] = json!(icon_file);
+                }
                 let _ = self.registry.save(&app);
             }
         }
