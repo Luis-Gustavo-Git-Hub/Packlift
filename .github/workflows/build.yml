@@ -45,8 +45,14 @@ jobs:
         run: |
           flatpak install --user --noninteractive ./Packlift-x86_64.flatpak
           dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
+            command -v flatpak-spawn
+            if flatpak-spawn --host --watch-bus /usr/bin/true; then
+              exit 1
+            fi
+          '
+          flatpak override --user --talk-name=org.freedesktop.Flatpak io.github.flatapk.Installer
+          dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
             flatpak-spawn --host --watch-bus uname -m
-            test -x /app/bin/flatapk
             test -x /app/bin/flatapk
             bsdtar --version
             msiinfo --version

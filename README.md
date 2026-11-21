@@ -44,7 +44,7 @@ Close programs using the shared prefix before installing, uninstalling, or repai
 
 Native packages use the host distribution's package manager and request authorization through polkit. Toolbx and Podman must be installed on the host for container-based packages. Packlift reuses one container per distribution and forwards the graphical session, audio, and home directory to programs running inside it. On Fedora OSTree systems, RPM packages use Toolbx. Set `FLATAPK_UBUNTU_IMAGE`, `FLATAPK_FEDORA_IMAGE`, or `FLATAPK_ARCH_IMAGE` to override the default container images.
 
-The Flatpak manifest lets Packlift run host commands through `flatpak-spawn --host`, access files in your home directory, and write application shortcuts. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
+In the GitHub Flatpak build, choose **Enable access to your system…** and copy the command shown in the dialog. Run it in your terminal as your user and reopen Packlift. This grants Packlift permission to run host commands with your account's access for Toolbx, native package management, and Wine or Proton. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
 
 ## Package integrity
 

@@ -1,6 +1,13 @@
 use adw::prelude::*;
 use gtk::prelude::*;
-use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{
+    cell::RefCell,
+    path::Path,
+    rc::Rc,
+    sync::{Arc, OnceLock},
+    thread,
+    time::Duration,
+};
 
 use packlift::{
     core::{Package, PackliftError, Result},
@@ -10,6 +17,65 @@ use packlift::{
 use serde_json::Value;
 
 const APP_ID: &str = "io.github.flatapk.Installer";
+
+fn host_access_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        !Path::new("/.flatpak-info").is_file()
+            || std::process::Command::new("flatpak-spawn")
+                .args(["--host", "/usr/bin/true"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+    })
+}
+
+fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
+    let command = format!("flatpak override --user --talk-name=org.freedesktop.Flatpak {APP_ID}");
+    let dialog = gtk::Dialog::builder()
+        .title("Allow access to your system")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(460)
+        .build();
+    dialog.add_button("Close", gtk::ResponseType::Close);
+    let copy = dialog.add_button("Copy command", gtk::ResponseType::Apply);
+    dialog.set_default_response(gtk::ResponseType::Apply);
+
+    let content = dialog.content_area();
+    content.set_spacing(12);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let explanation = gtk::Label::new(Some(
+        "Packlift needs to run commands on your Linux system to use Toolbx, install packages and open programs. This permission allows commands to run with your account's access. Copy and run the command in your terminal, then close all Packlift windows and reopen the app.",
+    ));
+    explanation.set_wrap(true);
+    explanation.set_xalign(0.0);
+    content.append(&explanation);
+    let command_label = gtk::Label::new(Some(&command));
+    command_label.add_css_class("monospace");
+    command_label.set_wrap(true);
+    command_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    command_label.set_xalign(0.0);
+    command_label.set_selectable(true);
+    content.append(&command_label);
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Apply {
+            dialog.clipboard().set_text(&command);
+            if let Some(button) = copy.downcast_ref::<gtk::Button>() {
+                button.set_label("Command copied");
+                button.announce(
+                    "Command copied",
+                    gtk::AccessibleAnnouncementPriority::Medium,
+                );
+            }
+        } else {
+            dialog.close();
+        }
+    });
+    dialog.present();
+}
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
@@ -22,6 +88,9 @@ fn main() -> glib::ExitCode {
         for file in files {
             if let Some(path) = file.path() {
                 open_package(app, &path);
+                if !host_access_available() {
+                    break;
+                }
             }
         }
     });
@@ -38,11 +107,16 @@ fn installer_with_output(logger: LogHandler) -> Result<Installer> {
 }
 
 fn build_home(app: &adw::Application) {
+    present_home(app);
+}
+
+fn present_home(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(640, 470);
     render_home(app, &window);
     window.present();
+    window
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
@@ -66,6 +140,21 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     content.set_margin_bottom(18);
     content.set_margin_start(18);
     content.set_margin_end(18);
+    if !host_access_available() {
+        let enable = gtk::Button::with_label("Enable access to your system…");
+        enable.add_css_class("suggested-action");
+        enable.set_halign(gtk::Align::Start);
+        let weak_window = window.downgrade();
+        enable.connect_clicked(move |_| {
+            if let Some(window) = weak_window.upgrade() {
+                show_host_access_dialog(&window);
+            }
+        });
+        content.append(&enable);
+        toolbar.set_content(Some(&content));
+        window.set_content(Some(&toolbar));
+        return;
+    }
     let open = gtk::Button::with_label("Open package");
     open.add_css_class("suggested-action");
     open.set_halign(gtk::Align::Start);
@@ -218,6 +307,15 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
+    if !host_access_available() {
+        let window = app
+            .active_window()
+            .and_downcast::<adw::ApplicationWindow>()
+            .unwrap_or_else(|| present_home(app));
+        window.present();
+        show_host_access_dialog(&window);
+        return;
+    }
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(470, 440);
@@ -927,6 +1025,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     content.append(&gtk::Label::new(Some("Default Windows runtime")));
     content.append(&choices);
     let associations = gtk::Button::with_label("Set as default for supported files");
+    associations.set_sensitive(host_access_available());
     let association_status = gtk::Label::new(Some(
         "Applies to your account for DEB, RPM, Arch packages, AppImage, EXE, MSI, SETUP and supported TAR archives.",
     ));
