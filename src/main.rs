@@ -6,7 +6,7 @@ use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
     core::{Package, PackliftError, Result},
-    installer::Installer,
+    installer::{windows_prefix_drive, Installer},
     system::{host_access_available, packlift_data_dir, LogHandler},
     APP_ID,
 };
@@ -461,6 +461,13 @@ fn library_row(
     );
     menu.set_valign(gtk::Align::Center);
     if method == "wine" {
+        let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
+        let parent = window.downgrade();
+        add_menu_item(&popover, &actions, tr("Open prefix folder"), move || {
+            if let Some(window) = parent.upgrade() {
+                open_prefix_folder(&window, &runtime);
+            }
+        });
         let app = app.clone();
         let record = record.clone();
         let parent = window.downgrade();
@@ -1343,9 +1350,11 @@ fn choose_installed_executable(
     body.set_margin_end(18);
     body.append(&home_label(tr("Windows installer finished"), "title-2"));
     body.append(&home_label(tr("Packlift could not identify a single program to open. Select the game's .exe from the folder where it was installed."), "dim-label"));
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.append(&prefix_folder_button(window, &runtime));
     let choose = text_button(tr("Choose .exe…"));
     choose.add_css_class("suggested-action");
-    choose.set_halign(gtk::Align::Start);
+    actions.append(&choose);
     let parent = window.downgrade();
     let app = app.clone();
     choose.connect_clicked(move |_| {
@@ -1384,7 +1393,7 @@ fn choose_installed_executable(
             );
         });
     });
-    body.append(&choose);
+    body.append(&actions);
     toolbar.set_content(Some(&body));
     window.set_content(Some(&toolbar));
 }
@@ -1441,6 +1450,12 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
         }
     });
     actions.append(&close);
+    if record["method"].as_str() == Some("wine") {
+        actions.append(&prefix_folder_button(
+            window,
+            record["runtime"].as_str().unwrap_or_default(),
+        ));
+    }
     let open = text_button(tr("Open"));
     open.add_css_class("suggested-action");
     let record = record.clone();
@@ -1459,6 +1474,32 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     }
     body.append(&actions);
     window.set_content(Some(&body));
+}
+
+fn prefix_folder_button(window: &adw::ApplicationWindow, runtime: &str) -> gtk::Button {
+    let button = text_button(tr("Open prefix folder"));
+    let parent = window.downgrade();
+    let runtime = runtime.to_owned();
+    button.connect_clicked(move |_| {
+        if let Some(window) = parent.upgrade() {
+            open_prefix_folder(&window, &runtime);
+        }
+    });
+    button
+}
+
+fn open_prefix_folder(window: &adw::ApplicationWindow, runtime: &str) {
+    let drive = windows_prefix_drive(&packlift_data_dir(), runtime);
+    // The desktop portal opens the parent and selects the C: drive.
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(drive)));
+    let parent = window.downgrade();
+    launcher.open_containing_folder(Some(window), None::<&gio::Cancellable>, move |result| {
+        if let (Err(error), Some(window)) = (result, parent.upgrade()) {
+            let message = tr("Could not open the prefix folder: {error}")
+                .replace("{error}", &error.to_string());
+            show_error(&window, &message);
+        }
+    });
 }
 
 fn record_image(record: &Value, size: i32) -> gtk::Image {

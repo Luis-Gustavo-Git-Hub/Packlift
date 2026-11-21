@@ -1314,11 +1314,7 @@ fi"#
             .file_stem()
             .and_then(|name| name.to_str())
             .unwrap_or("Windows program");
-        let prefix = if wine.umu {
-            wine.prefix.join("pfx/drive_c")
-        } else {
-            wine.prefix.join("drive_c")
-        };
+        let prefix = windows_prefix_drive(&self.data, &wine.runtime);
         let windows_directory = prefix
             .canonicalize()
             .ok()
@@ -2174,6 +2170,22 @@ fn windows_desktop_command(argv: &[String]) -> Vec<String> {
     result
 }
 
+fn shared_windows_prefix(data: &Path) -> PathBuf {
+    data.join("wine/prefix")
+}
+
+/// The C: drive whose containing folder is the prefix used by this runtime.
+pub fn windows_prefix_drive(data: &Path, runtime: &str) -> PathBuf {
+    let prefix = shared_windows_prefix(data);
+    if runtime == "proton" {
+        let proton_drive = prefix.join("pfx/drive_c");
+        if proton_drive.is_dir() {
+            return proton_drive;
+        }
+    }
+    prefix.join("drive_c")
+}
+
 struct Wine {
     runner: Runner,
     runtime: String,
@@ -2192,14 +2204,13 @@ impl Wine {
         _applications: &Path,
         _machine: &str,
     ) -> Self {
-        let root = data.join("wine");
         Self {
             runner,
             umu: runtime == "proton",
             flatpak: runtime == FLATPAK_WINE,
             runtime,
-            prefix: root.join("prefix"),
-            integrations: root.join("desktop"),
+            prefix: shared_windows_prefix(data),
+            integrations: data.join("wine/desktop"),
             proton_path: None,
         }
     }
@@ -3560,6 +3571,22 @@ fn collect_exes(
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn prefix_folder_uses_the_drive_for_the_selected_runtime() {
+        use super::{fs, windows_prefix_drive};
+
+        let data =
+            std::env::temp_dir().join(format!("packlift-prefix-test-{}", std::process::id()));
+        let wine_drive = data.join("wine/prefix/drive_c");
+        let proton_drive = data.join("wine/prefix/pfx/drive_c");
+        fs::create_dir_all(&wine_drive).unwrap();
+        assert_eq!(windows_prefix_drive(&data, "proton"), wine_drive);
+        fs::create_dir_all(&proton_drive).unwrap();
+        assert_eq!(windows_prefix_drive(&data, "proton"), proton_drive);
+        assert_eq!(windows_prefix_drive(&data, "wine"), wine_drive);
+        fs::remove_dir_all(data).unwrap();
+    }
 
     #[test]
     fn windows_setup_finds_a_game_on_a_proton_mapped_drive() {
