@@ -338,7 +338,8 @@ class Installer:
             machine = host_info(self.runner)[1]
             runtime = self.windows_runtime(runtime or app["runtime"], machine)
             wine = Wine(self.runner, runtime, machine)
-            wine.prepare()
+            if runtime != app["runtime"]:
+                wine.prepare()
             app["runtime"] = runtime
             for export in app["exports"]:
                 export["argv"] = wine.command(*export["wine_args"], extra=app["environment"],
