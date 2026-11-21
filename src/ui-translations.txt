@@ -131,3 +131,7 @@ No Packlift log is available yet. {error}|Ainda não há log do Packlift. {error
 Copy all logs|Copiar todos os logs|Copiar todos los registros|Скопировать все журналы|复制全部日志
 Logs copied|Logs copiados|Registros copiados|Журналы скопированы|日志已复制
 This format needs system access. In sandbox mode, choose a type 2 AppImage or a Linux TAR archive.|Este formato exige acesso ao sistema. No modo sandbox, escolha um AppImage tipo 2 ou um arquivo TAR Linux.|Este formato requiere acceso al sistema. En modo aislado, elige una AppImage de tipo 2 o un archivo TAR de Linux.|Для этого формата нужен доступ к системе. В изолированном режиме выберите AppImage типа 2 или архив TAR для Linux.|此格式需要访问系统。在沙盒模式下，请选择第二类 AppImage 或 Linux TAR 文件。
+Choose the installed executable|Escolher o executável instalado|Elegir el ejecutable instalado|Выбрать установленный EXE-файл|选择已安装的可执行文件
+Windows installer finished|Instalador do Windows concluído|El instalador de Windows finalizó|Установщик Windows завершил работу|Windows 安装程序已结束
+Packlift could not identify a single program to open. Select the game's .exe from the folder where it was installed.|O Packlift não identificou um único programa para abrir. Selecione o .exe do jogo na pasta onde ele foi instalado.|Packlift no pudo identificar un único programa para abrir. Selecciona el .exe del juego en la carpeta donde se instaló.|Packlift не смог определить, какую программу запустить. Выберите файл .exe игры в папке установки.|Packlift 无法确定要打开哪个程序。请在游戏的安装文件夹中选择其 .exe 文件。
+Choose .exe…|Escolher .exe…|Elegir .exe…|Выбрать .exe…|选择 .exe…

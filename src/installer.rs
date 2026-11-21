@@ -1221,6 +1221,7 @@ fi"#
             machine,
         );
         wine.prepare()?;
+        let before = windows_executables(&wine.prefix);
         let cwd = package.path.parent().unwrap_or(Path::new("/"));
         let arguments = if package.kind == "msi" {
             vec![
@@ -1236,27 +1237,96 @@ fi"#
         self.runner
             .run(&command, wine.umu && self.runner.sandbox, true, true)?;
         wine.wait()?;
-        self.runner
-            .write("Registering the installed program in Packlift");
-        let prefix = self.data.join("wine/prefix/drive_c");
-        let mut executables = Vec::new();
-        collect_exes(&prefix.join("Program Files"), &mut executables, 0)?;
-        collect_exes(&prefix.join("Program Files (x86)"), &mut executables, 0)?;
-        let needle = package.name.to_ascii_lowercase();
-        executables.sort_by_key(|path| {
-            (
-                path.file_stem()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    != needle,
-                path.components().count(),
-                path.clone(),
-            )
+        let target = before.ok().and_then(|before| {
+            let after = windows_executables(&wine.prefix).ok()?;
+            let mut changed = after.iter().filter(|(path, metadata)| {
+                before.get(*path) != Some(*metadata)
+                    && matches!(detect(path), Ok((kind, _)) if kind == "exe")
+            });
+            let first = changed.next()?.0;
+            changed.next().is_none().then(|| first.clone())
         });
-        let target = executables.into_iter().next().ok_or_else(|| PackliftError::Message(
-            "The installer finished, but Packlift could not find the installed program. Add its game executable from the file manager.".into()))?;
-        let windows_directory = windows_install_directory(&target, &prefix);
+        let Some(target) = target else {
+            return Err(PackliftError::InstalledExecutableRequired {
+                package: Box::new(package.clone()),
+                runtime: wine.runtime,
+            });
+        };
+        self.register_windows_target(package, &wine, &identifier, &target)
+    }
+
+    pub fn finish_windows_installation(
+        &self,
+        package: &Package,
+        runtime: &str,
+        target: &Path,
+    ) -> Result<Value> {
+        if !host_access_available() {
+            return Err(PackliftError::HostAccessRequired);
+        }
+        let _operation = operation(&self.data)?;
+        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
+        if self
+            .registry
+            .apps()?
+            .iter()
+            .any(|app| app["id"] == identifier)
+        {
+            return Err(PackliftError::Message(
+                "This program is already registered in Packlift.".into(),
+            ));
+        }
+        let machine = self.machine()?;
+        let runtime = self.windows_runtime(runtime, &machine)?;
+        let wine = Wine::new(
+            self.runner.clone(),
+            runtime,
+            &self.data,
+            &self.applications,
+            &machine,
+        );
+        self.register_windows_target(package, &wine, &identifier, target)
+    }
+
+    fn register_windows_target(
+        &self,
+        package: &Package,
+        wine: &Wine,
+        identifier: &str,
+        target: &Path,
+    ) -> Result<Value> {
+        let target = target.canonicalize()?;
+        if !target.is_file()
+            || !is_program_executable(&target)
+            || package.path.canonicalize().ok().as_ref() == Some(&target)
+        {
+            return Err(PackliftError::Message(
+                "Choose the installed game's .exe, not its installer or uninstaller.".into(),
+            ));
+        }
+        let (kind, architecture) = detect(&target)?;
+        if kind != "exe" {
+            return Err(PackliftError::Message(
+                "This file is not a Windows program executable.".into(),
+            ));
+        }
+        let name = target
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Windows program");
+        let prefix = if wine.umu {
+            wine.prefix.join("pfx/drive_c")
+        } else {
+            wine.prefix.join("drive_c")
+        };
+        let windows_directory = prefix
+            .canonicalize()
+            .ok()
+            .and_then(|prefix| windows_install_directory(&target, &prefix));
+        self.runner.write(&format!(
+            "Registering installed Windows executable {}",
+            target.display()
+        ));
         let export = self
             .applications
             .join(format!("{APP_ID}.{identifier}.0.desktop"));
@@ -1265,39 +1335,35 @@ fi"#
             &[target.to_string_lossy().into_owned()],
             Some(target.parent().unwrap_or(&prefix)),
         );
-        // Setup executables frequently carry a bootstrapper icon unrelated to the
-        // installed program. Prefer the icon embedded in the selected app binary.
-        let mut installed_program = package.clone();
-        installed_program.path = target.clone();
-        installed_program.digest = sha256(&target)?;
-        installed_program.icon = None;
+        let mut installed_program = Package {
+            path: target.clone(),
+            digest: sha256(&target)?,
+            ..Package::default()
+        };
         self.inspect_pe_icon(&mut installed_program)?;
-        let selected_icon = installed_program
-            .icon
-            .as_deref()
-            .or(package.icon.as_deref());
+        let selected_icon = installed_program.icon.as_deref();
         let icon = selected_icon
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        let (menu_icon, menu_icon_file) = self.export_menu_icon(&identifier, selected_icon)?;
+        let (menu_icon, menu_icon_file) = self.export_menu_icon(identifier, selected_icon)?;
         let wm_class = target
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
         export_desktop_with_wm_class(
             &export,
-            &package.name,
+            name,
             &windows_desktop_command(&argv),
             &menu_icon,
             false,
             "Utility",
             Some(wm_class),
         )?;
-        let metadata_directory = self.data.join("windows").join(&identifier);
+        let metadata_directory = self.data.join("windows").join(identifier);
         fs::create_dir_all(&metadata_directory)?;
-        let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
+        let app = json!({"id":identifier,"name":name,"version":"","architecture":architecture,
             "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
-            "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":package.name,
+            "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":name,
             "icon":icon,"menu_icon_file":menu_icon_file,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
         self.registry.save(&app)?;
         Ok(app)
@@ -3230,6 +3296,47 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
     Ok(executable_files)
 }
 
+type ExecutableSnapshot = std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>;
+
+fn windows_executables(prefix: &Path) -> Result<ExecutableSnapshot> {
+    let mut paths = Vec::new();
+    for drive in [prefix.join("drive_c"), prefix.join("pfx/drive_c")] {
+        for directory in ["Program Files", "Program Files (x86)", "Games"] {
+            collect_exes(&drive.join(directory), &mut paths, 0)?;
+        }
+    }
+    let mut snapshot = ExecutableSnapshot::new();
+    for path in paths.into_iter().filter(|path| is_program_executable(path)) {
+        let metadata = fs::metadata(&path)?;
+        snapshot.insert(path.canonicalize()?, (metadata.len(), metadata.modified()?));
+    }
+    Ok(snapshot)
+}
+
+fn is_program_executable(path: &Path) -> bool {
+    let Some(extension) = path.extension() else {
+        return false;
+    };
+    let Some(stem) = path.file_stem() else {
+        return false;
+    };
+    let name = stem.to_string_lossy().to_ascii_lowercase();
+    extension.eq_ignore_ascii_case("exe")
+        && !matches!(
+            name.as_str(),
+            "setup"
+                | "install"
+                | "installer"
+                | "uninstall"
+                | "uninstaller"
+                | "updater"
+                | "crashreporter"
+                | "crashreportclient"
+                | "crashpad_handler"
+        )
+        && !name.starts_with("unins00")
+}
+
 fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Result<()> {
     if depth > 10 || !directory.is_dir() {
         return Ok(());
@@ -3259,6 +3366,59 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn windows_setup_registers_the_selected_executable_and_its_own_identity() {
+        use super::{fs, Installer, Package, Wine};
+        use std::sync::Arc;
+
+        let temp =
+            std::env::temp_dir().join(format!("packlift-setup-target-test-{}", std::process::id()));
+        let games = temp.join("Games");
+        fs::create_dir_all(&games).unwrap();
+        let installer = Installer::new(
+            Arc::new(|_| {}),
+            Some(temp.join("data")),
+            Some(temp.join("applications")),
+        )
+        .unwrap();
+        let source = temp.join("Setup.setup");
+        fs::write(&source, b"installer").unwrap();
+        let package = Package {
+            name: "Setup".into(),
+            path: source,
+            kind: "setup".into(),
+            icon: Some(temp.join("setup-icon.png")),
+            ..Package::default()
+        };
+        let target = games.join("My Game.exe");
+        let mut header = [0_u8; 88];
+        header[..2].copy_from_slice(b"MZ");
+        header[60] = 64;
+        header[64..70].copy_from_slice(&[b'P', b'E', 0, 0, 0x64, 0x86]);
+        fs::write(&target, header).unwrap();
+        let wine = Wine::new(
+            installer.runner.clone(),
+            "wine".into(),
+            &installer.data,
+            &installer.applications,
+            "x86_64",
+        );
+        let record = installer
+            .register_windows_target(&package, &wine, "sample", &target)
+            .unwrap();
+        assert_eq!(record["name"], "My Game");
+        assert_eq!(record["exports"][0]["icon"], "application-x-executable");
+        assert_eq!(
+            record["exports"][0]["wine_args"][0].as_str(),
+            target.canonicalize().unwrap().to_str()
+        );
+        assert!(
+            record["windows_directory"].is_null(),
+            "removing a shortcut must not delete external game files"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn selected_proton_version_reaches_the_host_shortcut() {

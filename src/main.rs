@@ -1277,6 +1277,17 @@ where
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
                     match result {
+                        Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
+                            choose_installed_executable(&app, &window, *package, runtime);
+                        }
+                        Err(PackliftError::ExecutableSelectionFailed {
+                            package,
+                            runtime,
+                            reason,
+                        }) => {
+                            choose_installed_executable(&app, &window, *package, runtime);
+                            show_error(&window, &reason);
+                        }
                         Err(error) => {
                             if from_library {
                                 render_home(&app, &window);
@@ -1309,6 +1320,73 @@ where
             Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
         }
     });
+}
+
+fn choose_installed_executable(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    package: Package,
+    runtime: String,
+) {
+    window.set_default_size(440, -1);
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        tr("Choose the installed executable"),
+        "",
+    )));
+    toolbar.add_top_bar(&header);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(18);
+    body.set_margin_bottom(18);
+    body.set_margin_start(18);
+    body.set_margin_end(18);
+    body.append(&home_label(tr("Windows installer finished"), "title-2"));
+    body.append(&home_label(tr("Packlift could not identify a single program to open. Select the game's .exe from the folder where it was installed."), "dim-label"));
+    let choose = text_button(tr("Choose .exe…"));
+    choose.add_css_class("suggested-action");
+    choose.set_halign(gtk::Align::Start);
+    let parent = window.downgrade();
+    let app = app.clone();
+    choose.connect_clicked(move |_| {
+        let Some(window) = parent.upgrade() else {
+            return;
+        };
+        let dialog = gtk::FileDialog::builder()
+            .title(tr("Choose the installed executable"))
+            .build();
+        if let Some(folder) = package.path.parent() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+        }
+        let app = app.clone();
+        let package = package.clone();
+        let runtime = runtime.clone();
+        let parent = window.downgrade();
+        dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+            let (Ok(file), Some(window)) = (result, parent.upgrade()) else {
+                return;
+            };
+            let Some(path) = file.path() else { return };
+            run_job(
+                &app,
+                &window,
+                tr("Adding program or game to menu"),
+                move |logger| match installer_with_output(logger)?
+                    .finish_windows_installation(&package, &runtime, &path)
+                {
+                    Ok(record) => Ok(Some(record)),
+                    Err(error) => Err(PackliftError::ExecutableSelectionFailed {
+                        package: Box::new(package),
+                        runtime,
+                        reason: error.to_string(),
+                    }),
+                },
+            );
+        });
+    });
+    body.append(&choose);
+    toolbar.set_content(Some(&body));
+    window.set_content(Some(&toolbar));
 }
 
 fn show_success(window: &adw::ApplicationWindow, record: &Value) {

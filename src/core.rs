@@ -15,6 +15,17 @@ use xz2::read::XzDecoder;
 pub enum PackliftError {
     #[error("This format needs host integration. Sandbox mode supports type 2 AppImages and Linux TAR archives.")]
     HostAccessRequired,
+    #[error("The installer finished. Choose the installed program's executable.")]
+    InstalledExecutableRequired {
+        package: Box<Package>,
+        runtime: String,
+    },
+    #[error("{reason}")]
+    ExecutableSelectionFailed {
+        package: Box<Package>,
+        runtime: String,
+        reason: String,
+    },
     #[error("{0}")]
     Message(String),
     #[error("{0}")]
