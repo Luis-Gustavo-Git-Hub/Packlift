@@ -926,6 +926,43 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     }
     content.append(&gtk::Label::new(Some("Default Windows runtime")));
     content.append(&choices);
+    let associations = gtk::Button::with_label("Set as default for supported files");
+    let association_status = gtk::Label::new(Some(
+        "Applies to your account for DEB, RPM, Arch packages, AppImage, EXE, MSI, SETUP and supported TAR archives.",
+    ));
+    association_status.set_wrap(true);
+    association_status.set_xalign(0.0);
+    association_status.add_css_class("dim-label");
+    let status = association_status.clone();
+    associations.connect_clicked(move |button| {
+        button.set_sensitive(false);
+        status.set_text("Updating file associations…");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(installer().and_then(|manager| manager.set_default_file_handler()));
+        });
+        let button = button.downgrade();
+        let status = status.downgrade();
+        glib::timeout_add_local(Duration::from_millis(120), move || {
+            let (Some(button), Some(status)) = (button.upgrade(), status.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            let message = match receiver.try_recv() {
+                Ok(Ok(())) => "Packlift is now the default for supported files.".into(),
+                Ok(Err(error)) => error.to_string(),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    "Could not update file associations.".into()
+                }
+            };
+            status.set_text(&message);
+            status.announce(&message, gtk::AccessibleAnnouncementPriority::Medium);
+            button.set_sensitive(true);
+            glib::ControlFlow::Break
+        });
+    });
+    content.append(&associations);
+    content.append(&association_status);
     let logs = gtk::Button::with_label("View Packlift logs");
     let weak_window_for_logs = window.downgrade();
     logs.connect_clicked(move |_| {

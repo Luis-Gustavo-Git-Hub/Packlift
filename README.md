@@ -24,7 +24,7 @@ flatpak install --user ./Packlift-x86_64.flatpak
 flatpak run io.github.flatapk.Installer
 ```
 
-Open a package from your file manager with **Open With Packlift**, use **Open package**, or launch Packlift without a file to manage installed programs. Set Packlift as the default app for a file format if you want to open that format with a double-click.
+Open a package from your file manager with **Open With Packlift**, use **Open package**, or launch Packlift without a file to manage installed programs. In Packlift settings, choose **Set as default for supported files** to open compatible files with a double-click. This updates the file associations for your Linux account. Opening a package still takes you to the review screen before installation or launch.
 
 If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **Show details** for its launch output.
 

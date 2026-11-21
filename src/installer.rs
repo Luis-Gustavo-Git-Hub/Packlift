@@ -45,6 +45,65 @@ impl Installer {
         Ok(installer)
     }
 
+    pub fn set_default_file_handler(&self) -> Result<()> {
+        const HANDLER: &str = "io.github.flatapk.Installer.desktop";
+        const HANDLER_ENTRY: &str = include_str!("../data/io.github.flatapk.Installer.desktop");
+        const MIME_DEFINITIONS: &str = include_str!("../data/io.github.flatapk.Installer.xml");
+
+        let _operation = operation(&self.data)?;
+        for executable in ["gio", "xdg-mime", "update-mime-database"] {
+            if !self.runner.available(executable) {
+                return Err(PackliftError::Message(format!(
+                    "The host needs {executable} to set default applications."
+                )));
+            }
+        }
+        let mime_file = self.data.join("io.github.flatapk.Installer.xml");
+        fs::write(&mime_file, MIME_DEFINITIONS)?;
+        self.runner.run(
+            &[
+                "xdg-mime".into(),
+                "install".into(),
+                "--mode".into(),
+                "user".into(),
+                "--novendor".into(),
+                mime_file.to_string_lossy().into_owned(),
+            ],
+            false,
+            true,
+            true,
+        )?;
+
+        let types = HANDLER_ENTRY
+            .lines()
+            .find_map(|line| line.strip_prefix("MimeType="))
+            .ok_or_else(|| {
+                PackliftError::Message("Packlift has no registered file types.".into())
+            })?;
+        let mut failed = Vec::new();
+        for mime in types.split(';').filter(|mime| !mime.is_empty()) {
+            if self
+                .runner
+                .run(
+                    &["gio".into(), "mime".into(), mime.into(), HANDLER.into()],
+                    false,
+                    true,
+                    true,
+                )
+                .is_err()
+            {
+                failed.push(mime);
+            }
+        }
+        if !failed.is_empty() {
+            return Err(PackliftError::Message(format!(
+                "Could not set the default for {}. See the Packlift log for details.",
+                failed.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
     pub fn preferences(&self) -> (String, String) {
         let path = self.data.join("preferences.json");
         let Ok(value) = fs::read_to_string(path) else {
