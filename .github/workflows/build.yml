@@ -1,4 +1,4 @@
-name: Test and build Flatapk
+name: Test and build Packlift
 
 on:
   push:
@@ -39,10 +39,10 @@ jobs:
           flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
             --repo=flatpak-repo --force-clean flatpak-build io.github.flatapk.Installer.json
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-            flatpak-repo Flatapk-x86_64.flatpak io.github.flatapk.Installer
+            flatpak-repo Packlift-x86_64.flatpak io.github.flatapk.Installer
       - name: Validate the installed bundle
         run: |
-          flatpak install --user --noninteractive ./Flatapk-x86_64.flatpak
+          flatpak install --user --noninteractive ./Packlift-x86_64.flatpak
           dbus-run-session -- flatpak run --command=sh io.github.flatapk.Installer -ec '
             flatpak-spawn --host --watch-bus uname -m
             test -x /app/bin/flatapk
@@ -81,8 +81,8 @@ jobs:
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Flatapk-x86_64
-          path: Flatapk-x86_64.flatpak
+          name: Packlift-x86_64
+          path: Packlift-x86_64.flatpak
           if-no-files-found: error
 
   windows-games:

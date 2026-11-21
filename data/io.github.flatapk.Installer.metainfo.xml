@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.flatapk.Installer</id>
-  <name>Flatapk</name>
+  <name>Packlift</name>
   <summary>Install packages with your system, Toolbox or Wine</summary>
   <summary xml:lang="pt-BR">Instale pacotes pelo sistema, Toolbox ou Wine</summary>
   <developer id="io.github.luisgustavogithub">
-    <name>Flatapk contributors</name>
+    <name>Packlift contributors</name>
   </developer>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
   <description>
-    <p>Open a downloaded package, review its origin and installation method, and follow progress in one window. Flatapk adds installed desktop programs to the system menu and lets you remove them from the application.</p>
-    <p>Flatapk can run commands on the host to use your package manager, Toolbox and Wine. Toolbox and Wine programs can access your home directory.</p>
-    <p xml:lang="pt-BR">Abra um pacote baixado, revise a origem e o método de instalação e acompanhe o progresso na mesma janela. O Flatapk adiciona programas ao menu do sistema e permite desinstalá-los pelo aplicativo.</p>
-    <p xml:lang="pt-BR">O Flatapk pode executar comandos no host para usar o gerenciador de pacotes, o Toolbox e o Wine. Programas instalados em Toolbox ou Wine podem acessar sua pasta pessoal.</p>
+    <p>Open a downloaded package, review its origin and installation method, and follow progress in one window. Packlift adds installed desktop programs to the system menu and lets you remove them from the application.</p>
+    <p>Packlift can run commands on the host to use your package manager, Toolbox and Wine. Toolbox and Wine programs can access your home directory.</p>
+    <p xml:lang="pt-BR">Abra um pacote baixado, revise a origem e o método de instalação e acompanhe o progresso na mesma janela. O Packlift adiciona programas ao menu do sistema e permite desinstalá-los pelo aplicativo.</p>
+    <p xml:lang="pt-BR">O Packlift pode executar comandos no host para usar o gerenciador de pacotes, o Toolbox e o Wine. Programas instalados em Toolbox ou Wine podem acessar sua pasta pessoal.</p>
   </description>
   <launchable type="desktop-id">io.github.flatapk.Installer.desktop</launchable>
   <url type="homepage">https://github.com/Luis-Gustavo-Git-Hub/flatapk</url>

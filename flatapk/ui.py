@@ -105,7 +105,7 @@ def installed_icon(name):
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app, *, compact=True):
-        super().__init__(application=app, title="Flatapk", default_width=466 if compact else 640,
+        super().__init__(application=app, title="Packlift", default_width=466 if compact else 640,
                          default_height=370 if compact else 470, resizable=not compact)
         self.compact = compact
         self.running = False
@@ -114,7 +114,7 @@ class Window(Adw.ApplicationWindow):
         self.connect("close-request", lambda _: self.running)
         self.view = Adw.ToolbarView()
         self.header = Adw.HeaderBar()
-        self.header.set_title_widget(Adw.WindowTitle(title="Flatapk"))
+        self.header.set_title_widget(Adw.WindowTitle(title="Packlift"))
         self.view.add_top_bar(self.header)
         self.footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["flatapk-footer"])
         self.view.add_bottom_bar(self.footer)
@@ -271,7 +271,7 @@ class Window(Adw.ApplicationWindow):
             self.body.append(label(_("The program can access your home folder."), "dim-label"))
         if plan.method == "wine":
             self.body.append(label(_(
-                "Windows programs can access your home folder. If needed, Flatapk downloads Wine from Flathub for your account."),
+                "Windows programs can access your home folder. If needed, Packlift downloads Wine from Flathub for your account."),
                 "dim-label"))
         if plan.multilib:
             self.body.append(label(_("Extra 32-bit components may be downloaded.")))
@@ -355,7 +355,7 @@ class Window(Adw.ApplicationWindow):
         self.reset()
         if error:
             message = _(str(error)) if isinstance(error, FlatapkError) else _(
-                "Flatapk could not complete this operation.")
+                "Packlift could not complete this operation.")
             self.append_log(str(error))
             self.shell(_("Operation failed"), message, "dialog-error-symbolic")
             self.body.append(label(_("Check the details for the failing step and try again."), "dim-label"))
@@ -442,7 +442,7 @@ class Window(Adw.ApplicationWindow):
         self.header.pack_start(open_package)
         tools = [(_("Clean unused Toolbox environments"), lambda: self.confirm_action(
             _("Clean unused Toolbox environments?"),
-            _("Flatapk removes its Toolbox containers that have no registered programs."),
+            _("Packlift removes its Toolbox containers that have no registered programs."),
             lambda: self.begin(_("Cleaning environments"), lambda: self.installer.clean(self.step))))]
         if any(app["method"] == "wine" and not app.get("game_shortcut") for app in apps):
             tools.append((_("Repair Wine prefix"), lambda: self.confirm_action(

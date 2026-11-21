@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Flatapk
+Name=Packlift
 Comment=Install Linux and Windows packages
 Comment[pt_BR]=Instale pacotes de Linux e Windows
 Exec=flatapk %F

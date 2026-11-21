@@ -1,8 +1,8 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: Flatapk\n"
+"Project-Id-Version: Packlift\n"
 "PO-Revision-Date: 2026-11-20 00:00+0000\n"
-"Last-Translator: Flatapk contributors\n"
+"Last-Translator: Packlift contributors\n"
 "Language-Team: Portuguese (Brazil)\n"
 "Language: pt_BR\n"
 "MIME-Version: 1.0\n"
@@ -19,7 +19,7 @@ msgstr "Opções avançadas"
 msgid "Analyzing the file"
 msgstr "Analisando o arquivo"
 
-msgid "Another Flatapk operation is running. Try again when it finishes."
+msgid "Another Packlift operation is running. Try again when it finishes."
 msgstr "Já existe uma operação em andamento. Tente novamente quando ela terminar."
 
 msgid "Applying changes"
@@ -71,13 +71,13 @@ msgid "Enter one NAME=value per line, including WINEDLLOVERRIDES if needed."
 msgstr "Digite uma configuração NOME=valor por linha. Inclua WINEDLLOVERRIDES se necessário."
 
 msgid "Extra 32-bit components may be downloaded."
-msgstr "O Flatapk pode baixar componentes adicionais de 32 bits."
+msgstr "O Packlift pode baixar componentes adicionais de 32 bits."
 
-msgid "Flatapk could not complete this operation."
-msgstr "O Flatapk não conseguiu concluir esta operação."
+msgid "Packlift could not complete this operation."
+msgstr "O Packlift não conseguiu concluir esta operação."
 
-msgid "Flatapk removes its Toolbox containers that have no registered programs."
-msgstr "O Flatapk remove os containers que ele criou e que não têm programas registrados."
+msgid "Packlift removes its Toolbox containers that have no registered programs."
+msgstr "O Packlift remove os containers que ele criou e que não têm programas registrados."
 
 msgid "Install Toolbox and Podman on the host before continuing."
 msgstr "Instale Toolbox e Podman no sistema antes de continuar."
@@ -115,8 +115,8 @@ msgstr "O Podman não conseguiu verificar o ambiente Toolbox."
 msgid "Preparing the environment"
 msgstr "Preparando o ambiente"
 
-msgid "Proton's prefix does not point to the Flatapk prefix."
-msgstr "O prefixo do Proton não aponta para o prefixo do Flatapk."
+msgid "Proton's prefix does not point to the Packlift prefix."
+msgstr "O prefixo do Proton não aponta para o prefixo do Packlift."
 
 msgid "Rebuild the shared Wine prefix?"
 msgstr "Recriar o prefixo compartilhado do Wine?"
@@ -175,8 +175,8 @@ msgstr "Instale o Wine ou selecione uma instalação do Wine ou Proton nas opç�
 msgid "Choose the Windows executable from the game's folder."
 msgstr "Selecione o executável do Windows na pasta do jogo."
 
-msgid "Windows programs can access your home folder. If needed, Flatapk downloads Wine from Flathub for your account."
-msgstr "Programas do Windows podem acessar sua pasta pessoal. Se necessário, o Flatapk baixa o Wine do Flathub para sua conta."
+msgid "Windows programs can access your home folder. If needed, Packlift downloads Wine from Flathub for your account."
+msgstr "Programas do Windows podem acessar sua pasta pessoal. Se necessário, o Packlift baixa o Wine do Flathub para sua conta."
 
 msgid "Adding {} to the menu"
 msgstr "Adicionando {} ao menu"
@@ -272,7 +272,7 @@ msgid "The source file changed while it was being analyzed. Open it again."
 msgstr "O arquivo foi alterado durante a análise. Abra-o novamente."
 
 msgid "The supported Arch image requires a 64-bit host."
-msgstr "A imagem Arch usada pelo Flatapk exige um computador de 64 bits."
+msgstr "A imagem Arch usada pelo Packlift exige um computador de 64 bits."
 
 msgid "The system already has this package installed."
 msgstr "Este pacote já está instalado no sistema."
@@ -301,8 +301,8 @@ msgstr "Este computador usa uma arquitetura fora da família x86."
 msgid "This installer needs Windows components. Install Winetricks on the host and retry."
 msgstr "Este instalador precisa de componentes do Windows. Instale o Winetricks e tente novamente."
 
-msgid "This program is already registered in Flatapk."
-msgstr "Este programa já está registrado no Flatapk."
+msgid "This program is already registered in Packlift."
+msgstr "Este programa já está registrado no Packlift."
 
 msgid "This removes the most recently installed Windows program and restores the saved prefix."
 msgstr "Isso remove o último programa do Windows instalado e restaura o prefixo salvo."
@@ -311,7 +311,7 @@ msgid "This removes the program and its shortcuts."
 msgstr "Isso remove o programa e seus atalhos."
 
 msgid "This runs every saved installer again. Settings and files inside the old prefix can be lost."
-msgstr "O Flatapk vai executar novamente todos os instaladores salvos. Configurações e arquivos no prefixo anterior podem ser perdidos."
+msgstr "O Packlift vai executar novamente todos os instaladores salvos. Configurações e arquivos no prefixo anterior podem ser perdidos."
 
 msgid "Toolbox container"
 msgstr "Container do Toolbox"
