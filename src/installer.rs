@@ -1293,6 +1293,21 @@ impl Installer {
         fs::create_dir_all(&directory)?;
         let icon = directory.join(format!("packlift-{identifier}.{extension}"));
         fs::write(&icon, bytes)?;
+        let hicolor = directory
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(&directory);
+        let _ = self.runner.run(
+            &[
+                "gtk-update-icon-cache".into(),
+                "-f".into(),
+                "-t".into(),
+                hicolor.to_string_lossy().into_owned(),
+            ],
+            false,
+            true,
+            false,
+        );
         Ok((
             format!("packlift-{identifier}"),
             Some(icon.to_string_lossy().into_owned()),
