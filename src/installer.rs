@@ -1551,6 +1551,153 @@ fi"#
         self.install_windows_program(package, runtime, &machine)
     }
 
+    pub fn installed_proton_versions(&self) -> Vec<PathBuf> {
+        let data = crate::system::data_home();
+        let home = crate::system::home_dir();
+        let roots = [
+            self.data.join("umu/compatibilitytools"),
+            self.data.join("Steam/compatibilitytools.d"),
+            data.join("umu/compatibilitytools"),
+            data.join("Steam/compatibilitytools.d"),
+            data.join("Steam/steamapps/common"),
+            home.join(".steam/root/compatibilitytools.d"),
+            home.join(".steam/root/steamapps/common"),
+            home.join(".var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d"),
+            home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps/common"),
+        ];
+        let mut versions = std::collections::BTreeSet::new();
+        for root in roots {
+            if let Ok(entries) = fs::read_dir(&root) {
+                versions.extend(
+                    entries
+                        .flatten()
+                        .filter_map(|entry| entry.path().canonicalize().ok())
+                        .filter(|path| path.join("proton").is_file()),
+                );
+            } else if self.runner.sandbox && host_access_available() {
+                // Flatpak can hide Steam's private data even with access to home.
+                let command = [
+                    "sh".into(), "-c".into(),
+                    r#"if [ -d "$1" ]; then find -L "$1" -mindepth 2 -maxdepth 2 -type f -name proton -print0; fi"#.into(),
+                    "packlift".into(), root.to_string_lossy().into_owned(),
+                ];
+                if let Ok(output) = self.runner.capture(&command, false) {
+                    versions.extend(
+                        output
+                            .split('\0')
+                            .filter_map(|file| Path::new(file).parent())
+                            .filter(|path| path.is_absolute())
+                            .map(Path::to_owned),
+                    );
+                }
+            }
+        }
+        versions.into_iter().collect()
+    }
+
+    pub fn set_program_runtime(
+        &self,
+        id: &str,
+        runtime: &str,
+        proton_path: Option<&Path>,
+    ) -> Result<Value> {
+        if !host_access_available() {
+            return Err(PackliftError::HostAccessRequired);
+        }
+        let _operation = operation(&self.data)?;
+        let record = self
+            .registry
+            .apps()?
+            .into_iter()
+            .find(|app| app["id"].as_str() == Some(id) && app["method"] == "wine")
+            .ok_or_else(|| {
+                PackliftError::Message("This Windows program is no longer in the library.".into())
+            })?;
+        if !matches!(runtime, "wine" | "proton") {
+            return Err(PackliftError::Message("Choose Wine or Proton.".into()));
+        }
+        if let Some(path) = proton_path {
+            if runtime != "proton"
+                || !self
+                    .installed_proton_versions()
+                    .iter()
+                    .any(|version| version == path)
+            {
+                return Err(PackliftError::Message("That Proton version is no longer available. Reopen the runtime picker to see installed versions.".into()));
+            }
+        }
+        let entry = &record["exports"][0];
+        let arguments = entry["wine_args"]
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .filter(|items| !items.is_empty())
+            .ok_or_else(|| {
+                PackliftError::Message("This shortcut has no Windows executable.".into())
+            })?;
+        let executable = Path::new(&arguments[0]);
+        let desktop = entry["desktop"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                PackliftError::Message("This program has no desktop shortcut.".into())
+            })?;
+        let name = entry["name"]
+            .as_str()
+            .or_else(|| record["name"].as_str())
+            .unwrap_or("Program");
+        let icon = entry["menu_icon_file"]
+            .as_str()
+            .filter(|path| Path::new(path).is_file())
+            .unwrap_or("application-x-executable");
+        let terminal = entry["terminal"].as_bool().unwrap_or(false);
+        let category = if record["game_shortcut"].as_bool() == Some(true) {
+            "Game"
+        } else {
+            "Utility"
+        };
+        let cwd = record["working_directory"]
+            .as_str()
+            .map(Path::new)
+            .or_else(|| executable.parent());
+        let machine = self.machine()?;
+        let resolved_runtime = self.windows_runtime(runtime, &machine)?;
+        let mut wine = Wine::new(
+            self.runner.clone(),
+            resolved_runtime,
+            &self.data,
+            &self.applications,
+            &machine,
+        );
+        wine.proton_path = proton_path.map(Path::to_owned);
+        let argv = wine.command("wine", &arguments, cwd);
+        let wm_class = executable.file_name().and_then(|name| name.to_str());
+        let mut updated = record.clone();
+        updated["runtime"] = json!(wine.runtime);
+        updated["proton_path"] = json!(proton_path);
+        updated["exports"][0]["argv"] = json!(argv);
+        self.registry.save(&updated)?;
+        if let Err(error) = export_desktop_with_wm_class(
+            &desktop,
+            name,
+            &windows_desktop_command(&argv),
+            icon,
+            terminal,
+            category,
+            wm_class,
+        ) {
+            self.registry.save(&record)?;
+            return Err(error);
+        }
+        self.runner
+            .write(&format!("Updated the Windows runtime for {name}"));
+        Ok(updated)
+    }
+
     pub fn launch(&self, app: &Value) -> Result<()> {
         let argv = app
             .get("exports")
@@ -1968,6 +2115,7 @@ struct Wine {
     integrations: PathBuf,
     umu: bool,
     flatpak: bool,
+    proton_path: Option<PathBuf>,
 }
 
 impl Wine {
@@ -1986,6 +2134,7 @@ impl Wine {
             runtime,
             prefix: root.join("prefix"),
             integrations: root.join("desktop"),
+            proton_path: None,
         }
     }
 
@@ -1993,6 +2142,9 @@ impl Wine {
         let mut values = vec![("WINEPREFIX", self.prefix.to_string_lossy().to_string())];
         if self.umu {
             values.push(("GAMEID", "umu-default".into()));
+            if let Some(path) = &self.proton_path {
+                values.push(("PROTONPATH", path.to_string_lossy().into_owned()));
+            }
             values.push((
                 "UMU_FOLDERS_PATH",
                 self.runner.data.to_string_lossy().to_string(),
@@ -3107,6 +3259,42 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn selected_proton_version_reaches_the_host_shortcut() {
+        use super::{Path, PathBuf, Runner, Wine};
+        use std::sync::Arc;
+
+        let runner = Runner::new(
+            Some(std::env::temp_dir().join("packlift-runtime-command-test")),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let mut simulated_sandbox = runner.clone();
+        simulated_sandbox.sandbox = true;
+        let mut wine = Wine::new(
+            simulated_sandbox,
+            "proton".into(),
+            &runner.data,
+            &runner.data,
+            "x86_64",
+        );
+        wine.proton_path = Some(PathBuf::from("/home/user/Proton Versions/GE-Proton"));
+        let argv = wine.command(
+            "wine",
+            &["/home/user/Games/My Game.exe".into()],
+            Some(Path::new("/home/user/Games")),
+        );
+        assert!(argv
+            .iter()
+            .any(|arg| arg == "--env=PROTONPATH=/home/user/Proton Versions/GE-Proton"));
+        let shortcut = windows_desktop_command(&argv);
+        assert!(shortcut
+            .iter()
+            .any(|arg| arg == "PROTONPATH=/home/user/Proton Versions/GE-Proton"));
+        assert!(desktop_exec(&shortcut)
+            .contains(r#""PROTONPATH=/home/user/Proton Versions/GE-Proton""#));
+    }
 
     #[test]
     fn sandbox_archive_registers_launches_and_removes_without_a_desktop_file() {

@@ -38,7 +38,7 @@ On x86-64, Packlift installs Wine WoW64 from Flathub for your account when a hos
 
 For a Windows `.exe`, choose **Install** to either install a program or game through its setup program, or add an already installed game to Packlift and the applications menu. The game shortcut launches the executable from its original folder, where its DLLs and other game files remain available. Packlift can use the Windows icon embedded in the executable. Removing a game shortcut leaves the game files in place.
 
-Choose Wine or Proton in the package's advanced options. Use the gear button in Packlift to set a default for new Windows programs, or open a program's settings to change its runtime and launch environment. UMU-Proton is installed on first use and runs games outside Steam.
+Choose Wine or Proton when adding a Windows package. The main menu opens **Settings**, where you can set the default for new Windows programs. To change an existing program, open its three-dot menu in **Your library** and select **Change runtime…**. Choose Wine, Proton (automatic), or a detected Proton version installed through UMU or Steam. Packlift updates that program and its desktop shortcut. UMU downloads Proton on first use when needed.
 
 Packlift checks for common Windows components and uses Winetricks when it finds a known dependency. Compressed installers and games may need manual configuration. Set per-program variables such as `WINEDLLOVERRIDES` from the program settings.
 

@@ -64,6 +64,16 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
+    app.connect_startup(|_| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            let css = gtk::CssProvider::new();
+            css.load_from_data(
+                ".packlift-home-hero { padding: 20px; border-radius: 16px; background-color: alpha(@accent_bg_color, 0.12); border: 1px solid alpha(@accent_bg_color, 0.25); }
+                 .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }",
+            );
+            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    });
     app.connect_activate(build_home);
     app.connect_open(|app, files, _hint| {
         for file in files {
@@ -87,198 +97,559 @@ fn installer_with_output(logger: LogHandler) -> Result<Installer> {
 fn build_home(app: &adw::Application) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(640, 470);
+    window.set_default_size(720, 540);
     render_home(app, &window);
     window.present();
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
+    window.set_widget_name("packlift-library");
+    window.set_resizable(true);
+    let host_access = host_access_available();
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
-    let settings = gtk::Button::from_icon_name("preferences-system-symbolic");
-    settings.update_property(&[gtk::accessible::Property::Label("Packlift settings")]);
-    settings.set_tooltip_text(Some("Packlift settings"));
-    let weak_window = window.downgrade();
-    settings.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
+
+    let (menu, popover, actions) = action_menu("Packlift menu", "open-menu-symbolic");
+    let parent = window.downgrade();
+    add_menu_item(&popover, &actions, "Settings", move || {
+        if let Some(window) = parent.upgrade() {
             settings_dialog(&window);
         }
     });
-    header.pack_end(&settings);
+    let parent = window.downgrade();
+    add_menu_item(&popover, &actions, "View Packlift logs", move || {
+        if let Some(window) = parent.upgrade() {
+            show_app_logs(&window);
+        }
+    });
+    if host_access {
+        let parent = window.downgrade();
+        let app = app.clone();
+        add_menu_item(
+            &popover,
+            &actions,
+            "Clean unused environments…",
+            move || {
+                let Some(window) = parent.upgrade() else {
+                    return;
+                };
+                let app = app.clone();
+                confirm_library_action(
+                    &window,
+                    "Clean unused environments?",
+                    "Packlift will remove containers it created that no installed program uses.",
+                    "Clean",
+                    false,
+                    move |window| {
+                        run_job(&app, window, "Cleaning unused environments", |logger| {
+                            installer_with_output(logger)?
+                                .clean_unused_environments()
+                                .map(|_| None)
+                        })
+                    },
+                );
+            },
+        );
+    }
+    header.pack_end(&menu);
     toolbar.add_top_bar(&header);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    if !host_access_available() {
-        content.append(&notice_row("dialog-information-symbolic", "Sandbox mode can open type 2 AppImages and Linux TAR archives. Installed programs appear in the Packlift library.", "dim-label"));
-    }
-    if !host_access_available() && !cfg!(feature = "sandbox-only") {
-        let enable = gtk::Button::with_label("Enable access to your system…");
-        enable.add_css_class("suggested-action");
-        enable.set_halign(gtk::Align::Start);
-        let weak_window = window.downgrade();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    content.set_margin_top(22);
+    content.set_margin_bottom(24);
+    content.set_margin_start(22);
+    content.set_margin_end(22);
+
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 18);
+    hero.add_css_class("packlift-home-hero");
+    let package_icon = gtk::Image::from_icon_name("package-x-generic-symbolic");
+    package_icon.set_pixel_size(38);
+    package_icon.set_valign(gtk::Align::Start);
+    package_icon.add_css_class("packlift-home-icon");
+    hero.append(&package_icon);
+
+    let intro = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    intro.set_hexpand(true);
+    let title = home_label("Add a program or game", "title-2");
+    intro.append(&title);
+    intro.append(&home_label(
+        if host_access {
+            "Choose a Linux package, AppImage, Windows installer or game executable."
+        } else {
+            "Add a compatible type 2 AppImage or Linux TAR archive to this library."
+        },
+        "dim-label",
+    ));
+    let open = gtk::Button::with_label("Choose package…");
+    open.add_css_class("suggested-action");
+    open.set_halign(gtk::Align::Start);
+    open.set_margin_top(4);
+    let parent = window.downgrade();
+    let application = app.clone();
+    open.connect_clicked(move |_| {
+        let Some(window) = parent.upgrade() else {
+            return;
+        };
+        let dialog = gtk::FileDialog::builder().title("Choose a package").build();
+        let app = application.clone();
+        dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    open_package(&app, &path);
+                }
+            }
+        });
+    });
+    intro.append(&open);
+    hero.append(&intro);
+    content.append(&hero);
+
+    if !host_access && !cfg!(feature = "sandbox-only") {
+        let access = adw::ActionRow::builder()
+            .title("Sandbox mode")
+            .subtitle("Enable system access to use Toolbx, Wine or Proton.")
+            .build();
+        access.add_css_class("card");
+        access.add_prefix(&gtk::Image::from_icon_name("changes-prevent-symbolic"));
+        let enable = gtk::Button::with_label("System access…");
+        enable.set_valign(gtk::Align::Center);
+        let parent = window.downgrade();
         enable.connect_clicked(move |_| {
-            if let Some(window) = weak_window.upgrade() {
+            if let Some(window) = parent.upgrade() {
                 show_host_access_dialog(&window);
             }
         });
-        content.append(&enable);
+        access.add_suffix(&enable);
+        let card = gtk::ListBox::new();
+        card.set_selection_mode(gtk::SelectionMode::None);
+        card.add_css_class("boxed-list");
+        card.append(&access);
+        content.append(&card);
     }
-    let open = gtk::Button::with_label("Open package");
-    open.add_css_class("suggested-action");
-    open.set_halign(gtk::Align::Start);
-    let weak_window = window.downgrade();
-    let application = app.clone();
-    open.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
-            let dialog = gtk::FileDialog::builder().title("Open package").build();
-            let app = application.clone();
-            dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        open_package(&app, &path);
-                    }
+
+    let library = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    library.append(&home_label("Your library", "title-2"));
+    match installer().and_then(|manager| manager.registry.apps()) {
+        Ok(records) if records.is_empty() => library.append(&library_status(
+            "folder-symbolic",
+            "Your library is empty",
+            "Choose a package above to add your first program or game.",
+        )),
+        Ok(mut records) => {
+            records
+                .sort_by_cached_key(|record| record["name"].as_str().unwrap_or("").to_lowercase());
+            let search = gtk::SearchEntry::new();
+            search.set_placeholder_text(Some("Search programs and games"));
+            search.update_property(&[gtk::accessible::Property::Label(
+                "Search programs and games",
+            )]);
+            library.append(&search);
+
+            let list = gtk::ListBox::new();
+            list.set_selection_mode(gtk::SelectionMode::None);
+            list.add_css_class("boxed-list");
+            let rows: Vec<_> = records
+                .into_iter()
+                .map(|record| {
+                    let row = library_row(app, window, &record);
+                    let searchable =
+                        format!("{} {}", row.title(), row.subtitle().unwrap_or_default())
+                            .to_lowercase();
+                    list.append(&row);
+                    (row, searchable)
+                })
+                .collect();
+            library.append(&list);
+            let empty = library_status(
+                "system-search-symbolic",
+                "No matches",
+                "Try a different name or runtime.",
+            );
+            empty.set_visible(false);
+            library.append(&empty);
+            search.connect_search_changed(move |entry| {
+                let query = entry.text().trim().to_lowercase();
+                let mut matches = false;
+                for (row, searchable) in &rows {
+                    let visible = searchable.contains(&query);
+                    row.set_visible(visible);
+                    matches |= visible;
                 }
+                list.set_visible(matches);
+                empty.set_visible(!matches);
             });
         }
-    });
-    content.append(&open);
+        Err(error) => library.append(&library_status(
+            "dialog-error-symbolic",
+            "Could not load your library",
+            &error.to_string(),
+        )),
+    }
+    content.append(&library);
 
-    let programs = adw::PreferencesGroup::builder()
-        .title("Installed programs and games")
-        .description("Programs managed by Packlift")
+    let clamp = adw::Clamp::builder()
+        .maximum_size(760)
+        .tightening_threshold(560)
+        .child(&content)
         .build();
-    match installer().and_then(|manager| manager.registry.apps()) {
-        Ok(apps) => {
-            for record in apps {
-                let name = record["name"].as_str().unwrap_or("Program");
-                let game = record["game_shortcut"].as_bool().unwrap_or(false);
-                let method = record["method"].as_str().unwrap_or("local");
-                let runtime = if record["runtime"].as_str().unwrap_or("") == "proton" {
-                    "Proton"
-                } else {
-                    "Wine"
-                };
-                let version = record["version"].as_str().filter(|value| !value.is_empty());
-                let row = adw::ActionRow::builder()
-                    .title(name)
-                    .subtitle(match (game, version) {
-                        (true, Some(version)) => format!("Game shortcut · {runtime} · {version}"),
-                        (true, None) => format!("Game shortcut · {runtime}"),
-                        (false, Some(version)) => format!("{method} · {version}"),
-                        (false, None) => method.to_owned(),
-                    })
-                    .build();
-                if let Some(icon) = record["exports"][0]["icon"].as_str() {
-                    let image = if Path::new(icon).is_absolute() {
-                        gtk::Image::from_file(icon)
-                    } else {
-                        gtk::Image::from_icon_name(icon)
-                    };
-                    image.set_pixel_size(32);
-                    row.add_prefix(&image);
-                }
-                let launch = gtk::Button::with_label("Open");
-                launch.set_valign(gtk::Align::Center);
-                let record_to_open = record.clone();
-                let weak_window = window.downgrade();
-                launch.connect_clicked(move |_| {
-                    let result = installer().and_then(|manager| manager.launch(&record_to_open));
-                    if let Err(error) = result {
-                        if let Some(window) = weak_window.upgrade() {
-                            show_error(&window, &error.to_string());
-                        }
-                    }
-                });
-                if record["exports"][0]["argv"].is_array() {
-                    row.add_suffix(&launch);
-                }
-                if method == "toolbox" {
-                    let repair = gtk::Button::with_label("Repair…");
-                    let parent = window.downgrade();
-                    let application = app.clone();
-                    let record = record.clone();
-                    repair.connect_clicked(move |_| {
-                        let Some(window) = parent.upgrade() else { return };
-                        let confirm = gtk::MessageDialog::builder().transient_for(&window).modal(true)
-                            .text("Repair this container installation?")
-                            .secondary_text("Packlift will refresh the repositories, reinstall the original package and recreate its shortcuts. It can also install missing libraries from the container repositories.").build();
-                        confirm.add_button("Cancel",gtk::ResponseType::Cancel);
-                        confirm.add_button("Repair",gtk::ResponseType::Accept);
-                        let app = application.clone();
-                        let record = record.clone();
-                        confirm.connect_response(move |dialog, response| {
-                            dialog.close();
-                            if response == gtk::ResponseType::Accept {
-                                let record = record.clone();
-                                run_job(&app,&window,"Repairing installation",move |logger| installer_with_output(logger)?.repair_container_app(&record).map(Some));
-                            }
-                        });
-                        confirm.present();
-                    });
-                    row.add_suffix(&repair);
-                }
-                {
-                    let remove = gtk::Button::with_label(if game {
-                        "Remove shortcut"
-                    } else if method == "wine" {
-                        "Remove from Packlift"
-                    } else {
-                        "Uninstall"
-                    });
-                    remove.set_valign(gtk::Align::Center);
-                    let record_to_remove = record.clone();
-                    let app = app.clone();
-                    let weak_window = window.downgrade();
-                    remove.connect_clicked(move |_| {
-                        if let Err(error) =
-                            installer().and_then(|manager| manager.uninstall(&record_to_remove))
-                        {
-                            if let Some(window) = weak_window.upgrade() {
-                                show_error(&window, &error.to_string());
-                            }
-                        } else if let Some(window) = weak_window.upgrade() {
-                            render_home(&app, &window);
-                        }
-                    });
-                    row.add_suffix(&remove);
-                }
-                programs.add(&row);
-            }
-        }
-        Err(error) => programs.set_description(Some(&error.to_string())),
-    }
-    content.append(&programs);
-    let clean = gtk::Button::with_label("Clean unused environments");
-    clean.set_halign(gtk::Align::Start);
-    let app = app.clone();
-    let weak_window = window.downgrade();
-    clean.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
-            run_job(
-                &app,
-                &window,
-                "Cleaning unused environments",
-                move |logger| {
-                    installer_with_output(logger)?
-                        .clean_unused_environments()
-                        .map(|_| None)
-                },
-            );
-        }
-    });
-    if host_access_available() {
-        content.append(&clean);
-    }
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scroll.set_child(Some(&content));
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&clamp)
+        .build();
     toolbar.set_content(Some(&scroll));
     window.set_content(Some(&toolbar));
+}
+
+fn home_label(text: &str, class: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.add_css_class(class);
+    label
+}
+
+fn library_status(icon: &str, title: &str, description: &str) -> adw::StatusPage {
+    let status = adw::StatusPage::builder()
+        .icon_name(icon)
+        .title(title)
+        .description(description)
+        .build();
+    status.add_css_class("compact");
+    status.add_css_class("card");
+    status
+}
+
+fn action_menu(label: &str, icon: &str) -> (gtk::MenuButton, gtk::Popover, gtk::Box) {
+    let menu = gtk::MenuButton::builder()
+        .icon_name(icon)
+        .tooltip_text(label)
+        .build();
+    menu.update_property(&[gtk::accessible::Property::Label(label)]);
+    menu.add_css_class("flat");
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let popover = gtk::Popover::builder().child(&actions).build();
+    menu.set_popover(Some(&popover));
+    (menu, popover, actions)
+}
+
+fn add_menu_item(
+    popover: &gtk::Popover,
+    actions: &gtk::Box,
+    label: &str,
+    action: impl Fn() + 'static,
+) {
+    let item = gtk::Button::with_label(label);
+    item.add_css_class("flat");
+    item.set_halign(gtk::Align::Fill);
+    let popover = popover.downgrade();
+    item.connect_clicked(move |_| {
+        if let Some(popover) = popover.upgrade() {
+            popover.popdown();
+        }
+        action();
+    });
+    actions.append(&item);
+}
+
+fn library_row(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    record: &Value,
+) -> adw::ActionRow {
+    let name = record["name"].as_str().unwrap_or("Program");
+    let game = record["game_shortcut"].as_bool() == Some(true);
+    let method = record["method"].as_str().unwrap_or("local");
+    let subtitle = match method {
+        "wine" => {
+            let kind = if game {
+                "Game shortcut"
+            } else {
+                "Windows program"
+            };
+            format!("{kind} · {}", program_runtime_label(record))
+        }
+        "toolbox" => format!(
+            "Toolbx · {}",
+            record["container"]
+                .as_str()
+                .unwrap_or("Container")
+                .trim_start_matches("flatapk-")
+        ),
+        "native" => "Installed on this system".into(),
+        _ if record["sandbox_only"].as_bool() == Some(true) => "Sandbox application".into(),
+        _ => "Local Linux application".into(),
+    };
+    let subtitle = match record["version"]
+        .as_str()
+        .filter(|version| !version.is_empty())
+    {
+        Some(version) => format!("{subtitle} · {version}"),
+        None => subtitle,
+    };
+    let row = adw::ActionRow::builder()
+        .use_markup(false)
+        .title(name)
+        .subtitle(&subtitle)
+        .title_lines(1)
+        .subtitle_lines(2)
+        .build();
+    row.add_prefix(&record_image(record, 42));
+
+    if record["exports"][0]["argv"].is_array() {
+        let launch = gtk::Button::with_label("Open");
+        launch.set_valign(gtk::Align::Center);
+        launch.update_property(&[gtk::accessible::Property::Label(&format!("Open {name}"))]);
+        let record = record.clone();
+        let parent = window.downgrade();
+        launch.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let record = record.clone();
+            thread::spawn(move || {
+                let _ = sender.send(installer().and_then(|manager| manager.launch(&record)));
+            });
+            let button = button.downgrade();
+            let parent = parent.clone();
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let result = match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        return glib::ControlFlow::Continue
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(
+                        PackliftError::Message("Could not start the program.".into()),
+                    ),
+                };
+                if let Some(button) = button.upgrade() {
+                    button.set_sensitive(true);
+                }
+                if let (Err(error), Some(window)) = (result, parent.upgrade()) {
+                    show_error(&window, &error.to_string());
+                }
+                glib::ControlFlow::Break
+            });
+        });
+        row.add_suffix(&launch);
+    }
+
+    let (menu, popover, actions) =
+        action_menu(&format!("More options for {name}"), "view-more-symbolic");
+    menu.set_valign(gtk::Align::Center);
+    if method == "wine" {
+        let app = app.clone();
+        let record = record.clone();
+        let parent = window.downgrade();
+        add_menu_item(&popover, &actions, "Change runtime…", move || {
+            if let Some(window) = parent.upgrade() {
+                program_runtime_dialog(&app, &window, &record);
+            }
+        });
+    }
+    if method == "toolbox" {
+        let app = app.clone();
+        let record = record.clone();
+        let parent = window.downgrade();
+        add_menu_item(&popover, &actions, "Repair installation…", move || {
+            let Some(window) = parent.upgrade() else {
+                return;
+            };
+            let app = app.clone();
+            let record = record.clone();
+            confirm_library_action(
+                &window, "Repair this installation?",
+                "Packlift will reinstall the package in Toolbx, check dependencies and recreate its shortcuts.",
+                "Repair", false, move |window| {
+                    let record = record.clone();
+                    run_job(&app, window, "Repairing installation", move |logger| {
+                        installer_with_output(logger)?.repair_container_app(&record).map(Some)
+                    });
+                },
+            );
+        });
+    }
+
+    let (remove, detail) = match (game, method) {
+        (true, _) => (
+            "Remove shortcut",
+            "The game files will stay in their original folder.",
+        ),
+        (_, "wine") => (
+            "Remove from Packlift",
+            "This removes the program's library entry, shortcut and managed installation files.",
+        ),
+        _ => (
+            "Uninstall",
+            "This removes the installed program and its shortcuts.",
+        ),
+    };
+    let name = name.to_owned();
+    let record = record.clone();
+    let app = app.clone();
+    let parent = window.downgrade();
+    add_menu_item(&popover, &actions, &format!("{remove}…"), move || {
+        let Some(window) = parent.upgrade() else {
+            return;
+        };
+        let record = record.clone();
+        let app = app.clone();
+        confirm_library_action(
+            &window,
+            &format!("{remove}: {name}?"),
+            detail,
+            remove,
+            true,
+            move |window| {
+                let record = record.clone();
+                run_job(&app, window, "Removing from your library", move |logger| {
+                    installer_with_output(logger)?
+                        .uninstall(&record)
+                        .map(|_| None)
+                });
+            },
+        );
+    });
+    row.add_suffix(&menu);
+    row
+}
+
+fn confirm_library_action(
+    window: &adw::ApplicationWindow,
+    title: &str,
+    description: &str,
+    label: &str,
+    destructive: bool,
+    action: impl Fn(&adw::ApplicationWindow) + 'static,
+) {
+    let dialog = gtk::MessageDialog::builder()
+        .transient_for(window)
+        .modal(true)
+        .text(title)
+        .secondary_text(description)
+        .build();
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    let accept = dialog.add_button(label, gtk::ResponseType::Accept);
+    if destructive {
+        accept.add_css_class("destructive-action");
+    }
+    dialog.set_default_response(gtk::ResponseType::Cancel);
+    let parent = window.downgrade();
+    dialog.connect_response(move |dialog, response| {
+        dialog.close();
+        if response == gtk::ResponseType::Accept {
+            if let Some(window) = parent.upgrade() {
+                action(&window);
+            }
+        }
+    });
+    dialog.present();
+}
+
+fn program_runtime_label(record: &Value) -> String {
+    if record["runtime"] != "proton" {
+        return "Wine".into();
+    }
+    record["proton_path"]
+        .as_str()
+        .and_then(|path| Path::new(path).file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Proton (automatic)".into())
+}
+
+fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
+    let Some(id) = record["id"].as_str().map(str::to_owned) else {
+        return;
+    };
+    let manager = match installer() {
+        Ok(manager) => manager,
+        Err(error) => {
+            show_error(window, &error.to_string());
+            return;
+        }
+    };
+    let versions = manager.installed_proton_versions();
+    let saved = record["proton_path"].as_str().map(Path::new);
+    let mut names = vec!["Wine".to_owned(), "Proton (automatic)".to_owned()];
+    names.extend(versions.iter().map(|path| {
+        format!(
+            "Proton · {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )
+    }));
+    let labels = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let choices = gtk::DropDown::from_strings(&labels);
+    choices.update_property(&[gtk::accessible::Property::Label("Runtime for this program")]);
+    let selected = if record["runtime"] == "proton" {
+        saved
+            .and_then(|path| versions.iter().position(|version| version == path))
+            .map(|index| index + 2)
+            .unwrap_or(1)
+    } else {
+        0
+    };
+    choices.set_selected(selected as u32);
+
+    let name = record["name"].as_str().unwrap_or("Program");
+    let dialog = gtk::Dialog::builder()
+        .title(format!("Runtime for {name}"))
+        .transient_for(window)
+        .modal(true)
+        .default_width(420)
+        .build();
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog
+        .add_button("Apply", gtk::ResponseType::Accept)
+        .add_css_class("suggested-action");
+    let body = dialog.content_area();
+    body.set_spacing(12);
+    body.set_margin_top(16);
+    body.set_margin_bottom(16);
+    body.set_margin_start(16);
+    body.set_margin_end(16);
+    body.append(&home_label("Windows runtime", "heading"));
+    body.append(&choices);
+    body.append(&home_label(
+        if versions.is_empty() {
+            "Proton (automatic) uses UMU to download Proton as needed. Installed Proton versions will appear here."
+        } else {
+            "Proton (automatic) uses UMU to manage the version. Pick an installed version to use it for this app."
+        },
+        "dim-label",
+    ));
+    body.append(&home_label(
+        "This setting applies to this program and its system menu shortcut.",
+        "dim-label",
+    ));
+    if saved.is_some() && selected == 1 {
+        body.append(&home_label(
+            "The previously selected Proton version is no longer installed.",
+            "warning",
+        ));
+    }
+    let app = app.clone();
+    let parent = window.downgrade();
+    dialog.connect_response(move |dialog, response| {
+        dialog.close();
+        if response != gtk::ResponseType::Accept {
+            return;
+        }
+        let Some(window) = parent.upgrade() else {
+            return;
+        };
+        let selected = choices.selected();
+        let selected_proton = selected
+            .checked_sub(2)
+            .and_then(|i| versions.get(i as usize))
+            .cloned();
+        let runtime = if selected == 0 { "wine" } else { "proton" };
+        let id = id.clone();
+        run_job(&app, &window, "Saving Windows runtime", move |logger| {
+            installer_with_output(logger)?
+                .set_program_runtime(&id, runtime, selected_proton.as_deref())
+                .map(|_| None)
+        });
+    });
+    dialog.present();
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
@@ -728,7 +1099,10 @@ fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &s
 where
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
-    window.set_default_size(380, 220);
+    let from_library = window.widget_name() == "packlift-library";
+    if !from_library {
+        window.set_default_size(380, 220);
+    }
     window.set_resizable(true);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
     body.set_margin_top(14);
@@ -809,8 +1183,29 @@ where
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
                     match result {
-                        Err(error) => show_error(&window, &error.to_string()),
-                        Ok(Some(record)) => show_success(&window, &record),
+                        Err(error) => {
+                            if from_library {
+                                render_home(&app, &window);
+                            }
+                            show_error(&window, &error.to_string());
+                        }
+                        Ok(Some(record)) => {
+                            for other in app
+                                .windows()
+                                .into_iter()
+                                .filter_map(|other| other.downcast::<adw::ApplicationWindow>().ok())
+                            {
+                                if other != window
+                                    && other.widget_name() == "packlift-library"
+                                    && other
+                                        .content()
+                                        .is_some_and(|content| content.is::<adw::ToolbarView>())
+                                {
+                                    render_home(&app, &other);
+                                }
+                            }
+                            show_success(&window, &record);
+                        }
                         Ok(None) => render_home(&app, &window),
                     }
                 }
@@ -903,7 +1298,13 @@ fn record_image(record: &Value, size: i32) -> gtk::Image {
     let image = texture
         .as_ref()
         .map(|texture| gtk::Image::from_paintable(Some(texture)))
-        .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable"));
+        .unwrap_or_else(|| {
+            gtk::Image::from_icon_name(if !icon.is_empty() && !Path::new(icon).is_absolute() {
+                icon
+            } else {
+                "application-x-executable"
+            })
+        });
     image.set_pixel_size(size);
     image
 }
