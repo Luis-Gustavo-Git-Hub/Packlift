@@ -12,6 +12,7 @@
     "--device=dri",
     "--filesystem=home",
     "--filesystem=xdg-data/applications:create",
+    "--filesystem=xdg-data/icons:create",
     "--talk-name=org.freedesktop.Flatpak"
   ],
   "cleanup": [

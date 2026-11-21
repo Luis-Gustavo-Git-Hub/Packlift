@@ -1282,12 +1282,21 @@ impl Installer {
         } else {
             return Ok(("application-x-executable".into(), None));
         };
-        let directory = self.applications.join("icons");
+        let directory = self
+            .applications
+            .parent()
+            .unwrap_or(&self.applications)
+            .join("icons")
+            .join("hicolor")
+            .join("256x256")
+            .join("apps");
         fs::create_dir_all(&directory)?;
         let icon = directory.join(format!("packlift-{identifier}.{extension}"));
         fs::write(&icon, bytes)?;
-        let path = icon.to_string_lossy().into_owned();
-        Ok((path.clone(), Some(path)))
+        Ok((
+            format!("packlift-{identifier}"),
+            Some(icon.to_string_lossy().into_owned()),
+        ))
     }
 
     fn refresh_windows_menu_entries(&self) {
@@ -1318,10 +1327,11 @@ impl Installer {
             else {
                 continue;
             };
-            let current_icon = app["exports"][0]["menu_icon_file"]
+            let current_icon_file = app["exports"][0]["menu_icon_file"]
                 .as_str()
                 .filter(|path| Path::new(path).is_file())
                 .map(str::to_owned);
+            let current_icon_name = app["exports"][0]["menu_icon"].as_str().map(str::to_owned);
             let needs_wm_class = std::fs::read_to_string(&desktop)
                 .map(|contents| {
                     !contents
@@ -1329,19 +1339,21 @@ impl Installer {
                         .any(|line| line.starts_with("StartupWMClass="))
                 })
                 .unwrap_or(true);
-            let needs_menu_icon = Path::new(&icon).is_file() && current_icon.is_none();
+            let needs_menu_icon = Path::new(&icon).is_file()
+                && (current_icon_file.is_none() || current_icon_name.is_none());
             if !needs_wm_class && !needs_menu_icon {
                 continue;
             }
-            let (menu_icon, menu_icon_file) = if let Some(path) = current_icon {
-                (path.clone(), Some(path))
-            } else if Path::new(&icon).is_file() {
+            let (menu_icon, menu_icon_file) = if needs_menu_icon {
                 match self.export_menu_icon(&identifier, Some(Path::new(&icon))) {
                     Ok(result) => result,
                     Err(_) => continue,
                 }
             } else {
-                (icon.clone(), None)
+                (
+                    current_icon_name.unwrap_or_else(|| icon.clone()),
+                    current_icon_file,
+                )
             };
             let argv = arguments
                 .iter()
@@ -1366,6 +1378,7 @@ impl Installer {
             {
                 if let Some(icon_file) = menu_icon_file {
                     app["exports"][0]["menu_icon_file"] = json!(icon_file);
+                    app["exports"][0]["menu_icon"] = json!(menu_icon);
                 }
                 let _ = self.registry.save(&app);
             }
