@@ -1,6 +1,7 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -1221,8 +1222,10 @@ fi"#
             machine,
         );
         wine.prepare()?;
-        let before = windows_executables(&wine.prefix);
         let cwd = package.path.parent().unwrap_or(Path::new("/"));
+        let roots = windows_search_roots(&wine.prefix, &crate::system::home_dir(), cwd);
+        let before = windows_executables(&roots).ok();
+        let registrations = windows_registrations(&wine.prefix);
         let arguments = if package.kind == "msi" {
             vec![
                 "msiexec.exe".into(),
@@ -1237,16 +1240,13 @@ fi"#
         self.runner
             .run(&command, wine.umu && self.runner.sandbox, true, true)?;
         wine.wait()?;
-        let target = before.ok().and_then(|before| {
-            let after = windows_executables(&wine.prefix).ok()?;
-            let mut changed = after.iter().filter(|(path, metadata)| {
-                before.get(*path) != Some(*metadata)
-                    && matches!(detect(path), Ok((kind, _)) if kind == "exe")
-            });
-            let first = changed.next()?.0;
-            changed.next().is_none().then(|| first.clone())
-        });
+        self.runner
+            .write("Looking for the installed Windows executable");
+        let target =
+            find_installed_executable(package, &wine.prefix, &registrations, &roots, before);
         let Some(target) = target else {
+            self.runner
+                .write("Could not identify a single installed Windows executable");
             return Err(PackliftError::InstalledExecutableRequired {
                 package: Box::new(package.clone()),
                 runtime: wine.runtime,
@@ -3296,21 +3296,200 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
     Ok(executable_files)
 }
 
-type ExecutableSnapshot = std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>;
+type ExecutableSnapshot = BTreeMap<PathBuf, (u64, i64, i64)>;
+type WindowsRegistrations = BTreeMap<(PathBuf, String), WindowsRegistration>;
 
-fn windows_executables(prefix: &Path) -> Result<ExecutableSnapshot> {
-    let mut paths = Vec::new();
+#[derive(Default, PartialEq)]
+struct WindowsRegistration {
+    name: String,
+    icon: String,
+    location: String,
+}
+
+fn windows_search_roots(prefix: &Path, home: &Path, installer_dir: &Path) -> BTreeSet<PathBuf> {
+    let mut roots = BTreeSet::new();
     for drive in [prefix.join("drive_c"), prefix.join("pfx/drive_c")] {
         for directory in ["Program Files", "Program Files (x86)", "Games"] {
-            collect_exes(&drive.join(directory), &mut paths, 0)?;
+            roots.insert(drive.join(directory));
         }
     }
+    if home != Path::new("/") {
+        roots.extend(["Games", "games", "Jogos"].map(|directory| home.join(directory)));
+    }
+    if let (Ok(home), Ok(directory)) = (home.canonicalize(), installer_dir.canonicalize()) {
+        if !home.starts_with(&directory) {
+            roots.insert(directory);
+        }
+    }
+    roots
+}
+
+fn windows_executables(roots: &BTreeSet<PathBuf>) -> Result<ExecutableSnapshot> {
     let mut snapshot = ExecutableSnapshot::new();
-    for path in paths.into_iter().filter(|path| is_program_executable(path)) {
-        let metadata = fs::metadata(&path)?;
-        snapshot.insert(path.canonicalize()?, (metadata.len(), metadata.modified()?));
+    let mut remaining = 60_000;
+    for root in roots {
+        collect_exes(root, &mut snapshot, &mut remaining, 0)?;
     }
     Ok(snapshot)
+}
+
+fn windows_registrations(prefix: &Path) -> WindowsRegistrations {
+    let mut registrations = WindowsRegistrations::new();
+    for directory in [prefix.to_path_buf(), prefix.join("pfx")] {
+        for name in ["system.reg", "user.reg"] {
+            let file = directory.join(name);
+            let Ok(contents) = fs::read_to_string(&file) else {
+                continue;
+            };
+            let mut registration = None;
+            for line in contents.lines().map(str::trim) {
+                if let Some((key, _)) = line.strip_prefix('[').and_then(|s| s.split_once(']')) {
+                    registration = key
+                        .to_ascii_lowercase()
+                        .contains(r"\\uninstall\\")
+                        .then(|| {
+                            registrations
+                                .entry((file.clone(), key.to_owned()))
+                                .or_default()
+                        });
+                    continue;
+                }
+                let (Some(entry), Some((property, value))) =
+                    (registration.as_deref_mut(), line.split_once('='))
+                else {
+                    continue;
+                };
+                let field = match property {
+                    r#""DisplayName""# => &mut entry.name,
+                    r#""DisplayIcon""# => &mut entry.icon,
+                    r#""InstallLocation""# => &mut entry.location,
+                    _ => continue,
+                };
+                if let Some(value) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                    *field = value.replace(r#"\""#, "\"").replace(r"\\", "\\");
+                }
+            }
+        }
+    }
+    registrations
+}
+
+fn windows_registry_path(prefix: &Path, value: &str) -> Option<PathBuf> {
+    let value = value.trim().trim_matches('"');
+    let (drive, path) = value.split_once(':')?;
+    if drive.len() != 1 || !drive.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    if !path.starts_with(['\\', '/']) {
+        return None;
+    }
+    let drive = drive.to_ascii_lowercase();
+    let mut root = prefix.join("dosdevices").join(format!("{drive}:"));
+    if !root.is_dir() && drive == "c" {
+        root = prefix.join("drive_c");
+    }
+    let mut path = path.split(['\\', '/']).filter(|part| !part.is_empty());
+    root.push(path.next().filter(|part| !matches!(*part, "." | ".."))?);
+    for part in path {
+        if matches!(part, "." | "..") {
+            return None;
+        }
+        root.push(part);
+    }
+    root.canonicalize().ok()
+}
+
+fn find_installed_executable(
+    package: &Package,
+    prefix: &Path,
+    registrations: &WindowsRegistrations,
+    roots: &BTreeSet<PathBuf>,
+    before: Option<ExecutableSnapshot>,
+) -> Option<PathBuf> {
+    let setup = package.path.canonicalize().ok();
+    let viable = |path: &Path| {
+        Some(path) != setup.as_deref()
+            && is_auto_executable(path)
+            && matches!(detect(path), Ok((kind, _)) if kind == "exe")
+    };
+    let mut registered_targets = BTreeSet::new();
+    let mut remaining = 60_000;
+    for (key, entry) in windows_registrations(prefix) {
+        if registrations.get(&key) == Some(&entry) {
+            continue;
+        }
+        let directory = key.0.parent()?;
+        let icon = entry
+            .icon
+            .rsplit_once(',')
+            .filter(|(_, index)| index.trim().parse::<i32>().is_ok())
+            .map_or(entry.icon.as_str(), |(path, _)| path);
+        if let Some(target) = windows_registry_path(directory, icon).filter(|path| viable(path)) {
+            registered_targets.insert(target);
+            continue;
+        }
+        let Some(location) = windows_registry_path(directory, &entry.location) else {
+            continue;
+        };
+        let mut candidates = ExecutableSnapshot::new();
+        if collect_exes(&location, &mut candidates, &mut remaining, 0).is_ok() {
+            if let Some(target) = select_executable(
+                candidates.into_keys().filter(|path| viable(path)),
+                &entry.name,
+            ) {
+                registered_targets.insert(target);
+            }
+        }
+    }
+    if !registered_targets.is_empty() {
+        return select_executable(registered_targets.into_iter(), &package.name);
+    }
+    let before = before?;
+    let after = windows_executables(roots).ok()?;
+    select_executable(
+        after.into_iter().filter_map(|(path, metadata)| {
+            (before.get(&path) != Some(&metadata) && viable(&path)).then_some(path)
+        }),
+        &package.name,
+    )
+}
+
+fn select_executable(candidates: impl Iterator<Item = PathBuf>, name: &str) -> Option<PathBuf> {
+    fn normalized(value: &str) -> String {
+        value
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    let name = normalized(name);
+    let mut best = None;
+    let mut best_score = None;
+    for path in candidates {
+        let stem = normalized(&path.file_stem().unwrap_or_default().to_string_lossy());
+        let score = if name.chars().count() >= 4 && stem == name {
+            2
+        } else if stem.chars().count() >= 4
+            && path
+                .ancestors()
+                .skip(1)
+                .take(4)
+                .filter_map(Path::file_name)
+                .any(|directory| normalized(&directory.to_string_lossy()) == stem)
+        {
+            1
+        } else {
+            0
+        };
+        if best_score.is_none_or(|previous| score > previous) {
+            best_score = Some(score);
+            best = Some(path);
+        } else if best_score == Some(score) {
+            best = None;
+        }
+    }
+    best
 }
 
 fn is_program_executable(path: &Path) -> bool {
@@ -3337,27 +3516,42 @@ fn is_program_executable(path: &Path) -> bool {
         && !name.starts_with("unins00")
 }
 
-fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Result<()> {
+fn is_auto_executable(path: &Path) -> bool {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let stem = stem.to_ascii_lowercase();
+    is_program_executable(path)
+        && !matches!(
+            stem.as_str(),
+            "dxsetup" | "unitycrashhandler64" | "unitycrashhandler32" | "ue4prereqsetup_x64"
+        )
+        && !stem.starts_with("vc_redist")
+        && !stem.starts_with("vcredist")
+}
+
+fn collect_exes(
+    directory: &Path,
+    output: &mut ExecutableSnapshot,
+    remaining: &mut usize,
+    depth: usize,
+) -> Result<()> {
     if depth > 10 || !directory.is_dir() {
         return Ok(());
     }
     for entry in fs::read_dir(directory)? {
+        *remaining = remaining.checked_sub(1).ok_or_else(|| {
+            PackliftError::Message("There are too many files to inspect for executables.".into())
+        })?;
         let entry = entry?;
         let path = entry.path();
         let metadata = entry.file_type()?;
         if metadata.is_dir() {
-            collect_exes(&path, output, depth + 1)?;
-        } else if metadata.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
-            output.push(path);
-        }
-        if output.len() > 2048 {
-            return Err(PackliftError::Message(
-                "The installer created too many executable files to inspect.".into(),
-            ));
+            collect_exes(&path, output, remaining, depth + 1)?;
+        } else if metadata.is_file() && is_auto_executable(&path) {
+            let metadata = entry.metadata()?;
+            output.insert(
+                path.canonicalize()?,
+                (metadata.len(), metadata.ctime(), metadata.ctime_nsec()),
+            );
         }
     }
     Ok(())
@@ -3366,6 +3560,120 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn windows_setup_finds_a_game_on_a_proton_mapped_drive() {
+        use super::{
+            find_installed_executable, fs, windows_executables, windows_registrations,
+            windows_search_roots, Package,
+        };
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("packlift-setup-reg-{}", std::process::id()));
+        let prefix = root.join("prefix");
+        let proton = prefix.join("pfx");
+        let home = root.join("home");
+        let drive = root.join("external");
+        let game = drive.join("Library/My Game");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(proton.join("dosdevices")).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        symlink(&drive, proton.join("dosdevices/d:")).unwrap();
+        let setup = home.join("Setup.exe");
+        write_windows_executable(&setup);
+        let package = Package {
+            name: "Setup".into(),
+            path: setup,
+            ..Package::default()
+        };
+        let roots = windows_search_roots(&prefix, &home, &home);
+        let registrations = windows_registrations(&prefix);
+        let before = windows_executables(&roots).ok();
+        let target = game.join("My Game.exe");
+        write_windows_executable(&target);
+        write_windows_executable(&game.join("Benchmark.exe"));
+        let registry = proton.join("system.reg");
+        let section = r"[Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Game] 123";
+        for hint in [
+            r#""DisplayIcon"="\"D:\\Library\\My Game\\My Game.exe\",0""#,
+            r#""InstallLocation"="D:\\Library\\My Game""#,
+        ] {
+            fs::write(
+                &registry,
+                format!(
+                    "WINE REGISTRY Version 2\n{section}\n\"DisplayName\"=\"My Game\"\n{hint}\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                find_installed_executable(
+                    &package,
+                    &prefix,
+                    &registrations,
+                    &roots,
+                    before.clone()
+                ),
+                Some(target.canonicalize().unwrap())
+            );
+        }
+        let registrations = windows_registrations(&prefix);
+        assert_eq!(
+            find_installed_executable(&package, &prefix, &registrations, &roots, before),
+            None,
+            "ignore an unchanged uninstall entry"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_setup_compares_game_files_and_only_breaks_a_tie_with_a_name_match() {
+        use super::{
+            find_installed_executable, fs, windows_executables, windows_search_roots, Package,
+        };
+
+        let root = std::env::temp_dir().join(format!("packlift-setup-scan-{}", std::process::id()));
+        let prefix = root.join("prefix");
+        let home = root.join("home");
+        let games = home.join("Jogos");
+        let bin = games.join("My Game/bin/x64");
+        fs::create_dir_all(&bin).unwrap();
+        write_windows_executable(&games.join("Old Game.exe"));
+        let setup = home.join("Setup.exe");
+        write_windows_executable(&setup);
+        let package = Package {
+            name: "Setup".into(),
+            path: setup,
+            ..Package::default()
+        };
+        let roots = windows_search_roots(&prefix, &home, &home);
+        let before = windows_executables(&roots).unwrap();
+        let target = bin.join("MyGame.exe");
+        write_windows_executable(&target);
+        write_windows_executable(&bin.join("vc_redist.x64.exe"));
+        let find = || {
+            find_installed_executable(
+                &package,
+                &prefix,
+                &Default::default(),
+                &roots,
+                Some(before.clone()),
+            )
+        };
+        assert_eq!(find(), Some(target.canonicalize().unwrap()));
+        write_windows_executable(&bin.join("Editor.exe"));
+        assert_eq!(find(), Some(target.canonicalize().unwrap()));
+        write_windows_executable(&games.join("My Game/My Game.exe"));
+        assert_eq!(find(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn write_windows_executable(path: &super::Path) {
+        let mut header = [0_u8; 88];
+        header[..2].copy_from_slice(b"MZ");
+        header[60] = 64;
+        header[64..70].copy_from_slice(&[b'P', b'E', 0, 0, 0x64, 0x86]);
+        super::fs::write(path, header).unwrap();
+    }
 
     #[test]
     fn windows_setup_registers_the_selected_executable_and_its_own_identity() {
@@ -3392,11 +3700,7 @@ mod tests {
             ..Package::default()
         };
         let target = games.join("My Game.exe");
-        let mut header = [0_u8; 88];
-        header[..2].copy_from_slice(b"MZ");
-        header[60] = 64;
-        header[64..70].copy_from_slice(&[b'P', b'E', 0, 0, 0x64, 0x86]);
-        fs::write(&target, header).unwrap();
+        write_windows_executable(&target);
         let wine = Wine::new(
             installer.runner.clone(),
             "wine".into(),
