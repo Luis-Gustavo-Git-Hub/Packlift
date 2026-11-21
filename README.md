@@ -70,7 +70,16 @@ flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-c
 flatpak build-bundle flatpak-repo Packlift-x86_64.flatpak io.github.flatapk.Installer
 ```
 
-The GNOME runtime in this manifest targets x86-64. Running native code on a 32-bit x86 host depends on the availability of GTK, Wine, and the relevant package manager. The current Fedora and Arch Toolbx images require a 64-bit host. On x86-64, i386 packages use APT multiarch support, while i686 RPM packages depend on libraries provided by the distribution. Packlift rejects special files and archive links that point outside the program directory.
+The Flatpak and the managed Toolbx images are intended for x86-64 hosts. The **Find and install missing libraries in the container** option can resolve missing shared libraries detected in a launcher through the container's configured repositories. **Repair…** retries that process on an existing container installation. Packages that need a different distribution release or an unavailable library require a compatible build.
+
+| Toolbx image | 32-bit package and library support |
+| --- | --- |
+| Ubuntu | APT enables i386 alongside amd64. Installs i386 DEBs and available i386 libraries. |
+| Fedora | DNF resolves i686 RPMs and libraries published for the image release. |
+| openSUSE | Zypper uses the distribution's available `-32bit` libraries. Standalone 32-bit RPMs depend on what the image's repositories provide. |
+| Arch Linux | Pacman enables the official multilib repository for `lib32-*` packages. Standalone i686 Arch packages require a separate Arch Linux 32 environment. |
+
+Packlift rejects special files and archive links that point outside the program directory.
 
 ## License
 

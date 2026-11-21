@@ -299,6 +299,11 @@ pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<P
             }
         }
         "arch" => {
+            if arch == "x86" {
+                return Err(PackliftError::Message(
+                    "The standard Arch Toolbx supports 32-bit libraries through multilib. For a standalone i686 application, use its i386 DEB or i686 RPM build if available.".into(),
+                ));
+            }
             if machine == "x86" {
                 return Err(PackliftError::Message(
                     "The supported Arch image requires a 64-bit host.".into(),

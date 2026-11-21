@@ -624,23 +624,40 @@ impl Installer {
             }
         }
         if !installed || repair {
-            if plan.multilib && plan.manager == "apt" {
-                let foreign = package_capture(
+            let needs_apt_i386 = plan.manager == "apt"
+                && (!container.is_empty()
+                    || plan.multilib
+                    || package
+                        .requires
+                        .iter()
+                        .any(|dependency| dependency.contains(":i386")));
+            if needs_apt_i386 {
+                enable_apt_i386(&self.runner, &container)?;
+            }
+            if !container.is_empty() && plan.manager == "pacman" {
+                elevated(
                     &self.runner,
                     &container,
-                    &["dpkg".into(), "--print-foreign-architectures".into()],
+                    &[
+                        "sh".into(),
+                        "-ec".into(),
+                        r#"repos=$(pacman-conf --repo-list)
+if ! printf '%s\n' "$repos" | grep -Fxq multilib; then
+    printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+fi"#
+                        .into(),
+                    ],
                 )?;
-                if !foreign.split_whitespace().any(|value| value == "i386") {
-                    elevated(
-                        &self.runner,
-                        &container,
-                        &["dpkg".into(), "--add-architecture".into(), "i386".into()],
-                    )?;
-                }
             }
             let source = package.path.to_string_lossy().into_owned();
-            self.runner.write("Downloading package dependencies");
             if !container.is_empty() {
+                package_capture(&self.runner, &container, &["test".into(), "-r".into(), source.clone()])
+                    .map_err(|_| PackliftError::Message(format!(
+                        "The {container} container cannot read the package at {source}. Put it in your home folder and reopen it."
+                    )))?;
+            }
+            self.runner.write("Downloading package dependencies");
+            if !container.is_empty() || needs_apt_i386 {
                 let refresh: &[&str] = match plan.manager.as_str() {
                     "apt" => &["apt-get", "update", "--error-on=any"],
                     "dnf" => &["dnf", "makecache", "--refresh"],
@@ -656,32 +673,6 @@ impl Installer {
                     &self.runner,
                     &container,
                     &refresh.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                )?;
-            }
-            if plan.manager == "apt" {
-                elevated(
-                    &self.runner,
-                    &container,
-                    &[
-                        "apt-get".into(),
-                        "install".into(),
-                        "--no-remove".into(),
-                        "--download-only".into(),
-                        "-y".into(),
-                        source.clone(),
-                    ],
-                )?;
-            } else if plan.manager == "dnf" {
-                elevated(
-                    &self.runner,
-                    &container,
-                    &[
-                        "dnf".into(),
-                        "install".into(),
-                        "--downloadonly".into(),
-                        "-y".into(),
-                        source.clone(),
-                    ],
                 )?;
             }
             let mut command: Vec<String> = match plan.manager.as_str() {
@@ -716,6 +707,16 @@ impl Installer {
                 }
             }
             command.push(source);
+            if matches!(plan.manager.as_str(), "apt" | "dnf") {
+                let mut download = command.clone();
+                let flag = if plan.manager == "apt" {
+                    "--download-only"
+                } else {
+                    "--downloadonly"
+                };
+                download.insert(2, flag.into());
+                elevated(&self.runner, &container, &download)?;
+            }
             self.runner.write("Installing the system package");
             fs::create_dir_all(&directory)?;
             fs::write(&pending, &receipt)?;
@@ -792,7 +793,7 @@ impl Installer {
         if package.kind == "rpm" {
             package.rpm_family = family.into();
         }
-        package.resolve_libraries = family == "ubuntu";
+        package.resolve_libraries = true;
         plan.family = family.into();
         plan.method = "toolbox".into();
         plan.manager = app["manager"].as_str().unwrap_or("").into();
@@ -2469,10 +2470,38 @@ fn already_installed(
     }
 }
 
+fn enable_apt_i386(runner: &Runner, container: &str) -> Result<()> {
+    let architecture = package_capture(
+        runner,
+        container,
+        &["dpkg".into(), "--print-architecture".into()],
+    )?;
+    if architecture.trim() != "amd64" {
+        return Ok(());
+    }
+    let foreign = package_capture(
+        runner,
+        container,
+        &["dpkg".into(), "--print-foreign-architectures".into()],
+    )?;
+    if !foreign
+        .split_whitespace()
+        .any(|architecture| architecture == "i386")
+    {
+        elevated(
+            runner,
+            container,
+            &["dpkg".into(), "--add-architecture".into(), "i386".into()],
+        )?;
+    }
+    Ok(())
+}
+
 fn check_launcher_libraries(
     runner: &Runner,
     container: &str,
     executable: &str,
+    manager: &str,
     repair: bool,
 ) -> Result<()> {
     // Only invoke the distribution's loader. Scripts and static executables have no loader dependencies.
@@ -2483,11 +2512,21 @@ case "$(od -An -tx1 -N5 -- "$exe" | tr -d ' ')" in
 7f454c4601) loader=/lib/ld-linux.so.2; arch=i386 ;;
 *) exit 0 ;;
 esac
+if command -v readelf >/dev/null; then
+    headers=$(readelf -l -- "$exe") || exit 1
+    case "$headers" in
+        *"[Requesting program interpreter: $loader]"*) ;;
+        *"[Requesting program interpreter:"*) printf '%s\n' "Unsupported program interpreter for $exe" >&2; exit 1 ;;
+        *) exit 0 ;;
+    esac
+fi
 echo "$arch"
-[ -x "$loader" ] || { echo "Missing runtime loader $loader" >&2; exit 1; }
+[ -x "$loader" ] || { echo "LOADER_MISSING"; exit 0; }
 "$loader" --verify "$exe" || exit 0
 "$loader" --list "$exe" 2>&1 || echo LOADER_FAILED"#;
     let mut attempted = std::collections::HashSet::new();
+    let mut file_index_ready = false;
+    let pattern = regex::Regex::new(r"(?m)(?:loading shared libraries: |^\s*)([a-zA-Z0-9_+.\-]+\.so(?:\.[a-zA-Z0-9_.\-]+)*)(?:: cannot open shared object file| => not found)").expect("fixed library pattern");
     loop {
         let output = package_capture(
             runner,
@@ -2500,88 +2539,186 @@ echo "$arch"
                 executable.into(),
             ],
         )?;
-        if !output
-            .lines()
-            .any(|line| line == "LOADER_FAILED" || line.contains("=> not found"))
-        {
+        let missing_loader = output.lines().any(|line| line == "LOADER_MISSING");
+        let missing_library = pattern
+            .captures(&output)
+            .and_then(|matched| matched.get(1))
+            .map(|name| name.as_str());
+        if !missing_loader && missing_library.is_none() {
+            if output.lines().any(|line| line == "LOADER_FAILED") {
+                return Err(PackliftError::Message(format!(
+                    "The runtime in {container} cannot load {executable}: {output}"
+                )));
+            }
             return Ok(());
         }
-        runner.write(&output);
-        let pattern = regex::Regex::new(r"(?m)(?:loading shared libraries: |^\s*)([a-zA-Z0-9_+.\-]+\.so(?:\.[a-zA-Z0-9_.\-]+)*)(?:: cannot open shared object file| => not found)").expect("fixed library pattern");
-        let Some(name) = pattern
-            .captures(&output)
-            .and_then(|m| m.get(1))
-            .map(|m| m.as_str())
-        else {
-            return Err(PackliftError::Message(format!(
-                "The runtime in {container} cannot load {executable}: {output}"
-            )));
-        };
-        let release =
-            package_capture(runner, container, &["cat".into(), "/etc/os-release".into()])?;
-        let distro = release
-            .lines()
-            .find_map(|line| line.strip_prefix("PRETTY_NAME="))
-            .unwrap_or(container)
-            .trim_matches('"');
-        if !repair {
-            return Err(PackliftError::Message(format!("{distro} is missing {name}. Reopen the package and enable library lookup if available, or install its provider in {container}.")));
-        }
-        if attempted.is_empty() {
-            elevated(
-                runner,
-                container,
-                &[
-                    "apt-get".into(),
-                    "install".into(),
-                    "--no-remove".into(),
-                    "-y".into(),
-                    "apt-file".into(),
-                ],
-            )?;
-            elevated(
-                runner,
-                container,
-                &["apt-get".into(), "update".into(), "--error-on=any".into()],
-            )?;
-        }
+
         let arch = output.lines().next().unwrap_or("");
-        let triplet = match arch {
-            "amd64" => "x86_64-linux-gnu",
-            "i386" => "i386-linux-gnu",
+        let name = missing_library.unwrap_or(if arch == "i386" {
+            "ld-linux.so.2"
+        } else {
+            "ld-linux-x86-64.so.2"
+        });
+        if !repair || !attempted.insert(name.to_owned()) || attempted.len() > 32 {
+            return Err(PackliftError::Message(format!(
+                "{container} could not resolve {name} ({arch}) for {executable}. Check the installation log and the container repositories."
+            )));
+        }
+        let (mut command, provider): (Vec<&str>, String) = match manager {
+            "apt" => {
+                if !missing_loader && !file_index_ready {
+                    elevated(
+                        runner,
+                        container,
+                        &[
+                            "apt-get".into(),
+                            "install".into(),
+                            "--no-remove".into(),
+                            "-y".into(),
+                            "apt-file".into(),
+                        ],
+                    )?;
+                    elevated(
+                        runner,
+                        container,
+                        &["apt-get".into(), "update".into(), "--error-on=any".into()],
+                    )?;
+                    file_index_ready = true;
+                }
+                let triplet = if arch == "i386" {
+                    "i386-linux-gnu"
+                } else {
+                    "x86_64-linux-gnu"
+                };
+                let provider = if missing_loader {
+                    "libc6".into()
+                } else {
+                    let query = format!(r"^(usr/)?lib/{triplet}/{}$", regex::escape(name));
+                    unique_library_provider(
+                        runner,
+                        container,
+                        name,
+                        &["apt-file", "-a", arch, "-l", "-x", "search", &query],
+                    )?
+                };
+                (
+                    vec!["apt-get", "install", "--no-remove", "-y"],
+                    format!("{provider}:{arch}"),
+                )
+            }
+            "dnf" | "zypper" => {
+                let (command, loader_package) = if manager == "dnf" {
+                    (
+                        vec!["dnf", "install", "-y"],
+                        if arch == "i386" {
+                            "glibc.i686"
+                        } else {
+                            "glibc.x86_64"
+                        },
+                    )
+                } else {
+                    (
+                        vec!["zypper", "--non-interactive", "install", "--capability"],
+                        if arch == "i386" {
+                            "glibc-32bit"
+                        } else {
+                            "glibc"
+                        },
+                    )
+                };
+                let provider = if missing_loader {
+                    loader_package.into()
+                } else if arch == "i386" {
+                    name.into()
+                } else {
+                    format!("{name}()(64bit)")
+                };
+                (command, provider)
+            }
+            "pacman" => {
+                let provider = if missing_loader {
+                    if arch == "i386" {
+                        "lib32-glibc"
+                    } else {
+                        "glibc"
+                    }
+                    .into()
+                } else {
+                    if !file_index_ready {
+                        elevated(runner, container, &["pacman".into(), "-Fy".into()])?;
+                        file_index_ready = true;
+                    }
+                    let lib_dir = if arch == "i386" {
+                        "usr/lib32"
+                    } else {
+                        "usr/lib"
+                    };
+                    unique_library_provider(
+                        runner,
+                        container,
+                        name,
+                        &["pacman", "-Fq", "--", &format!("{lib_dir}/{name}")],
+                    )?
+                };
+                (
+                    vec!["pacman", "-S", "--needed", "--noconfirm", "--"],
+                    provider,
+                )
+            }
             _ => {
-                return Err(PackliftError::Message(
-                    "Unknown Ubuntu library architecture.".into(),
-                ))
+                return Err(PackliftError::Message(format!(
+                    "Unsupported library resolver for {manager}."
+                )))
             }
         };
-        let query = format!(r"^(usr/)?lib/{triplet}/{}$", regex::escape(name));
-        let providers = package_capture(runner,container,&["apt-file".into(),"-a".into(),arch.into(),"-l".into(),"-x".into(),"search".into(),query])
-            .map_err(|e|PackliftError::Message(format!("Could not find a provider for {name} ({arch}) in {distro}. Check enabled repositories and their Contents indexes. {e}")))?;
-        let packages: std::collections::BTreeSet<_> = providers
-            .lines()
-            .map(str::trim)
-            .filter(|value| valid_package_identifier(value))
-            .collect();
-        if packages.len() != 1 || !attempted.insert(name.to_owned()) || attempted.len() > 32 {
-            return Err(PackliftError::Message(format!("Cannot automatically resolve {name} ({arch}) for {distro}. Matching packages: {providers}")));
-        }
-        let provider = format!("{}:{arch}", packages.first().unwrap());
         runner.write(&format!(
-            "Installing {provider} for {name} inside {container}"
+            "Resolving {name} ({arch}) using {provider} in {container}"
         ));
+        command.push(&provider);
         elevated(
             runner,
             container,
-            &[
-                "apt-get".into(),
-                "install".into(),
-                "--no-remove".into(),
-                "-y".into(),
-                provider,
-            ],
-        )?;
+            &command.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+        )
+        .map_err(|error| {
+            PackliftError::Message(format!(
+                "Could not install a provider for {name} ({arch}) in {container}: {error}"
+            ))
+        })?;
     }
+}
+
+fn unique_library_provider(
+    runner: &Runner,
+    container: &str,
+    library: &str,
+    query: &[&str],
+) -> Result<String> {
+    let output = package_capture(
+        runner,
+        container,
+        &query
+            .iter()
+            .map(|arg| (*arg).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| {
+        PackliftError::Message(format!(
+            "Could not find a provider for {library} in {container}: {error}"
+        ))
+    })?;
+    let packages: std::collections::BTreeSet<_> = output
+        .lines()
+        .map(str::trim)
+        .map(|line| line.rsplit('/').next().unwrap_or(line))
+        .filter(|name| valid_package_identifier(name))
+        .collect();
+    if packages.len() != 1 {
+        return Err(PackliftError::Message(format!(
+            "Expected one provider for {library} in {container}. Matching packages: {packages:?}"
+        )));
+    }
+    Ok(packages.first().unwrap().to_string())
 }
 
 fn system_launchers(
@@ -2664,7 +2801,8 @@ fn system_launchers(
                 runner,
                 container,
                 &arguments[0],
-                manager == "apt" && package.resolve_libraries,
+                manager,
+                package.resolve_libraries,
             )?;
         }
         let candidate = files
@@ -2716,6 +2854,15 @@ fn system_launchers(
         let Some(executable) = executable else {
             return Ok(launchers);
         };
+        if !container.is_empty() {
+            check_launcher_libraries(
+                runner,
+                container,
+                executable,
+                manager,
+                package.resolve_libraries,
+            )?;
+        }
         let mut argv = package_prefix(container);
         argv.push(executable.clone());
         launchers.push((

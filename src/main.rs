@@ -144,7 +144,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                         let Some(window) = parent.upgrade() else { return };
                         let confirm = gtk::MessageDialog::builder().transient_for(&window).modal(true)
                             .text("Repair this container installation?")
-                            .secondary_text("Packlift will refresh the repositories, reinstall the original package and recreate its shortcuts. In Ubuntu it can also install missing libraries from configured repositories.").build();
+                            .secondary_text("Packlift will refresh the repositories, reinstall the original package and recreate its shortcuts. It can also install missing libraries from the container repositories.").build();
                         confirm.add_button("Cancel",gtk::ResponseType::Cancel);
                         confirm.add_button("Repair",gtk::ResponseType::Accept);
                         let app = application.clone();
@@ -336,8 +336,9 @@ fn open_package(app: &adw::Application, path: &Path) {
             }
 
             let libraries =
-                gtk::CheckButton::with_label("Find and install missing Ubuntu libraries");
-            if plan.method == "toolbox" && plan.manager == "apt" {
+                gtk::CheckButton::with_label("Find and install missing libraries in the container");
+            if plan.method == "toolbox" {
+                libraries.set_active(true);
                 body.append(&libraries);
             }
             let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
