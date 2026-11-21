@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use crate::{
     core::{architecture_group, detect, Package, PackliftError, Result},
     system::{
-        export_desktop, export_desktop_with_wm_class, operation, remove_exports, sha256, Registry,
-        Runner,
+        desktop_exec, export_desktop, export_desktop_with_wm_class, operation, remove_exports,
+        sha256, Registry, Runner,
     },
 };
 
@@ -1154,7 +1154,7 @@ impl Installer {
         export_desktop_with_wm_class(
             &export,
             &package.name,
-            &argv,
+            &windows_desktop_command(&argv),
             &menu_icon,
             false,
             "Utility",
@@ -1234,7 +1234,7 @@ impl Installer {
         export_desktop_with_wm_class(
             &export_path,
             &package.name,
-            &argv,
+            &windows_desktop_command(&argv),
             &menu_icon,
             false,
             "Game",
@@ -1365,19 +1365,24 @@ impl Installer {
             } else {
                 ("application-x-executable".into(), None)
             };
-            if old_icon == Some(menu_icon.as_str()) && old_class == Some(wm_class) {
-                continue;
-            }
             let argv = arguments
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
+            let menu_command = windows_desktop_command(&argv);
+            let old_exec = shortcut.lines().find_map(|line| line.strip_prefix("Exec="));
+            if old_icon == Some(menu_icon.as_str())
+                && old_class == Some(wm_class)
+                && old_exec == Some(desktop_exec(&menu_command).as_str())
+            {
+                continue;
+            }
             let terminal = app["exports"][0]["terminal"].as_bool().unwrap_or(false);
             match export_desktop_with_wm_class(
                 Path::new(&desktop),
                 &name,
-                &argv,
+                &menu_command,
                 &menu_icon,
                 terminal,
                 if app["game_shortcut"].as_bool().unwrap_or(false) {
@@ -1784,6 +1789,37 @@ fn rpm_string(
     tag: u32,
 ) -> Option<String> {
     rpm_strings(tags, data, tag).into_iter().next()
+}
+
+// A desktop shortcut runs on the host. Reuse the working directory and
+// environment from the UMU command without requiring flatpak-spawn there.
+fn windows_desktop_command(argv: &[String]) -> Vec<String> {
+    let [spawn, host, directory, tail @ ..] = argv else {
+        return argv.to_vec();
+    };
+    if spawn != "flatpak-spawn" || host != "--host" {
+        return argv.to_vec();
+    }
+    let Some(directory) = directory.strip_prefix("--directory=") else {
+        return argv.to_vec();
+    };
+    let env_count = tail
+        .iter()
+        .take_while(|arg| arg.starts_with("--env="))
+        .count();
+    let (environment, command) = tail.split_at(env_count);
+    if command.is_empty() {
+        return argv.to_vec();
+    }
+
+    let mut result = vec!["/usr/bin/env".into(), "-C".into(), directory.into()];
+    result.extend(
+        environment
+            .iter()
+            .map(|arg| arg["--env=".len()..].to_owned()),
+    );
+    result.extend_from_slice(command);
+    result
 }
 
 struct Wine {
@@ -2784,8 +2820,26 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
 }
 
 #[cfg(test)]
-mod icon_tests {
-    use super::ico_to_png;
+mod tests {
+    use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn proton_menu_shortcut_uses_a_host_command_and_preserves_paths() {
+        let argv = [
+            "flatpak-spawn",
+            "--host",
+            "--directory=/home/user/Game Files",
+            "--env=WINEPREFIX=/home/user/Proton Prefix",
+            "/home/user/.local/share/flatapk/umu-run",
+            "/home/user/Game Files/Game.exe",
+        ]
+        .map(str::to_owned);
+
+        assert_eq!(
+            desktop_exec(&windows_desktop_command(&argv)),
+            r#"/usr/bin/env -C "/home/user/Game Files" "WINEPREFIX=/home/user/Proton Prefix" /home/user/.local/share/flatapk/umu-run "/home/user/Game Files/Game.exe""#
+        );
+    }
 
     #[test]
     fn converts_legacy_bmp_ico_to_png_for_linux_menus() {

@@ -429,11 +429,7 @@ pub fn export_desktop_with_wm_class(
         .parent()
         .ok_or_else(|| PackliftError::Message("Invalid desktop shortcut path.".into()))?;
     fs::create_dir_all(parent)?;
-    let exec = argv
-        .iter()
-        .map(|s| desktop_exec_arg(s))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let exec = desktop_exec(argv);
     let wm_class = wm_class
         .map(|class| format!("StartupWMClass={}\n", desktop_string(class)))
         .unwrap_or_default();
@@ -447,6 +443,13 @@ pub fn export_desktop_with_wm_class(
 
 fn desktop_string(value: &str) -> String {
     value.replace(['\n', '\r', '\t'], " ")
+}
+
+pub(crate) fn desktop_exec(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| desktop_exec_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn desktop_exec_arg(value: &str) -> String {
