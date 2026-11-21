@@ -1132,13 +1132,21 @@ impl Installer {
             &[target.to_string_lossy().into_owned()],
             Some(target.parent().unwrap_or(&prefix)),
         );
-        let icon = package
+        // Setup executables frequently carry a bootstrapper icon unrelated to the
+        // installed program. Prefer the icon embedded in the selected app binary.
+        let mut installed_program = package.clone();
+        installed_program.path = target.clone();
+        installed_program.digest = sha256(&target)?;
+        installed_program.icon = None;
+        self.inspect_pe_icon(&mut installed_program)?;
+        let selected_icon = installed_program
             .icon
-            .as_ref()
+            .as_deref()
+            .or(package.icon.as_deref());
+        let icon = selected_icon
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        let (menu_icon, menu_icon_file) =
-            self.export_menu_icon(&identifier, package.icon.as_deref())?;
+        let (menu_icon, menu_icon_file) = self.export_menu_icon(&identifier, selected_icon)?;
         let wm_class = target
             .file_name()
             .and_then(|name| name.to_str())
