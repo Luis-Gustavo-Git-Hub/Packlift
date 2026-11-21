@@ -15,4 +15,4 @@ install: build
 	install -Dm644 data/$(APP_ID).desktop "$(SHARE)/applications/$(APP_ID).desktop"
 	install -Dm644 data/$(APP_ID).metainfo.xml "$(SHARE)/metainfo/$(APP_ID).metainfo.xml"
 	install -Dm644 data/$(APP_ID).xml "$(SHARE)/mime/packages/$(APP_ID).xml"
-	install -Dm644 data/$(APP_ID).png "$(SHARE)/icons/hicolor/128x128/apps/$(APP_ID).png"
+	install -Dm644 data/$(APP_ID).png "$(SHARE)/icons/hicolor/256x256/apps/$(APP_ID).png"
