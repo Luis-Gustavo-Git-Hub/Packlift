@@ -82,14 +82,20 @@ impl Runner {
         let stderr = child.stderr.take();
         let stderr_runner = self.clone();
         let stderr_reader = std::thread::spawn(move || {
+            let mut tail = std::collections::VecDeque::new();
             if let Some(stderr) = stderr {
                 for line in BufReader::new(stderr)
                     .lines()
                     .map_while(std::result::Result::ok)
                 {
                     stderr_runner.write(&line);
+                    if tail.len() == 5 {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line.chars().take(500).collect::<String>());
                 }
             }
+            tail.into_iter().collect::<Vec<_>>().join("\n")
         });
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
@@ -98,10 +104,10 @@ impl Runner {
             }
         }
         let output = child.wait_with_output()?;
-        let _ = stderr_reader.join();
+        let diagnostic = stderr_reader.join().unwrap_or_default();
         if check && !output.status.success() {
             return Err(PackliftError::Message(format!(
-                "{} exited with status {}. See the installation log.",
+                "{} exited with status {}. See the installation log.\n{diagnostic}",
                 args.first().map(String::as_str).unwrap_or("Command"),
                 output.status.code().unwrap_or(1)
             )));
@@ -145,7 +151,9 @@ impl Runner {
         let launch_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             if let Some(status) = child.try_wait()? {
-                self.write(&format!("Program exited during startup with status {status}"));
+                self.write(&format!(
+                    "Program exited during startup with status {status}"
+                ));
                 if !status.success() {
                     return Err(PackliftError::Message(format!(
                         "The program failed to start (exit status {status}). See the installation log."
@@ -176,7 +184,15 @@ impl Runner {
         self.write(&format!("{} $ {shell}", chrono_timestamp()));
         let output = Command::new(&command[0]).args(&command[1..]).output()?;
         if !output.status.success() {
-            return Err(PackliftError::Message(format!("{} failed.", command[0])));
+            let detail: String = String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2500)
+                .collect();
+            self.write(&detail);
+            return Err(PackliftError::Message(format!(
+                "{} failed. {detail}",
+                command[0]
+            )));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }

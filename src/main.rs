@@ -50,6 +50,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
     let settings = gtk::Button::from_icon_name("preferences-system-symbolic");
+    settings.update_property(&[gtk::accessible::Property::Label("Packlift settings")]);
     settings.set_tooltip_text(Some("Packlift settings"));
     let weak_window = window.downgrade();
     settings.connect_clicked(move |_| {
@@ -131,7 +132,34 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                         }
                     }
                 });
-                row.add_suffix(&launch);
+                if record["exports"][0]["argv"].is_array() {
+                    row.add_suffix(&launch);
+                }
+                if method == "toolbox" {
+                    let repair = gtk::Button::with_label("Repair…");
+                    let parent = window.downgrade();
+                    let application = app.clone();
+                    let record = record.clone();
+                    repair.connect_clicked(move |_| {
+                        let Some(window) = parent.upgrade() else { return };
+                        let confirm = gtk::MessageDialog::builder().transient_for(&window).modal(true)
+                            .text("Repair this container installation?")
+                            .secondary_text("Packlift will refresh the repositories, reinstall the original package and recreate its shortcuts. In Ubuntu it can also install missing libraries from configured repositories.").build();
+                        confirm.add_button("Cancel",gtk::ResponseType::Cancel);
+                        confirm.add_button("Repair",gtk::ResponseType::Accept);
+                        let app = application.clone();
+                        let record = record.clone();
+                        confirm.connect_response(move |dialog, response| {
+                            dialog.close();
+                            if response == gtk::ResponseType::Accept {
+                                let record = record.clone();
+                                run_job(&app,&window,"Repairing installation",move |logger| installer_with_output(logger)?.repair_container_app(&record).map(Some));
+                            }
+                        });
+                        confirm.present();
+                    });
+                    row.add_suffix(&repair);
+                }
                 {
                     let remove = gtk::Button::with_label(if game {
                         "Remove shortcut"
@@ -295,6 +323,7 @@ fn open_package(app: &adw::Application, path: &Path) {
                 runtime_label.add_css_class("heading");
                 runtime_label.set_xalign(0.0);
                 runtime_box.append(&runtime_label);
+                runtime.update_property(&[gtk::accessible::Property::Label("Windows runtime")]);
                 runtime.set_hexpand(true);
                 runtime_box.append(&runtime);
                 body.append(&runtime_box);
@@ -306,6 +335,11 @@ fn open_package(app: &adw::Application, path: &Path) {
                 ));
             }
 
+            let libraries =
+                gtk::CheckButton::with_label("Find and install missing Ubuntu libraries");
+            if plan.method == "toolbox" && plan.manager == "apt" {
+                body.append(&libraries);
+            }
             let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             actions.set_halign(gtk::Align::End);
             let cancel = gtk::Button::with_label("Cancel");
@@ -316,7 +350,61 @@ fn open_package(app: &adw::Application, path: &Path) {
                 }
             });
             actions.append(&cancel);
-            let install = gtk::Button::with_label("Continue");
+            let rpm_target = gtk::DropDown::from_strings(&["Fedora", "openSUSE"]);
+            let choose_target = package.kind == "rpm" && package.rpm_family.is_empty();
+            if choose_target {
+                body.append(&gtk::Label::new(Some(
+                    "Choose the distribution this RPM was built for",
+                )));
+                rpm_target.update_property(&[gtk::accessible::Property::Label("RPM distribution")]);
+                body.append(&rpm_target);
+            }
+            let setup = if plan.method == "toolbox" {
+                installer().and_then(|m| m.container_setup())
+            } else {
+                Ok(None)
+            };
+            let install = gtk::Button::with_label(if matches!(&setup, Ok(Some(_))) {
+                "Set up and install"
+            } else {
+                "Continue"
+            });
+            match &setup {
+                Ok(command) if plan.method == "toolbox" => {
+                    let mut summary = if choose_target {
+                        "Install into the selected distribution container.".to_owned()
+                    } else {
+                        format!(
+                            "Install in the {} container using {}.",
+                            plan.family, plan.manager
+                        )
+                    };
+                    if let Some(args) = command {
+                        summary.push_str(&format!(
+                            " Authorize this host setup command: {}",
+                            args.join(" ")
+                        ));
+                        if matches!(args[0].as_str(), "rpm-ostree" | "transactional-update") {
+                            summary.push_str(" Restart required.");
+                        }
+                    }
+                    body.append(&notice_row(
+                        "dialog-information-symbolic",
+                        &summary,
+                        "dim-label",
+                    ));
+                }
+                Err(error) => {
+                    body.append(&notice_row(
+                        "dialog-warning-symbolic",
+                        &error.to_string(),
+                        "warning",
+                    ));
+                    install.set_sensitive(false);
+                }
+                _ => {}
+            }
+            let setup = setup.ok().flatten();
             install.add_css_class("suggested-action");
             let app = app.clone();
             let package = package.clone();
@@ -335,7 +423,18 @@ fn open_package(app: &adw::Application, path: &Path) {
                         choose_windows_action(&app, &window, &package, &runtime);
                     }
                 } else if let Some(window) = weak_window.upgrade() {
-                    let package = package.clone();
+                    let setup = setup.clone();
+                    let mut package = package.clone();
+                    package.resolve_libraries = libraries.is_active();
+                    if choose_target {
+                        package.use_container = true;
+                        package.rpm_family = if rpm_target.selected() == 1 {
+                            "opensuse"
+                        } else {
+                            "fedora"
+                        }
+                        .into();
+                    }
                     let runtime = runtime.clone();
                     if kind == "setup" {
                         run_job(&app, &window, "Installing program or game", move |logger| {
@@ -345,9 +444,11 @@ fn open_package(app: &adw::Application, path: &Path) {
                         });
                     } else {
                         run_job(&app, &window, "Installing program", move |logger| {
-                            installer_with_output(logger)?
-                                .install_package(&package, &runtime)
-                                .map(Some)
+                            let manager = installer_with_output(logger)?;
+                            if let Some(command) = setup {
+                                manager.setup_container_support(&command)?;
+                            }
+                            manager.install_package(&package, &runtime).map(Some)
                         });
                     }
                 }
@@ -561,10 +662,12 @@ where
     heading.add_css_class("title-2");
     body.append(&heading);
     let stage = gtk::Label::new(Some("Preparing the installation environment…"));
+    stage.set_wrap(true);
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
     body.append(&stage);
     let progress = gtk::ProgressBar::new();
+    progress.update_property(&[gtk::accessible::Property::Label("Installation progress")]);
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
@@ -585,9 +688,10 @@ where
     let copy = gtk::Button::with_label("Copy log");
     copy.set_halign(gtk::Align::End);
     let copy_log = log.clone();
-    copy.connect_clicked(move |_| {
+    copy.connect_clicked(move |button| {
         if let Some(display) = gtk::gdk::Display::default() {
             display.clipboard().set_text(&copy_log.borrow().join("\n"));
+            button.set_label("Log copied");
         }
     });
     let details = gtk::Expander::builder().label("Show details").build();
@@ -616,7 +720,10 @@ where
         match receiver.try_recv() {
             Ok(JobEvent::Log(line)) => {
                 let (label, fraction) = installation_stage(&line);
-                stage.set_text(label);
+                if label != "Working…" && stage.text().as_str() != label {
+                    stage.set_text(label);
+                    stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
+                }
                 progress.set_fraction(fraction);
                 log.borrow_mut().push(line);
                 buffer.set_text(&log.borrow().join("\n"));
@@ -667,7 +774,13 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     body.append(&title);
     let name = record["name"].as_str().unwrap_or("Program");
-    let description = gtk::Label::new(Some(&format!("{name} is ready to use.")));
+    let runnable = record["exports"][0]["argv"].is_array();
+    let message = if runnable {
+        format!("{name} is ready to use.")
+    } else {
+        format!("{name} is installed. This package has no application launcher.")
+    };
+    let description = gtk::Label::new(Some(&message));
     description.set_wrap(true);
     description.set_halign(gtk::Align::Center);
     description.add_css_class("dim-label");
@@ -696,7 +809,9 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
             window.close();
         }
     });
-    actions.append(&open);
+    if runnable {
+        actions.append(&open);
+    }
     body.append(&actions);
     window.set_content(Some(&body));
 }
@@ -762,8 +877,15 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
         .text("Packlift could not complete the operation")
         .secondary_text(message)
         .build();
+    dialog.add_button("Open log folder", gtk::ResponseType::Help);
     dialog.add_button("Copy log", gtk::ResponseType::Apply);
     dialog.connect_response(|dialog, response| {
+        if response == gtk::ResponseType::Help {
+            let folder = gio::File::for_path(packlift::system::data_home().join("flatapk"));
+            let _ =
+                gio::AppInfo::launch_default_for_uri(&folder.uri(), None::<&gio::AppLaunchContext>);
+            return;
+        }
         if response == gtk::ResponseType::Apply {
             let path = packlift::system::data_home()
                 .join("flatapk")
@@ -772,6 +894,8 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
                 .unwrap_or_else(|error| format!("Could not read the Packlift log: {error}"));
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&contents);
+                dialog.set_secondary_text(Some("Log copied to clipboard."));
+                return;
             }
         }
         dialog.close();
@@ -792,6 +916,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     content.set_margin_start(12);
     content.set_margin_end(12);
     let choices = gtk::DropDown::from_strings(&["Wine", "Proton"]);
+    choices.update_property(&[gtk::accessible::Property::Label("Default Windows runtime")]);
     if installer()
         .map(|m| m.preferences().0 == "proton")
         .unwrap_or(false)

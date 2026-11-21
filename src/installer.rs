@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use crate::{
     core::{architecture_group, detect, Package, PackliftError, Result},
     system::{
-        export_desktop, export_desktop_with_wm_class, operation, remove_exports, sha256,
-        Registry, Runner,
+        export_desktop, export_desktop_with_wm_class, operation, remove_exports, sha256, Registry,
+        Runner,
     },
 };
 
@@ -127,11 +127,7 @@ impl Installer {
         } else {
             std::env::consts::ARCH.to_owned()
         };
-        let host = crate::core::host_info(
-            &release,
-            machine.trim(),
-            Path::new("/run/ostree-booted").exists(),
-        );
+        let host = crate::core::host_info(&release, machine.trim(), self.immutable_host()?);
         let plan = crate::core::plan_for(&package, &host)?;
         Ok((package, plan))
     }
@@ -270,6 +266,17 @@ impl Installer {
         package.identifier = package.name.clone();
         let version = rpm_string(&tags, &data, 1001).unwrap_or_default();
         let release = rpm_string(&tags, &data, 1002).unwrap_or_default();
+        let distro = rpm_string(&tags, &data, 1010)
+            .unwrap_or_default()
+            .to_lowercase();
+        package.rpm_family = if distro.contains("suse") {
+            "opensuse"
+        } else if distro.contains("fedora") || release.contains(".fc") {
+            "fedora"
+        } else {
+            ""
+        }
+        .into();
         package.version = [version, release]
             .into_iter()
             .filter(|v| !v.is_empty())
@@ -558,20 +565,24 @@ impl Installer {
             .runner
             .capture(&["cat".into(), "/etc/os-release".into()], false)
             .unwrap_or_default();
-        let host =
-            crate::core::host_info(&release, &machine, Path::new("/run/ostree-booted").exists());
+        let host = crate::core::host_info(&release, &machine, self.immutable_host()?);
         let plan = crate::core::plan_for(package, &host)?;
         match plan.method.as_str() {
             "wine" => self.install_windows_program(package, runtime, &machine),
             "local" => self.install_local(package, &machine),
-            "native" | "toolbox" => self.install_system_package(package, &plan),
+            "native" | "toolbox" => self.install_system_package(package, &plan, false),
             _ => Err(PackliftError::Message(
                 "Unsupported package installation plan.".into(),
             )),
         }
     }
 
-    fn install_system_package(&self, package: &Package, plan: &crate::core::Plan) -> Result<Value> {
+    fn install_system_package(
+        &self,
+        package: &Package,
+        plan: &crate::core::Plan,
+        repair: bool,
+    ) -> Result<Value> {
         let _operation = operation(&self.data)?;
         self.runner.write(if plan.method == "toolbox" {
             "Preparing the package container environment"
@@ -584,86 +595,138 @@ impl Installer {
             String::new()
         };
         let target = package_target(package, &plan.manager);
-        if already_installed(&self.runner, &plan.manager, &target, &container)? {
+        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
+        let directory = self.data.join("installed").join(&identifier);
+        let pending = directory.join("pending-install.json");
+        let receipt = serde_json::to_vec(
+            &json!({"container":container,"target":target,"version":package.version,"manager":plan.manager}),
+        )?;
+        let installed = already_installed(&self.runner, &plan.manager, &target, &container)?;
+        if installed && !repair && fs::read(&pending).ok().as_ref() != Some(&receipt) {
             return Err(PackliftError::Message(
                 "This system package is already installed.".into(),
             ));
         }
-        if plan.multilib && plan.manager == "apt" {
-            let foreign = package_capture(
+        if installed && !repair {
+            let query = match plan.manager.as_str() {
+                "apt" => vec!["dpkg-query", "-W", "-f=${Version}", &target],
+                "dnf" | "zypper" => vec!["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", &target],
+                _ => vec!["pacman", "-Q", &target],
+            };
+            let current = package_capture(
                 &self.runner,
                 &container,
-                &["dpkg".into(), "--print-foreign-architectures".into()],
+                &query.into_iter().map(String::from).collect::<Vec<_>>(),
             )?;
-            if !foreign.split_whitespace().any(|value| value == "i386") {
+            if current.split_whitespace().last() != Some(package.version.as_str()) {
+                return Err(PackliftError::Message("The installed version changed since the interrupted operation. Review the package before retrying.".into()));
+            }
+        }
+        if !installed || repair {
+            if plan.multilib && plan.manager == "apt" {
+                let foreign = package_capture(
+                    &self.runner,
+                    &container,
+                    &["dpkg".into(), "--print-foreign-architectures".into()],
+                )?;
+                if !foreign.split_whitespace().any(|value| value == "i386") {
+                    elevated(
+                        &self.runner,
+                        &container,
+                        &["dpkg".into(), "--add-architecture".into(), "i386".into()],
+                    )?;
+                }
+            }
+            let source = package.path.to_string_lossy().into_owned();
+            self.runner.write("Downloading package dependencies");
+            if !container.is_empty() {
+                let refresh: &[&str] = match plan.manager.as_str() {
+                    "apt" => &["apt-get", "update", "--error-on=any"],
+                    "dnf" => &["dnf", "makecache", "--refresh"],
+                    "zypper" => &["zypper", "--non-interactive", "refresh"],
+                    "pacman" => &["pacman", "-Syu", "--noconfirm"],
+                    _ => {
+                        return Err(PackliftError::Message(
+                            "Unsupported target package manager.".into(),
+                        ))
+                    }
+                };
                 elevated(
                     &self.runner,
                     &container,
-                    &["dpkg".into(), "--add-architecture".into(), "i386".into()],
+                    &refresh.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                 )?;
             }
-        }
-        let source = package.path.to_string_lossy().into_owned();
-        self.runner.write("Downloading package dependencies");
-        if plan.manager == "apt" {
-            elevated(
-                &self.runner,
-                &container,
-                &[
-                    "apt-get".into(),
-                    "install".into(),
-                    "--no-remove".into(),
-                    "--download-only".into(),
-                    "-y".into(),
-                    source.clone(),
-                ],
-            )?;
-        } else if plan.manager == "dnf" {
-            elevated(
-                &self.runner,
-                &container,
-                &[
-                    "dnf".into(),
-                    "install".into(),
-                    "--downloadonly".into(),
-                    "-y".into(),
-                    source.clone(),
-                ],
-            )?;
-        }
-        let mut command: Vec<String> = match plan.manager.as_str() {
-            "apt" => ["apt-get", "install", "--no-remove", "-y"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            "dnf" => ["dnf", "install", "-y"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            "zypper" => ["zypper", "--non-interactive", "install"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            "pacman" => ["pacman", "-U", "--noconfirm", "--"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            _ => {
-                return Err(PackliftError::Message(
-                    "Unsupported package manager.".into(),
-                ))
+            if plan.manager == "apt" {
+                elevated(
+                    &self.runner,
+                    &container,
+                    &[
+                        "apt-get".into(),
+                        "install".into(),
+                        "--no-remove".into(),
+                        "--download-only".into(),
+                        "-y".into(),
+                        source.clone(),
+                    ],
+                )?;
+            } else if plan.manager == "dnf" {
+                elevated(
+                    &self.runner,
+                    &container,
+                    &[
+                        "dnf".into(),
+                        "install".into(),
+                        "--downloadonly".into(),
+                        "-y".into(),
+                        source.clone(),
+                    ],
+                )?;
             }
-        };
-        command.push(source);
-        self.runner.write("Installing the system package");
-        elevated(&self.runner, &container, &command)?;
-        let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
-        let directory = self.data.join("installed").join(&identifier);
-        fs::create_dir_all(&directory)?;
+            let mut command: Vec<String> = match plan.manager.as_str() {
+                "apt" => ["apt-get", "install", "--no-remove", "-y"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                "dnf" => ["dnf", "install", "-y"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                "zypper" => ["zypper", "--non-interactive", "install"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                "pacman" => ["pacman", "-U", "--noconfirm", "--"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                _ => {
+                    return Err(PackliftError::Message(
+                        "Unsupported package manager.".into(),
+                    ))
+                }
+            };
+            if repair && installed {
+                match plan.manager.as_str() {
+                    "apt" => command.push("--reinstall".into()),
+                    "dnf" => command[1] = "reinstall".into(),
+                    "zypper" => command.push("--force".into()),
+                    _ => {}
+                }
+            }
+            command.push(source);
+            self.runner.write("Installing the system package");
+            fs::create_dir_all(&directory)?;
+            fs::write(&pending, &receipt)?;
+            elevated(&self.runner, &container, &command)?;
+        } else {
+            self.runner
+                .write("Recovering application shortcuts after an interrupted installation");
+        }
         let mut launchers =
             system_launchers(&self.runner, package, &plan.manager, &target, &container)?;
         if !container.is_empty() {
-            for (index, (_, _, icon, _)) in launchers.iter_mut().enumerate() {
+            for (index, (_, _, icon, _, _)) in launchers.iter_mut().enumerate() {
                 let source_icon = Path::new(icon);
                 if !source_icon.is_absolute()
                     || !source_icon.extension().is_some_and(|extension| {
@@ -697,7 +760,120 @@ impl Installer {
             "method":plan.method,"manager":plan.manager,"target":target,"container":container,
             "source":package.path,"digest":package.digest,"directory":directory,"exports":exports});
         self.registry.save(&app)?;
+        fs::remove_file(pending)?;
         Ok(app)
+    }
+
+    pub fn repair_container_app(&self, app: &Value) -> Result<Value> {
+        let path = Path::new(app["source"].as_str().unwrap_or(""));
+        let (mut package, mut plan) = self.probe(path)?;
+        if app["method"] != "toolbox" || app["digest"].as_str() != Some(package.digest.as_str()) {
+            return Err(PackliftError::Message(
+                "Repair requires the original unchanged package file.".into(),
+            ));
+        }
+        let container = app["container"].as_str().unwrap_or("");
+        let family = container.strip_prefix("flatapk-").unwrap_or("");
+        if !self
+            .registry
+            .containers()?
+            .iter()
+            .any(|name| name == container)
+            || !matches!(
+                (package.kind.as_str(), family),
+                ("deb", "ubuntu") | ("rpm", "fedora" | "opensuse") | ("arch", "arch")
+            )
+        {
+            return Err(PackliftError::Message(
+                "The recorded environment cannot be repaired.".into(),
+            ));
+        }
+        if package.kind == "rpm" {
+            package.rpm_family = family.into();
+        }
+        package.resolve_libraries = family == "ubuntu";
+        plan.family = family.into();
+        plan.method = "toolbox".into();
+        plan.manager = app["manager"].as_str().unwrap_or("").into();
+        self.install_system_package(&package, &plan, true)
+    }
+
+    fn immutable_host(&self) -> Result<bool> {
+        Ok(self
+            .runner
+            .run(
+                &["test".into(), "-e".into(), "/run/ostree-booted".into()],
+                false,
+                true,
+                false,
+            )?
+            .status
+            .success()
+            || self.runner.available("transactional-update"))
+    }
+
+    pub fn container_setup(&self) -> Result<Option<Vec<String>>> {
+        let toolbox = self.runner.available("toolbox");
+        let podman = self.runner.available("podman");
+        if toolbox && podman {
+            return Ok(None);
+        }
+        let release = self
+            .runner
+            .capture(&["cat".into(), "/etc/os-release".into()], false)?;
+        let (ids, _) = crate::core::host_info(&release, "", false);
+        let has = |names: &[&str]| names.iter().any(|id| ids.contains(*id));
+        let (cmd, tool): (&[&str], &str) = if self.immutable_host()? {
+            if self.runner.available("rpm-ostree") {
+                (&["rpm-ostree", "install", "--idempotent"], "toolbox")
+            } else if self.runner.available("transactional-update") {
+                (&["transactional-update", "pkg", "install"], "toolbox")
+            } else {
+                return Err(PackliftError::Message("Enable Toolbx and Podman with your immutable system's update mechanism, then reopen this package.".into()));
+            }
+        } else if has(&["debian", "ubuntu"]) {
+            (
+                &["apt-get", "install", "--no-remove", "-y"],
+                "podman-toolbox",
+            )
+        } else if has(&["fedora", "rhel", "centos"]) {
+            (&["dnf", "install", "-y"], "toolbox")
+        } else if has(&["suse", "opensuse", "opensuse-tumbleweed", "opensuse-leap"]) {
+            (&["zypper", "--non-interactive", "install"], "toolbox")
+        } else if has(&["arch"]) {
+            (&["pacman", "-S", "--needed", "--noconfirm"], "toolbox")
+        } else {
+            return Err(PackliftError::Message("Automatic container setup is unavailable for this distribution. Install Toolbx and Podman, then reopen this package.".into()));
+        };
+        let mut args: Vec<String> = cmd.iter().map(|arg| arg.to_string()).collect();
+        if !toolbox {
+            args.push(tool.into());
+        }
+        if !podman {
+            args.push("podman".into());
+        }
+        Ok(Some(args))
+    }
+
+    pub fn setup_container_support(&self, approved: &[String]) -> Result<()> {
+        let Some(command) = self.container_setup()? else {
+            return Ok(());
+        };
+        if approved != command.as_slice() {
+            return Err(PackliftError::Message(
+                "Host prerequisites changed. Reopen this package to review setup.".into(),
+            ));
+        }
+        elevated(&self.runner, "", &command)?;
+        if self.container_setup()?.is_some() {
+            let message = if self.immutable_host()? {
+                "Restart your computer to activate container support, then reopen this package."
+            } else {
+                "Toolbx or Podman is still unavailable. Check the host package manager output and retry."
+            };
+            return Err(PackliftError::Message(message.into()));
+        }
+        Ok(())
     }
 
     fn ensure_toolbox(&self, family: &str) -> Result<String> {
@@ -708,6 +884,9 @@ impl Installer {
                 "Install Toolbox and Podman on the host before continuing.".into(),
             ));
         }
+        self.runner.capture(&["podman".into(),"info".into(),"--format".into(),"{{.Host.Security.Rootless}}".into()], false)
+            .and_then(|value| if value.trim() == "true" { Ok(()) } else { Err(PackliftError::Message("Rootless Podman is required.".into())) })
+            .map_err(|_| PackliftError::Message("Podman cannot run rootless for this user. Check podman info, user namespace configuration and container storage.".into()))?;
         let name = format!("flatapk-{family}");
         let result = self.runner.run(
             &[
@@ -728,9 +907,15 @@ impl Installer {
             }
             return Ok(name);
         }
+        if result.status.code() != Some(1) {
+            return Err(PackliftError::Message(format!(
+                "Podman could not check container {name}. See the installation log."
+            )));
+        }
         let image = std::env::var(format!("FLATAPK_{}_IMAGE", family.to_ascii_uppercase()))
             .unwrap_or_else(|_| match family {
                 "ubuntu" => "quay.io/toolbx/ubuntu-toolbox:24.04".into(),
+                "opensuse" => "registry.opensuse.org/opensuse/toolbox:latest".into(),
                 "fedora" => "registry.fedoraproject.org/fedora-toolbox:43".into(),
                 _ => "quay.io/toolbx/arch-toolbox:latest".into(),
             });
@@ -760,11 +945,11 @@ impl Installer {
     fn write_exports(
         &self,
         id: &str,
-        launchers: &[(String, Vec<String>, String, bool)],
+        launchers: &[(String, Vec<String>, String, bool, String)],
         category: &str,
     ) -> Result<Vec<Value>> {
         let mut exports = Vec::new();
-        for (index, (name, argv, icon, terminal)) in launchers.iter().enumerate() {
+        for (index, (name, argv, icon, terminal, wm_class)) in launchers.iter().enumerate() {
             let path = self
                 .applications
                 .join(format!("io.github.flatapk.Installer.{id}.{index}.desktop"));
@@ -773,7 +958,17 @@ impl Installer {
             } else {
                 icon
             };
-            export_desktop(&path, name, argv, displayed_icon, *terminal, category)?;
+            export_desktop_with_wm_class(
+                &path,
+                name,
+                argv,
+                displayed_icon,
+                *terminal,
+                category,
+                Some(wm_class)
+                    .filter(|value| !value.is_empty())
+                    .map(String::as_str),
+            )?;
             exports.push(json!({"desktop":path,"name":name,"icon":displayed_icon,"argv":argv,"terminal":terminal}));
         }
         Ok(exports)
@@ -1111,7 +1306,11 @@ impl Installer {
                 .filter(|path| Path::new(path).is_file())
                 .map(str::to_owned);
             let needs_wm_class = std::fs::read_to_string(&desktop)
-                .map(|contents| !contents.lines().any(|line| line.starts_with("StartupWMClass=")))
+                .map(|contents| {
+                    !contents
+                        .lines()
+                        .any(|line| line.starts_with("StartupWMClass="))
+                })
                 .unwrap_or(true);
             let needs_menu_icon = Path::new(&icon).is_file() && current_icon.is_none();
             if !needs_wm_class && !needs_menu_icon {
@@ -2060,12 +2259,124 @@ fn already_installed(
     }
     if manager == "apt" {
         let status = runner.capture(&command, false)?;
-        Ok(!status
-            .split_whitespace()
-            .last()
-            .is_none_or(|v| v == "not-installed" || v == "config-files"))
+        Ok(status.split_whitespace().last() == Some("installed"))
     } else {
         Ok(true)
+    }
+}
+
+fn check_launcher_libraries(
+    runner: &Runner,
+    container: &str,
+    executable: &str,
+    repair: bool,
+) -> Result<()> {
+    // Only invoke the distribution's loader. Scripts and static executables have no loader dependencies.
+    let inspect = r#"export LC_ALL=C
+exe=$(command -v -- "$1") || exit 1
+case "$(od -An -tx1 -N5 -- "$exe" | tr -d ' ')" in
+7f454c4602) loader=/lib64/ld-linux-x86-64.so.2; arch=amd64 ;;
+7f454c4601) loader=/lib/ld-linux.so.2; arch=i386 ;;
+*) exit 0 ;;
+esac
+echo "$arch"
+[ -x "$loader" ] || { echo "Missing runtime loader $loader" >&2; exit 1; }
+"$loader" --verify "$exe" || exit 0
+"$loader" --list "$exe" 2>&1 || echo LOADER_FAILED"#;
+    let mut attempted = std::collections::HashSet::new();
+    loop {
+        let output = package_capture(
+            runner,
+            container,
+            &[
+                "sh".into(),
+                "-c".into(),
+                inspect.into(),
+                "packlift".into(),
+                executable.into(),
+            ],
+        )?;
+        if !output
+            .lines()
+            .any(|line| line == "LOADER_FAILED" || line.contains("=> not found"))
+        {
+            return Ok(());
+        }
+        runner.write(&output);
+        let pattern = regex::Regex::new(r"(?m)(?:loading shared libraries: |^\s*)([a-zA-Z0-9_+.\-]+\.so(?:\.[a-zA-Z0-9_.\-]+)*)(?:: cannot open shared object file| => not found)").expect("fixed library pattern");
+        let Some(name) = pattern
+            .captures(&output)
+            .and_then(|m| m.get(1))
+            .map(|m| m.as_str())
+        else {
+            return Err(PackliftError::Message(format!(
+                "The runtime in {container} cannot load {executable}: {output}"
+            )));
+        };
+        let release =
+            package_capture(runner, container, &["cat".into(), "/etc/os-release".into()])?;
+        let distro = release
+            .lines()
+            .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+            .unwrap_or(container)
+            .trim_matches('"');
+        if !repair {
+            return Err(PackliftError::Message(format!("{distro} is missing {name}. Reopen the package and enable library lookup if available, or install its provider in {container}.")));
+        }
+        if attempted.is_empty() {
+            elevated(
+                runner,
+                container,
+                &[
+                    "apt-get".into(),
+                    "install".into(),
+                    "--no-remove".into(),
+                    "-y".into(),
+                    "apt-file".into(),
+                ],
+            )?;
+            elevated(
+                runner,
+                container,
+                &["apt-get".into(), "update".into(), "--error-on=any".into()],
+            )?;
+        }
+        let arch = output.lines().next().unwrap_or("");
+        let triplet = match arch {
+            "amd64" => "x86_64-linux-gnu",
+            "i386" => "i386-linux-gnu",
+            _ => {
+                return Err(PackliftError::Message(
+                    "Unknown Ubuntu library architecture.".into(),
+                ))
+            }
+        };
+        let query = format!(r"^(usr/)?lib/{triplet}/{}$", regex::escape(name));
+        let providers = package_capture(runner,container,&["apt-file".into(),"-a".into(),arch.into(),"-l".into(),"-x".into(),"search".into(),query])
+            .map_err(|e|PackliftError::Message(format!("Could not find a provider for {name} ({arch}) in {distro}. Check enabled repositories and their Contents indexes. {e}")))?;
+        let packages: std::collections::BTreeSet<_> = providers
+            .lines()
+            .map(str::trim)
+            .filter(|value| valid_package_identifier(value))
+            .collect();
+        if packages.len() != 1 || !attempted.insert(name.to_owned()) || attempted.len() > 32 {
+            return Err(PackliftError::Message(format!("Cannot automatically resolve {name} ({arch}) for {distro}. Matching packages: {providers}")));
+        }
+        let provider = format!("{}:{arch}", packages.first().unwrap());
+        runner.write(&format!(
+            "Installing {provider} for {name} inside {container}"
+        ));
+        elevated(
+            runner,
+            container,
+            &[
+                "apt-get".into(),
+                "install".into(),
+                "--no-remove".into(),
+                "-y".into(),
+                provider,
+            ],
+        )?;
     }
 }
 
@@ -2075,7 +2386,7 @@ fn system_launchers(
     manager: &str,
     target: &str,
     container: &str,
-) -> Result<Vec<(String, Vec<String>, String, bool)>> {
+) -> Result<Vec<(String, Vec<String>, String, bool, String)>> {
     let files_command = match manager {
         "apt" => vec!["dpkg-query".into(), "-L".into(), target.into()],
         "dnf" | "zypper" => vec!["rpm".into(), "-ql".into(), target.into()],
@@ -2101,6 +2412,7 @@ fn system_launchers(
         let mut icon = String::new();
         let mut exec = String::new();
         let mut terminal = false;
+        let mut wm_class = String::new();
         let mut desktop_application = false;
         let mut inside_entry = false;
         for line in content.lines() {
@@ -2121,6 +2433,7 @@ fn system_launchers(
                     }
                     "Exec" => exec = value.to_owned(),
                     "Icon" => icon = value.to_owned(),
+                    "StartupWMClass" => wm_class = value.to_string(),
                     "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
                     "NoDisplay" if value.eq_ignore_ascii_case("true") => {
                         desktop_application = false
@@ -2140,6 +2453,16 @@ fn system_launchers(
         if arguments.is_empty() {
             continue;
         }
+        package_capture(runner, container, &["sh".into(),"-c".into(),"command -v -- \"$1\"".into(),"packlift".into(),arguments[0].clone()])
+            .map_err(|_| PackliftError::Message(format!("The installed launcher requires {}, which is missing. Reopen the package to repair the installation.",arguments[0])))?;
+        if !container.is_empty() {
+            check_launcher_libraries(
+                runner,
+                container,
+                &arguments[0],
+                manager == "apt" && package.resolve_libraries,
+            )?;
+        }
         let candidate = files
             .iter()
             .find(|p| {
@@ -2147,11 +2470,18 @@ fn system_launchers(
                     .file_name()
                     .and_then(|v| v.to_str())
                     .is_some_and(|filename| {
-                        filename
-                            == Path::new(&icon)
-                                .file_name()
-                                .and_then(|v| v.to_str())
-                                .unwrap_or("")
+                        Path::new(filename)
+                            .file_stem()
+                            .is_some_and(|stem| stem == std::ffi::OsStr::new(&icon))
+                            && matches!(
+                                Path::new(filename).extension().and_then(|v| v.to_str()),
+                                Some("png" | "svg" | "xpm")
+                            )
+                            || filename
+                                == Path::new(&icon)
+                                    .file_name()
+                                    .and_then(|v| v.to_str())
+                                    .unwrap_or("")
                     })
             })
             .cloned()
@@ -2167,27 +2497,30 @@ fn system_launchers(
             argv,
             candidate,
             terminal,
+            wm_class,
         ));
     }
     if launchers.is_empty() {
-        let executable = files
-            .iter()
-            .find(|path| {
-                ["/usr/bin", "/usr/local/bin", "/bin"].contains(
-                    &Path::new(path)
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or(""),
-                )
-            })
-            .ok_or_else(|| {
-                PackliftError::Message(
-                    "The package did not provide an application launcher or executable.".into(),
-                )
-            })?;
+        let executable = files.iter().find(|path| {
+            ["/usr/bin", "/usr/local/bin", "/bin"].contains(
+                &Path::new(path)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or(""),
+            )
+        });
+        let Some(executable) = executable else {
+            return Ok(launchers);
+        };
         let mut argv = package_prefix(container);
         argv.push(executable.clone());
-        launchers.push((package.name.clone(), argv, String::new(), true));
+        launchers.push((
+            package.name.clone(),
+            argv,
+            String::new(),
+            true,
+            String::new(),
+        ));
     }
     Ok(launchers)
 }

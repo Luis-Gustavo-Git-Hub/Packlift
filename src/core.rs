@@ -32,6 +32,12 @@ pub struct Package {
     pub name: String,
     pub version: String,
     pub architecture: String,
+    #[serde(default)]
+    pub rpm_family: String,
+    #[serde(skip)]
+    pub use_container: bool,
+    #[serde(skip)]
+    pub resolve_libraries: bool,
     pub requires: Vec<String>,
     pub identifier: String,
     pub description: String,
@@ -271,15 +277,24 @@ pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<P
             let fedora = ["fedora", "rhel", "centos", "rocky", "almalinux"]
                 .iter()
                 .any(|id| distro.contains(*id));
+            let target = package.rpm_family.as_str();
+            let native = !package.use_container
+                && !immutable
+                && ((target == "opensuse" && suse) || (target == "fedora" && fedora));
             Plan {
-                method: if !immutable && suse || !immutable && fedora {
-                    "native"
+                method: if native { "native" } else { "toolbox" }.into(),
+                manager: if target == "opensuse" {
+                    "zypper"
                 } else {
-                    "toolbox"
+                    "dnf"
                 }
                 .into(),
-                manager: if suse { "zypper" } else { "dnf" }.into(),
-                family: if suse { String::new() } else { "fedora".into() },
+                family: if target == "opensuse" {
+                    "opensuse"
+                } else {
+                    "fedora"
+                }
+                .into(),
                 multilib,
             }
         }
@@ -290,7 +305,7 @@ pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<P
                 ));
             }
             Plan {
-                method: if distro.contains("arch") {
+                method: if !immutable && distro.contains("arch") {
                     "native"
                 } else {
                     "toolbox"
