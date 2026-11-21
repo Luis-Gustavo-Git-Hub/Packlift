@@ -336,13 +336,13 @@ fn choose_windows_action(
     dialog.set_title(Some("How do you want to use this .exe?"));
     dialog.set_transient_for(Some(window));
     dialog.set_modal(true);
-    dialog.add_button("Install program or game", gtk::ResponseType::Accept);
     dialog.add_button(
-        "Add installed game to Packlift and menu",
+        "Add existing program or game to menu",
         gtk::ResponseType::Apply,
     );
+    dialog.add_button("Install program or game", gtk::ResponseType::Accept);
     dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-    let message = gtk::Label::new(Some("Run a Windows installer, or add an already installed game to Packlift and the applications menu."));
+    let message = gtk::Label::new(Some("Add an already installed Windows program or game to Packlift, or run an installer to install one."));
     message.set_wrap(true);
     dialog.content_area().append(&message);
     let package = package.clone();
@@ -368,7 +368,7 @@ fn choose_windows_action(
                     run_job(
                         &app,
                         &window,
-                        "Adding game to Packlift and menu",
+                        "Adding program or game to Packlift and menu",
                         move |logger| {
                             installer_with_output(logger)?
                                 .add_game(&package, &runtime)

@@ -8,7 +8,7 @@ build:
 	cargo build --locked --release --features gui
 
 test:
-	python3 -m unittest discover -s tests -v
+	cargo test --locked --no-default-features --lib
 
 install: build
 	install -Dm755 target/release/packlift "$(DESTDIR)$(PREFIX)/bin/flatapk"

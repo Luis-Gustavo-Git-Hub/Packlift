@@ -60,7 +60,7 @@ cargo run --locked --features gui
 cargo run --locked --features gui -- /path/to/package.deb
 ```
 
-`make test` still runs the Python compatibility checks while the migration is being completed. The Flatpak build uses the GNOME SDK Rust extension and the checked-in Cargo lockfile and crate source list.
+All application and CI integration code is written in Rust. `make test` runs the Rust library test target. The Flatpak build uses the GNOME SDK Rust extension and the checked-in Cargo lockfile and crate source list.
 
 To build the x86-64 Flatpak locally, add Flathub and run:
 

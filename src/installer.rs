@@ -1083,52 +1083,66 @@ impl Installer {
         if runtime == "wine" && self.runner.available("wine") {
             return Ok("wine".into());
         }
-        if self.runner.sandbox {
-            let info = self.runner.run(
-                &["flatpak".into(), "info".into(), FLATPAK_WINE.into()],
+        if runtime != "wine" && runtime != FLATPAK_WINE {
+            let path = Path::new(runtime);
+            if path.is_absolute()
+                && fs::metadata(path).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            {
+                return Ok(runtime.into());
+            }
+            return Err(PackliftError::Message(
+                "Choose an executable Wine or Proton runtime installed on the host.".into(),
+            ));
+        }
+        if architecture_group(machine) != "x86_64" || !self.runner.available("flatpak") {
+            return Err(PackliftError::Message(
+                "Install Wine or choose an installed Wine or Proton runtime.".into(),
+            ));
+        }
+        let info = self.runner.run(
+            &["flatpak".into(), "info".into(), FLATPAK_WINE.into()],
+            false,
+            true,
+            false,
+        )?;
+        if !info.status.success() {
+            let _ = self.runner.run(
+                &[
+                    "flatpak".into(),
+                    "remote-add".into(),
+                    "--user".into(),
+                    "--if-not-exists".into(),
+                    "flathub".into(),
+                    "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+                ],
                 false,
                 true,
-                false,
+                true,
             )?;
-            if !info.status.success() {
-                let _ = self.runner.run(
-                    &[
-                        "flatpak".into(),
-                        "remote-add".into(),
-                        "--user".into(),
-                        "--if-not-exists".into(),
-                        "flathub".into(),
-                        "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
-                    ],
-                    false,
-                    true,
-                    true,
-                )?;
-                self.runner.run(
-                    &[
-                        "flatpak".into(),
-                        "install".into(),
-                        "--user".into(),
-                        "--noninteractive".into(),
-                        "flathub".into(),
-                        FLATPAK_WINE.into(),
-                    ],
-                    false,
-                    true,
-                    true,
-                )?;
-            }
-            return Ok(FLATPAK_WINE.into());
+            self.runner.run(
+                &[
+                    "flatpak".into(),
+                    "install".into(),
+                    "--user".into(),
+                    "--noninteractive".into(),
+                    "flathub".into(),
+                    FLATPAK_WINE.into(),
+                ],
+                false,
+                true,
+                true,
+            )?;
         }
-        Err(PackliftError::Message(
-            "Wine was not found on the host. Install Wine or select Proton.".into(),
-        ))
+        Ok(FLATPAK_WINE.into())
     }
 
     pub fn uninstall_game(&self, app: &Value) -> Result<()> {
         let _operation = operation(&self.data)?;
         remove_exports(app);
         self.remove_managed_directory(app, "games")?;
+        self.remove_unreferenced_icons(app)?;
         self.registry.remove(app)?;
         Ok(())
     }
@@ -1188,6 +1202,7 @@ impl Installer {
             self.remove_managed_directory(app, "windows")?;
         }
         remove_exports(app);
+        self.remove_unreferenced_icons(app)?;
         self.registry.remove(app)?;
         Ok(())
     }
@@ -1257,6 +1272,35 @@ impl Installer {
         let expected = self.data.join(expected_parent);
         if directory.starts_with(expected) && directory.is_dir() {
             fs::remove_dir_all(directory)?;
+        }
+        Ok(())
+    }
+
+    fn remove_unreferenced_icons(&self, app: &Value) -> Result<()> {
+        let others = self
+            .registry
+            .apps()?
+            .into_iter()
+            .filter(|other| other["id"] != app["id"])
+            .collect::<Vec<_>>();
+        let Some(exports) = app["exports"].as_array() else {
+            return Ok(());
+        };
+        for icon in exports.iter().filter_map(|export| export["icon"].as_str()) {
+            let path = Path::new(icon);
+            if !path.starts_with(self.data.join("package-icons")) {
+                continue;
+            }
+            let referenced = others.iter().any(|other| {
+                other["exports"].as_array().is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|export| export["icon"].as_str() == Some(icon))
+                })
+            });
+            if !referenced {
+                fs::remove_file(path)?;
+            }
         }
         Ok(())
     }
