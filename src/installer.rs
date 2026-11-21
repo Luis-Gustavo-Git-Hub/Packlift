@@ -547,8 +547,9 @@ impl Installer {
         if let Some(bytes) = pe_icon(&package.path)? {
             let directory = self.data.join("package-icons");
             fs::create_dir_all(&directory)?;
-            let (suffix, bytes) = png_payload_from_ico(&bytes)
-                .map(|png| ("png", png.to_vec()))
+            let converted = ico_to_png(&bytes);
+            let (suffix, bytes) = converted
+                .map(|png| ("png", png))
                 .unwrap_or_else(|| ("ico", bytes));
             let icon = directory.join(format!("{}.{}", package.digest, suffix));
             fs::write(&icon, bytes)?;
@@ -1254,21 +1255,29 @@ impl Installer {
         let Some(source) = source.filter(|path| path.is_file()) else {
             return Ok(("application-x-executable".into(), None));
         };
-        let Some(extension) = source
+        let extension = source
             .extension()
             .and_then(|extension| extension.to_str())
-            .filter(|extension| {
-                ["png", "ico", "svg", "xpm"]
-                    .iter()
-                    .any(|supported| extension.eq_ignore_ascii_case(supported))
-            })
-        else {
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let (extension, bytes) = if extension == "ico" {
+            let input = fs::read(source)?;
+            let Some(png) = ico_to_png(&input) else {
+                self.runner.write(
+                    "The Windows icon could not be converted. Using the application fallback icon.",
+                );
+                return Ok(("application-x-executable".into(), None));
+            };
+            ("png", png)
+        } else if ["png", "svg", "xpm"].contains(&extension.as_str()) {
+            (extension.as_str(), fs::read(source)?)
+        } else {
             return Ok(("application-x-executable".into(), None));
         };
         let directory = self.applications.join("icons");
         fs::create_dir_all(&directory)?;
         let icon = directory.join(format!("packlift-{identifier}.{extension}"));
-        fs::copy(source, &icon)?;
+        fs::write(&icon, bytes)?;
         let path = icon.to_string_lossy().into_owned();
         Ok((path.clone(), Some(path)))
     }
@@ -2070,6 +2079,121 @@ fn pe_icon(path: &Path) -> Result<Option<Vec<u8>>> {
     Ok(Some(icon))
 }
 
+fn ico_to_png(icon: &[u8]) -> Option<Vec<u8>> {
+    if let Some(png) = png_payload_from_ico(icon) {
+        return Some(png.to_vec());
+    }
+    if icon.len() < 22 || icon[..4] != [0, 0, 1, 0] {
+        return None;
+    }
+    let count = u16::from_le_bytes(icon[4..6].try_into().ok()?) as usize;
+    let entry = icon.get(6..6 + count.checked_mul(16)?)?;
+    let best = entry
+        .chunks_exact(16)
+        .max_by_key(|entry| u32::from_le_bytes(entry[8..12].try_into().unwrap_or([0; 4])))?;
+    let size = u32::from_le_bytes(best[8..12].try_into().ok()?) as usize;
+    let offset = u32::from_le_bytes(best[12..16].try_into().ok()?) as usize;
+    let dib = icon.get(offset..offset.checked_add(size)?)?;
+    if dib.len() < 40 {
+        return None;
+    }
+    let read_i32 = |at| Some(i32::from_le_bytes(dib.get(at..at + 4)?.try_into().ok()?));
+    let header = read_i32(0)?;
+    if header < 40 {
+        return None;
+    }
+    let width = read_i32(4)?.unsigned_abs() as usize;
+    let height = (read_i32(8)?.unsigned_abs() as usize) / 2;
+    let depth = u16::from_le_bytes(dib[14..16].try_into().ok()?);
+    if width == 0 || height == 0 || width > 512 || height > 512 || ![24, 32].contains(&depth) {
+        return None;
+    }
+    let bytes_per_pixel = (depth / 8) as usize;
+    let xor_stride = (width * bytes_per_pixel + 3) & !3;
+    let mask_stride = ((width + 31) / 32) * 4;
+    let pixels_at = header as usize;
+    if pixels_at.checked_add(xor_stride.checked_mul(height)?)? > dib.len() {
+        return None;
+    }
+    let mut rgba = vec![0u8; width.checked_mul(height)?.checked_mul(4)?];
+    let mut has_alpha = false;
+    for y in 0..height {
+        let row = pixels_at + (height - 1 - y) * xor_stride;
+        for x in 0..width {
+            let source = row + x * bytes_per_pixel;
+            let target = (y * width + x) * 4;
+            rgba[target..target + 3].copy_from_slice(&[
+                dib[source + 2],
+                dib[source + 1],
+                dib[source],
+            ]);
+            let alpha = if bytes_per_pixel == 4 {
+                dib[source + 3]
+            } else {
+                0
+            };
+            has_alpha |= alpha != 0;
+            rgba[target + 3] = alpha;
+        }
+    }
+    if !has_alpha {
+        let mask_at = pixels_at + xor_stride * height;
+        if mask_at + mask_stride * height <= dib.len() {
+            for y in 0..height {
+                for x in 0..width {
+                    let source = mask_at + (height - 1 - y) * mask_stride + x / 8;
+                    rgba[(y * width + x) * 4 + 3] = if dib[source] & (0x80 >> (x % 8)) == 0 {
+                        255
+                    } else {
+                        0
+                    };
+                }
+            }
+        } else {
+            for px in rgba.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+        }
+    }
+    let mut scanlines = Vec::with_capacity((width * 4 + 1) * height);
+    for y in 0..height {
+        scanlines.push(0);
+        for px in rgba[y * width * 4..(y + 1) * width * 4].chunks_exact(4) {
+            scanlines.extend_from_slice(px);
+        }
+    }
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &scanlines).ok()?;
+    let compressed = encoder.finish().ok()?;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    append_png_chunk(&mut png, b"IHDR", &ihdr);
+    append_png_chunk(&mut png, b"IDAT", &compressed);
+    append_png_chunk(&mut png, b"IEND", &[]);
+    Some(png)
+}
+
+fn append_png_chunk(output: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    output.extend_from_slice(kind);
+    output.extend_from_slice(data);
+    let mut crc = !0u32;
+    for byte in kind.iter().chain(data) {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb88320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    output.extend_from_slice(&(!crc).to_be_bytes());
+}
+
 fn png_payload_from_ico(icon: &[u8]) -> Option<&[u8]> {
     if icon.len() < 22 || icon[..4] != [0, 0, 1, 0] {
         return None;
@@ -2613,4 +2737,30 @@ fn collect_exes(directory: &Path, output: &mut Vec<PathBuf>, depth: usize) -> Re
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::ico_to_png;
+
+    #[test]
+    fn converts_legacy_bmp_ico_to_png_for_linux_menus() {
+        let mut icon = vec![0, 0, 1, 0, 1, 0];
+        icon.extend_from_slice(&[1, 1, 0, 0, 1, 0, 32, 0]);
+        icon.extend_from_slice(&48u32.to_le_bytes());
+        icon.extend_from_slice(&22u32.to_le_bytes());
+        icon.extend_from_slice(&40u32.to_le_bytes());
+        icon.extend_from_slice(&1i32.to_le_bytes());
+        icon.extend_from_slice(&2i32.to_le_bytes());
+        icon.extend_from_slice(&1u16.to_le_bytes());
+        icon.extend_from_slice(&32u16.to_le_bytes());
+        icon.extend_from_slice(&0u32.to_le_bytes());
+        icon.extend_from_slice(&4u32.to_le_bytes());
+        icon.extend_from_slice(&[0; 16]);
+        icon.extend_from_slice(&[20, 40, 200, 255]);
+        icon.extend_from_slice(&[0; 4]);
+
+        let png = ico_to_png(&icon).expect("supported BMP icon should convert");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
 }
