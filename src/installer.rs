@@ -90,6 +90,7 @@ impl Installer {
             "rpm" => self.inspect_rpm(&mut package)?,
             "arch" => self.inspect_arch(&mut package)?,
             "msi" => self.inspect_msi(&mut package)?,
+            "exe" | "setup" => self.inspect_pe_icon(&mut package)?,
             "appimage" => self.inspect_appimage(&mut package)?,
             "tar" => self.inspect_archive(&mut package)?,
             _ => {}
@@ -530,6 +531,17 @@ impl Installer {
         Ok(())
     }
 
+    fn inspect_pe_icon(&self, package: &mut Package) -> Result<()> {
+        if let Some(bytes) = pe_icon(&package.path)? {
+            let directory = self.data.join("package-icons");
+            fs::create_dir_all(&directory)?;
+            let icon = directory.join(format!("{}.ico", package.digest));
+            fs::write(&icon, bytes)?;
+            package.icon = Some(icon);
+        }
+        Ok(())
+    }
+
     pub fn install_package(&self, package: &Package, runtime: &str) -> Result<Value> {
         self.runner
             .write("Checking package compatibility with this system");
@@ -916,20 +928,18 @@ impl Installer {
             &[target.to_string_lossy().into_owned()],
             Some(target.parent().unwrap_or(&prefix)),
         );
-        export_desktop(
-            &export,
-            &package.name,
-            &argv,
-            "application-x-executable",
-            false,
-            "Utility",
-        )?;
+        let icon = package
+            .icon
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "application-x-executable".into());
+        export_desktop(&export, &package.name, &argv, &icon, false, "Utility")?;
         let metadata_directory = self.data.join("windows").join(&identifier);
         fs::create_dir_all(&metadata_directory)?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
             "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":package.name,
-            "icon":"application-x-executable","argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
+            "icon":icon,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -983,20 +993,18 @@ impl Installer {
             &[package.path.to_string_lossy().to_string()],
             Some(&app_dir),
         );
-        export_desktop(
-            &export_path,
-            &package.name,
-            &argv,
-            "application-x-executable",
-            false,
-            "Game",
-        )?;
+        let icon = package
+            .icon
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "application-x-executable".into());
+        export_desktop(&export_path, &package.name, &argv, &icon, false, "Game")?;
         self.runner.write("Creating the game menu shortcut");
         let app = json!({
             "id": identifier, "name": package.name, "version": package.version,
             "architecture": package.architecture, "source": package.path,
             "digest": digest, "directory": identifier_path, "exports": [{
-                "desktop": export_path, "name": package.name, "icon": "application-x-executable",
+                "desktop": export_path, "name": package.name, "icon": icon,
                 "argv": argv, "terminal": false, "wine_args": [package.path.to_string_lossy()]
             }], "method": "wine", "runtime": wine.runtime,
             "game_shortcut": true, "working_directory": app_dir
@@ -1521,6 +1529,238 @@ fn appimage_offset(path: &Path) -> Result<Option<u64>> {
     } else {
         Ok(None)
     }
+}
+
+fn pe_icon(path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_RESOURCE_BYTES: usize = 32 * 1024 * 1024;
+    let mut file = fs::File::open(path)?;
+    let mut dos = [0_u8; 64];
+    if file.read_exact(&mut dos).is_err() {
+        return Ok(None);
+    }
+    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
+    file.seek(SeekFrom::Start(pe_offset))?;
+    let mut coff = [0_u8; 24];
+    if file.read_exact(&mut coff).is_err() || &coff[..4] != b"PE\0\0" {
+        return Ok(None);
+    }
+    let section_count = u16::from_le_bytes(coff[6..8].try_into().unwrap()).min(96);
+    let optional_size = u16::from_le_bytes(coff[20..22].try_into().unwrap()) as usize;
+    if optional_size < 120 || optional_size > 1024 {
+        return Ok(None);
+    }
+    let mut optional = vec![0_u8; optional_size];
+    file.read_exact(&mut optional)?;
+    let magic = u16::from_le_bytes(optional[..2].try_into().unwrap());
+    let directory_offset = match magic {
+        0x10b => 96,
+        0x20b => 112,
+        _ => return Ok(None),
+    };
+    if optional.len() < directory_offset + 24 {
+        return Ok(None);
+    }
+    let resource_rva = u32::from_le_bytes(
+        optional[directory_offset + 16..directory_offset + 20]
+            .try_into()
+            .unwrap(),
+    );
+    let resource_size = u32::from_le_bytes(
+        optional[directory_offset + 20..directory_offset + 24]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    if resource_size < 16 || resource_size > MAX_RESOURCE_BYTES {
+        return Ok(None);
+    }
+    let mut sections = Vec::new();
+    for _ in 0..section_count {
+        let mut section = [0_u8; 40];
+        if file.read_exact(&mut section).is_err() {
+            return Ok(None);
+        }
+        sections.push((
+            u32::from_le_bytes(section[12..16].try_into().unwrap()),
+            u32::from_le_bytes(section[8..12].try_into().unwrap())
+                .max(u32::from_le_bytes(section[16..20].try_into().unwrap())),
+            u32::from_le_bytes(section[16..20].try_into().unwrap()),
+            u32::from_le_bytes(section[20..24].try_into().unwrap()),
+        ));
+    }
+    let Some(resource_file_offset) = pe_raw_offset(resource_rva, &sections) else {
+        return Ok(None);
+    };
+    let mut resource = vec![0_u8; resource_size];
+    file.seek(SeekFrom::Start(resource_file_offset))?;
+    if file.read_exact(&mut resource).is_err() {
+        return Ok(None);
+    }
+    let root = pe_resource_entries(&resource, 0);
+    let Some(group_root) = root
+        .iter()
+        .find(|(id, _)| *id == 14)
+        .map(|(_, value)| *value)
+    else {
+        return Ok(None);
+    };
+    let Some(icon_root) = root
+        .iter()
+        .find(|(id, _)| *id == 3)
+        .map(|(_, value)| *value)
+    else {
+        return Ok(None);
+    };
+    let groups = pe_resource_entries(&resource, group_root & 0x7fff_ffff);
+    let icons = pe_resource_entries(&resource, icon_root & 0x7fff_ffff);
+    let mut icon_data = std::collections::HashMap::new();
+    for (icon_id, target) in icons {
+        if let Some(data) = pe_resource_payload(target, &resource, &sections, &mut file)? {
+            icon_data.insert(icon_id, data);
+        }
+    }
+    let mut candidates = Vec::new();
+    for (_, target) in groups {
+        let Some(group) = pe_resource_payload(target, &resource, &sections, &mut file)? else {
+            continue;
+        };
+        if group.len() < 6 {
+            continue;
+        }
+        let reserved = u16::from_le_bytes(group[0..2].try_into().unwrap());
+        let kind = u16::from_le_bytes(group[2..4].try_into().unwrap());
+        let count = u16::from_le_bytes(group[4..6].try_into().unwrap()) as usize;
+        if reserved != 0 || kind != 1 || count == 0 || count > 64 || 6 + count * 14 > group.len() {
+            continue;
+        }
+        for entry in group[6..6 + count * 14].chunks_exact(14) {
+            let width = if entry[0] == 0 {
+                256
+            } else {
+                u32::from(entry[0])
+            };
+            let height = if entry[1] == 0 {
+                256
+            } else {
+                u32::from(entry[1])
+            };
+            let depth = u16::from_le_bytes(entry[6..8].try_into().unwrap());
+            let size = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+            let icon_id = u16::from_le_bytes(entry[12..14].try_into().unwrap()) as u32;
+            if let Some(data) = icon_data.get(&icon_id) {
+                if size > 0 && size <= data.len() && size <= 2 * 1024 * 1024 {
+                    candidates.push((width, height, depth, data[..size].to_vec()));
+                }
+            }
+        }
+    }
+    let Some((width, height, depth, data)) = candidates
+        .into_iter()
+        .max_by_key(|(width, height, depth, _)| (width * height, *depth))
+    else {
+        return Ok(None);
+    };
+    let mut icon = Vec::with_capacity(22 + data.len());
+    icon.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+    icon.extend_from_slice(&[
+        if width == 256 { 0 } else { width as u8 },
+        if height == 256 { 0 } else { height as u8 },
+        0,
+        0,
+    ]);
+    icon.extend_from_slice(&1_u16.to_le_bytes());
+    icon.extend_from_slice(&depth.to_le_bytes());
+    icon.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    icon.extend_from_slice(&22_u32.to_le_bytes());
+    icon.extend_from_slice(&data);
+    Ok(Some(icon))
+}
+
+fn pe_resource_entries(resource: &[u8], offset: u32) -> Vec<(u32, u32)> {
+    let offset = offset as usize;
+    if offset + 16 > resource.len() {
+        return Vec::new();
+    }
+    let named = u16::from_le_bytes(resource[offset + 12..offset + 14].try_into().unwrap()) as usize;
+    let ids = u16::from_le_bytes(resource[offset + 14..offset + 16].try_into().unwrap()) as usize;
+    let count = (named + ids).min(4096);
+    if offset + 16 + count * 8 > resource.len() {
+        return Vec::new();
+    }
+    resource[offset + 16..offset + 16 + count * 8]
+        .chunks_exact(8)
+        .filter_map(|entry| {
+            let name = u32::from_le_bytes(entry[..4].try_into().unwrap());
+            let target = u32::from_le_bytes(entry[4..].try_into().unwrap());
+            if name & 0x8000_0000 != 0 {
+                None
+            } else {
+                Some((name & 0x7fff_ffff, target))
+            }
+        })
+        .collect()
+}
+
+fn pe_resource_payload(
+    target: u32,
+    resource: &[u8],
+    sections: &[(u32, u32, u32, u32)],
+    file: &mut fs::File,
+) -> Result<Option<Vec<u8>>> {
+    use std::io::{Read, Seek};
+    let mut leaves = vec![target];
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for value in leaves {
+            if value & 0x8000_0000 != 0 {
+                next.extend(
+                    pe_resource_entries(resource, value & 0x7fff_ffff)
+                        .into_iter()
+                        .map(|(_, child)| child),
+                );
+            } else {
+                next.push(value);
+            }
+        }
+        leaves = next;
+    }
+    for leaf in leaves {
+        if leaf & 0x8000_0000 != 0 {
+            continue;
+        }
+        let offset = leaf as usize;
+        if offset + 16 > resource.len() {
+            continue;
+        }
+        let rva = u32::from_le_bytes(resource[offset..offset + 4].try_into().unwrap());
+        let size =
+            u32::from_le_bytes(resource[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        if size == 0 || size > 2 * 1024 * 1024 {
+            continue;
+        }
+        let Some(file_offset) = pe_raw_offset(rva, sections) else {
+            continue;
+        };
+        let mut data = vec![0_u8; size];
+        file.seek(std::io::SeekFrom::Start(file_offset))?;
+        if file.read_exact(&mut data).is_ok() {
+            return Ok(Some(data));
+        }
+    }
+    Ok(None)
+}
+
+fn pe_raw_offset(rva: u32, sections: &[(u32, u32, u32, u32)]) -> Option<u64> {
+    sections
+        .iter()
+        .find_map(|(address, span, raw_size, raw_offset)| {
+            if *address <= rva && rva < address.saturating_add(*span) && rva - *address < *raw_size
+            {
+                Some(u64::from(raw_offset.saturating_add(rva - *address)))
+            } else {
+                None
+            }
+        })
 }
 
 fn valid_package_identifier(value: &str) -> bool {
