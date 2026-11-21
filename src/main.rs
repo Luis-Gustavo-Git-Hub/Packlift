@@ -192,18 +192,18 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 fn open_package(app: &adw::Application, path: &Path) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(520, 570);
+    window.set_default_size(470, 500);
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new("Package details", "Packlift")));
     toolbar.add_top_bar(&header);
 
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    body.set_margin_top(20);
-    body.set_margin_bottom(20);
-    body.set_margin_start(20);
-    body.set_margin_end(20);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(16);
+    body.set_margin_bottom(16);
+    body.set_margin_start(16);
+    body.set_margin_end(16);
 
     match installer().and_then(|manager| manager.probe(path)) {
         Ok((package, plan)) => {
@@ -213,7 +213,7 @@ fn open_package(app: &adw::Application, path: &Path) {
             hero.set_margin_bottom(2);
             hero.set_margin_start(2);
             hero.set_margin_end(2);
-            let image = package_image(&package, 64);
+            let image = package_image(&package, 56);
             let icon_frame = gtk::Frame::new(None);
             icon_frame.add_css_class("card");
             icon_frame.set_child(Some(&image));
@@ -282,7 +282,7 @@ fn open_package(app: &adw::Application, path: &Path) {
             location.append(&method);
             body.append(&location);
 
-            let runtime = gtk::DropDown::from_strings(&["Wine", "Proton (automatic install)"]);
+            let runtime = gtk::DropDown::from_strings(&["Wine", "Proton"]);
             if ["exe", "setup", "msi"].contains(&package.kind.as_str()) {
                 if installer()
                     .map(|m| m.preferences().0 == "proton")
@@ -301,7 +301,7 @@ fn open_package(app: &adw::Application, path: &Path) {
 
                 body.append(&notice_row(
                     "dialog-information-symbolic",
-                    "Proton is downloaded automatically the first time you use it. Windows programs can access files in your home folder.",
+                    "Windows programs can access files in your home folder.",
                     "dim-label",
                 ));
             }
@@ -791,7 +791,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     content.set_margin_bottom(12);
     content.set_margin_start(12);
     content.set_margin_end(12);
-    let choices = gtk::DropDown::from_strings(&["Wine", "Proton (automatic install)"]);
+    let choices = gtk::DropDown::from_strings(&["Wine", "Proton"]);
     if installer()
         .map(|m| m.preferences().0 == "proton")
         .unwrap_or(false)
@@ -800,9 +800,6 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     }
     content.append(&gtk::Label::new(Some("Default Windows runtime")));
     content.append(&choices);
-    content.append(&gtk::Label::new(Some(
-        "Packlift downloads UMU-Proton automatically when you first prepare a game.",
-    )));
     dialog.content_area().append(&content);
     let choices = choices.clone();
     let weak_window = window.downgrade();
