@@ -109,7 +109,7 @@
       "name": "umu-launcher",
       "buildsystem": "simple",
       "build-commands": [
-        "install -Dm755 umu/umu-run /app/bin/umu-run"
+        "install -Dm755 umu-run /app/bin/umu-run"
       ],
       "sources": [
         {
