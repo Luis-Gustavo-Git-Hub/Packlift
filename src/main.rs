@@ -1,5 +1,7 @@
+mod i18n;
+
 use adw::prelude::*;
-use gtk::prelude::*;
+use i18n::tr;
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
@@ -13,13 +15,13 @@ use serde_json::Value;
 fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     let command = format!("flatpak override --user --talk-name=org.freedesktop.Flatpak {APP_ID}");
     let dialog = gtk::Dialog::builder()
-        .title("Allow access to your system")
+        .title(tr("Allow access to your system"))
         .transient_for(parent)
         .modal(true)
         .default_width(460)
         .build();
-    dialog.add_button("Close", gtk::ResponseType::Close);
-    let copy = dialog.add_button("Copy command", gtk::ResponseType::Apply);
+    dialog.add_button(tr("Close"), gtk::ResponseType::Close);
+    let copy = dialog.add_button(tr("Copy command"), gtk::ResponseType::Apply);
     dialog.set_default_response(gtk::ResponseType::Apply);
 
     let content = dialog.content_area();
@@ -29,9 +31,10 @@ fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     content.set_margin_start(16);
     content.set_margin_end(16);
     let explanation = gtk::Label::new(Some(
-        "Packlift needs to run commands on your Linux system to use Toolbx, install packages and open programs. This permission allows commands to run with your account's access. Copy and run the command in your terminal, then close all Packlift windows and reopen the app.",
+        tr("Packlift needs to run commands on your Linux system to use Toolbx, install packages and open programs. This permission allows commands to run with your account's access. Copy and run the command in your terminal, then close all Packlift windows and reopen the app."),
     ));
     explanation.set_wrap(true);
+    explanation.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     explanation.set_xalign(0.0);
     content.append(&explanation);
     let command_label = gtk::Label::new(Some(&command));
@@ -45,9 +48,9 @@ fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
         if response == gtk::ResponseType::Apply {
             dialog.clipboard().set_text(&command);
             if let Some(button) = copy.downcast_ref::<gtk::Button>() {
-                button.set_label("Command copied");
+                button.set_label(tr("Command copied"));
                 button.announce(
-                    "Command copied",
+                    tr("Command copied"),
                     gtk::AccessibleAnnouncementPriority::Medium,
                 );
             }
@@ -69,7 +72,10 @@ fn main() -> glib::ExitCode {
             let css = gtk::CssProvider::new();
             css.load_from_data(
                 ".packlift-home-hero { padding: 20px; border-radius: 16px; background-color: alpha(@accent_bg_color, 0.12); border: 1px solid alpha(@accent_bg_color, 0.25); }
-                 .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }",
+                 .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }
+                 .packlift-package-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.17), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.22); }
+                 .packlift-package-icon { padding: 9px; border-radius: 12px; background-color: alpha(@card_bg_color, 0.8); }
+                 .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }",
             );
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
@@ -110,15 +116,15 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
 
-    let (menu, popover, actions) = action_menu("Packlift menu", "open-menu-symbolic");
+    let (menu, popover, actions) = action_menu(tr("Packlift menu"), "open-menu-symbolic");
     let parent = window.downgrade();
-    add_menu_item(&popover, &actions, "Settings", move || {
+    add_menu_item(&popover, &actions, tr("Settings"), move || {
         if let Some(window) = parent.upgrade() {
             settings_dialog(&window);
         }
     });
     let parent = window.downgrade();
-    add_menu_item(&popover, &actions, "View Packlift logs", move || {
+    add_menu_item(&popover, &actions, tr("View Packlift logs"), move || {
         if let Some(window) = parent.upgrade() {
             show_app_logs(&window);
         }
@@ -129,7 +135,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         add_menu_item(
             &popover,
             &actions,
-            "Clean unused environments…",
+            tr("Clean unused environments…"),
             move || {
                 let Some(window) = parent.upgrade() else {
                     return;
@@ -137,12 +143,12 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 let app = app.clone();
                 confirm_library_action(
                     &window,
-                    "Clean unused environments?",
-                    "Packlift will remove containers it created that no installed program uses.",
-                    "Clean",
+                    tr("Clean unused environments?"),
+                    tr("Packlift will remove containers it created that no installed program uses."),
+                    tr("Clean"),
                     false,
                     move |window| {
-                        run_job(&app, window, "Cleaning unused environments", |logger| {
+                        run_job(&app, window, tr("Cleaning unused environments"), |logger| {
                             installer_with_output(logger)?
                                 .clean_unused_environments()
                                 .map(|_| None)
@@ -171,17 +177,17 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 
     let intro = gtk::Box::new(gtk::Orientation::Vertical, 8);
     intro.set_hexpand(true);
-    let title = home_label("Add a program or game", "title-2");
+    let title = home_label(tr("Add a program or game"), "title-2");
     intro.append(&title);
     intro.append(&home_label(
         if host_access {
-            "Choose a Linux package, AppImage, Windows installer or game executable."
+            tr("Choose a Linux package, AppImage, Windows installer or game executable.")
         } else {
-            "Add a compatible type 2 AppImage or Linux TAR archive to this library."
+            tr("Add a compatible type 2 AppImage or Linux TAR archive to this library.")
         },
         "dim-label",
     ));
-    let open = gtk::Button::with_label("Choose package…");
+    let open = text_button(tr("Choose package…"));
     open.add_css_class("suggested-action");
     open.set_halign(gtk::Align::Start);
     open.set_margin_top(4);
@@ -191,7 +197,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         let Some(window) = parent.upgrade() else {
             return;
         };
-        let dialog = gtk::FileDialog::builder().title("Choose a package").build();
+        let dialog = gtk::FileDialog::builder()
+            .title(tr("Choose a package"))
+            .build();
         let app = application.clone();
         dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
             if let Ok(file) = result {
@@ -207,12 +215,12 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 
     if !host_access && !cfg!(feature = "sandbox-only") {
         let access = adw::ActionRow::builder()
-            .title("Sandbox mode")
-            .subtitle("Enable system access to use Toolbx, Wine or Proton.")
+            .title(tr("Sandbox mode"))
+            .subtitle(tr("Enable system access to use Toolbx, Wine or Proton."))
             .build();
         access.add_css_class("card");
         access.add_prefix(&gtk::Image::from_icon_name("changes-prevent-symbolic"));
-        let enable = gtk::Button::with_label("System access…");
+        let enable = text_button(tr("System access…"));
         enable.set_valign(gtk::Align::Center);
         let parent = window.downgrade();
         enable.connect_clicked(move |_| {
@@ -229,21 +237,21 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     }
 
     let library = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    library.append(&home_label("Your library", "title-2"));
+    library.append(&home_label(tr("Your library"), "title-2"));
     match installer().and_then(|manager| manager.registry.apps()) {
         Ok(records) if records.is_empty() => library.append(&library_status(
             "folder-symbolic",
-            "Your library is empty",
-            "Choose a package above to add your first program or game.",
+            tr("Your library is empty"),
+            tr("Choose a package above to add your first program or game."),
         )),
         Ok(mut records) => {
             records
                 .sort_by_cached_key(|record| record["name"].as_str().unwrap_or("").to_lowercase());
             let search = gtk::SearchEntry::new();
-            search.set_placeholder_text(Some("Search programs and games"));
-            search.update_property(&[gtk::accessible::Property::Label(
+            search.set_placeholder_text(Some(tr("Search programs and games")));
+            search.update_property(&[gtk::accessible::Property::Label(tr(
                 "Search programs and games",
-            )]);
+            ))]);
             library.append(&search);
 
             let list = gtk::ListBox::new();
@@ -263,8 +271,8 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             library.append(&list);
             let empty = library_status(
                 "system-search-symbolic",
-                "No matches",
-                "Try a different name or runtime.",
+                tr("No matches"),
+                tr("Try a different name or runtime."),
             );
             empty.set_visible(false);
             library.append(&empty);
@@ -282,7 +290,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         }
         Err(error) => library.append(&library_status(
             "dialog-error-symbolic",
-            "Could not load your library",
+            tr("Could not load your library"),
             &error.to_string(),
         )),
     }
@@ -305,8 +313,20 @@ fn home_label(text: &str, class: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.set_xalign(0.0);
     label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     label.add_css_class(class);
     label
+}
+
+fn text_button(text: &str) -> gtk::Button {
+    let button = gtk::Button::with_label(text);
+    if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.set_justify(gtk::Justification::Center);
+        label.set_max_width_chars(32);
+    }
+    button
 }
 
 fn library_status(icon: &str, title: &str, description: &str) -> adw::StatusPage {
@@ -339,7 +359,7 @@ fn add_menu_item(
     label: &str,
     action: impl Fn() + 'static,
 ) {
-    let item = gtk::Button::with_label(label);
+    let item = text_button(label);
     item.add_css_class("flat");
     item.set_halign(gtk::Align::Fill);
     let popover = popover.downgrade();
@@ -357,15 +377,15 @@ fn library_row(
     window: &adw::ApplicationWindow,
     record: &Value,
 ) -> adw::ActionRow {
-    let name = record["name"].as_str().unwrap_or("Program");
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
     let game = record["game_shortcut"].as_bool() == Some(true);
     let method = record["method"].as_str().unwrap_or("local");
     let subtitle = match method {
         "wine" => {
             let kind = if game {
-                "Game shortcut"
+                tr("Game shortcut")
             } else {
-                "Windows program"
+                tr("Windows program")
             };
             format!("{kind} · {}", program_runtime_label(record))
         }
@@ -373,12 +393,12 @@ fn library_row(
             "Toolbx · {}",
             record["container"]
                 .as_str()
-                .unwrap_or("Container")
+                .unwrap_or(tr("Container"))
                 .trim_start_matches("flatapk-")
         ),
-        "native" => "Installed on this system".into(),
-        _ if record["sandbox_only"].as_bool() == Some(true) => "Sandbox application".into(),
-        _ => "Local Linux application".into(),
+        "native" => tr("Installed on this system").into(),
+        _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").into(),
+        _ => tr("Local Linux application").into(),
     };
     let subtitle = match record["version"]
         .as_str()
@@ -397,9 +417,11 @@ fn library_row(
     row.add_prefix(&record_image(record, 42));
 
     if record["exports"][0]["argv"].is_array() {
-        let launch = gtk::Button::with_label("Open");
+        let launch = text_button(tr("Open"));
         launch.set_valign(gtk::Align::Center);
-        launch.update_property(&[gtk::accessible::Property::Label(&format!("Open {name}"))]);
+        launch.update_property(&[gtk::accessible::Property::Label(
+            &tr("Open {name}").replace("{name}", name),
+        )]);
         let record = record.clone();
         let parent = window.downgrade();
         launch.connect_clicked(move |button| {
@@ -418,7 +440,7 @@ fn library_row(
                         return glib::ControlFlow::Continue
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(
-                        PackliftError::Message("Could not start the program.".into()),
+                        PackliftError::Message(tr("Could not start the program.").into()),
                     ),
                 };
                 if let Some(button) = button.upgrade() {
@@ -433,14 +455,16 @@ fn library_row(
         row.add_suffix(&launch);
     }
 
-    let (menu, popover, actions) =
-        action_menu(&format!("More options for {name}"), "view-more-symbolic");
+    let (menu, popover, actions) = action_menu(
+        &tr("More options for {name}").replace("{name}", name),
+        "view-more-symbolic",
+    );
     menu.set_valign(gtk::Align::Center);
     if method == "wine" {
         let app = app.clone();
         let record = record.clone();
         let parent = window.downgrade();
-        add_menu_item(&popover, &actions, "Change runtime…", move || {
+        add_menu_item(&popover, &actions, tr("Change runtime…"), move || {
             if let Some(window) = parent.upgrade() {
                 program_runtime_dialog(&app, &window, &record);
             }
@@ -450,37 +474,42 @@ fn library_row(
         let app = app.clone();
         let record = record.clone();
         let parent = window.downgrade();
-        add_menu_item(&popover, &actions, "Repair installation…", move || {
-            let Some(window) = parent.upgrade() else {
-                return;
-            };
-            let app = app.clone();
-            let record = record.clone();
-            confirm_library_action(
-                &window, "Repair this installation?",
-                "Packlift will reinstall the package in Toolbx, check dependencies and recreate its shortcuts.",
-                "Repair", false, move |window| {
+        add_menu_item(
+            &popover,
+            &actions,
+            tr("Repair installation…"),
+            move || {
+                let Some(window) = parent.upgrade() else {
+                    return;
+                };
+                let app = app.clone();
+                let record = record.clone();
+                confirm_library_action(
+                &window, tr("Repair this installation?"),
+                tr("Packlift will reinstall the package in Toolbx, check dependencies and recreate its shortcuts."),
+                tr("Repair"), false, move |window| {
                     let record = record.clone();
-                    run_job(&app, window, "Repairing installation", move |logger| {
+                    run_job(&app, window, tr("Repairing installation"), move |logger| {
                         installer_with_output(logger)?.repair_container_app(&record).map(Some)
                     });
                 },
             );
-        });
+            },
+        );
     }
 
     let (remove, detail) = match (game, method) {
         (true, _) => (
-            "Remove shortcut",
-            "The game files will stay in their original folder.",
+            tr("Remove shortcut"),
+            tr("The game files will stay in their original folder."),
         ),
         (_, "wine") => (
-            "Remove from Packlift",
-            "This removes the program's library entry, shortcut and managed installation files.",
+            tr("Remove from Packlift"),
+            tr("This removes the program's library entry, shortcut and managed installation files."),
         ),
         _ => (
-            "Uninstall",
-            "This removes the installed program and its shortcuts.",
+            tr("Uninstall"),
+            tr("This removes the installed program and its shortcuts."),
         ),
     };
     let name = name.to_owned();
@@ -501,11 +530,16 @@ fn library_row(
             true,
             move |window| {
                 let record = record.clone();
-                run_job(&app, window, "Removing from your library", move |logger| {
-                    installer_with_output(logger)?
-                        .uninstall(&record)
-                        .map(|_| None)
-                });
+                run_job(
+                    &app,
+                    window,
+                    tr("Removing from your library"),
+                    move |logger| {
+                        installer_with_output(logger)?
+                            .uninstall(&record)
+                            .map(|_| None)
+                    },
+                );
             },
         );
     });
@@ -527,7 +561,7 @@ fn confirm_library_action(
         .text(title)
         .secondary_text(description)
         .build();
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button(tr("Cancel"), gtk::ResponseType::Cancel);
     let accept = dialog.add_button(label, gtk::ResponseType::Accept);
     if destructive {
         accept.add_css_class("destructive-action");
@@ -553,7 +587,7 @@ fn program_runtime_label(record: &Value) -> String {
         .as_str()
         .and_then(|path| Path::new(path).file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Proton (automatic)".into())
+        .unwrap_or_else(|| tr("Proton (automatic)").into())
 }
 
 fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
@@ -569,7 +603,7 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     };
     let versions = manager.installed_proton_versions();
     let saved = record["proton_path"].as_str().map(Path::new);
-    let mut names = vec!["Wine".to_owned(), "Proton (automatic)".to_owned()];
+    let mut names = vec!["Wine".to_owned(), tr("Proton (automatic)").to_owned()];
     names.extend(versions.iter().map(|path| {
         format!(
             "Proton · {}",
@@ -578,7 +612,9 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     }));
     let labels = names.iter().map(String::as_str).collect::<Vec<_>>();
     let choices = gtk::DropDown::from_strings(&labels);
-    choices.update_property(&[gtk::accessible::Property::Label("Runtime for this program")]);
+    choices.update_property(&[gtk::accessible::Property::Label(tr(
+        "Runtime for this program",
+    ))]);
     let selected = if record["runtime"] == "proton" {
         saved
             .and_then(|path| versions.iter().position(|version| version == path))
@@ -589,16 +625,16 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     };
     choices.set_selected(selected as u32);
 
-    let name = record["name"].as_str().unwrap_or("Program");
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
     let dialog = gtk::Dialog::builder()
-        .title(format!("Runtime for {name}"))
+        .title(tr("Runtime for {name}").replace("{name}", name))
         .transient_for(window)
         .modal(true)
         .default_width(420)
         .build();
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button(tr("Cancel"), gtk::ResponseType::Cancel);
     dialog
-        .add_button("Apply", gtk::ResponseType::Accept)
+        .add_button(tr("Apply"), gtk::ResponseType::Accept)
         .add_css_class("suggested-action");
     let body = dialog.content_area();
     body.set_spacing(12);
@@ -606,23 +642,23 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     body.set_margin_bottom(16);
     body.set_margin_start(16);
     body.set_margin_end(16);
-    body.append(&home_label("Windows runtime", "heading"));
+    body.append(&home_label(tr("Windows runtime"), "heading"));
     body.append(&choices);
     body.append(&home_label(
         if versions.is_empty() {
-            "Proton (automatic) uses UMU to download Proton as needed. Installed Proton versions will appear here."
+            tr("Proton (automatic) uses UMU to download Proton as needed. Installed Proton versions will appear here.")
         } else {
-            "Proton (automatic) uses UMU to manage the version. Pick an installed version to use it for this app."
+            tr("Proton (automatic) uses UMU to manage the version. Pick an installed version to use it for this app.")
         },
         "dim-label",
     ));
     body.append(&home_label(
-        "This setting applies to this program and its system menu shortcut.",
+        tr("This setting applies to this program and its system menu shortcut."),
         "dim-label",
     ));
     if saved.is_some() && selected == 1 {
         body.append(&home_label(
-            "The previously selected Proton version is no longer installed.",
+            tr("The previously selected Proton version is no longer installed."),
             "warning",
         ));
     }
@@ -643,7 +679,7 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
             .cloned();
         let runtime = if selected == 0 { "wine" } else { "proton" };
         let id = id.clone();
-        run_job(&app, &window, "Saving Windows runtime", move |logger| {
+        run_job(&app, &window, tr("Saving Windows runtime"), move |logger| {
             installer_with_output(logger)?
                 .set_program_runtime(&id, runtime, selected_proton.as_deref())
                 .map(|_| None)
@@ -654,13 +690,14 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
 
 fn open_package(app: &adw::Application, path: &Path) {
     let window = adw::ApplicationWindow::new(app);
-    window.set_title(Some("Packlift"));
+    window.set_title(Some(tr("Review package")));
     window.set_default_size(470, -1);
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&adw::WindowTitle::new("Package details", "Packlift")));
+    header.set_title_widget(Some(&adw::WindowTitle::new(tr("Review package"), "")));
     toolbar.add_top_bar(&header);
+    toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
 
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(16);
@@ -670,80 +707,50 @@ fn open_package(app: &adw::Application, path: &Path) {
 
     match installer().and_then(|manager| manager.probe(path)) {
         Ok((package, plan)) => {
-            let hero = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-            hero.add_css_class("card");
-            hero.set_margin_top(2);
-            hero.set_margin_bottom(2);
-            hero.set_margin_start(2);
-            hero.set_margin_end(2);
-            let image = package_image(&package, 56);
-            let icon_frame = gtk::Frame::new(None);
-            icon_frame.add_css_class("card");
-            icon_frame.set_child(Some(&image));
-            hero.append(&icon_frame);
+            body.append(&package_identity(&package, path));
 
-            let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
-            let title = gtk::Label::new(Some(&package.name));
-            title.add_css_class("title-2");
-            title.set_xalign(0.0);
-            title.set_wrap(true);
-            title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            identity.append(&title);
-            let kind = gtk::Label::new(Some(&format!(
-                "{} · {}",
-                package.kind.to_uppercase(),
-                package.architecture
-            )));
-            kind.add_css_class("dim-label");
-            kind.set_xalign(0.0);
-            identity.append(&kind);
-            let version = if package.version.is_empty() {
-                "Version unavailable".to_owned()
-            } else {
-                package.version.clone()
+            let options = gtk::ListBox::new();
+            options.set_selection_mode(gtk::SelectionMode::None);
+            options.add_css_class("boxed-list");
+            let ambiguous_rpm = package.kind == "rpm" && package.rpm_family.is_empty();
+            let destination = match plan.method.as_str() {
+                "wine" => tr("Windows compatibility environment").to_owned(),
+                "native" => tr("This Linux system").to_owned(),
+                "toolbox" if ambiguous_rpm => tr("A Toolbx container").to_owned(),
+                "toolbox" => format!("Toolbx · {}", plan.family),
+                _ if !host_access_available() => tr("Packlift sandbox").to_owned(),
+                _ => tr("Packlift library").to_owned(),
             };
-            let bytes = std::fs::metadata(path)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
-            let size = gtk::Label::new(Some(&format!("{version} · {}", human_size(bytes))));
-            size.add_css_class("dim-label");
-            size.set_xalign(0.0);
-            identity.append(&size);
-            hero.append(&identity);
-            body.append(&hero);
+            let target = adw::ActionRow::builder()
+                .title(tr("Installation destination"))
+                .use_markup(false)
+                .subtitle(&destination)
+                .build();
+            target.add_prefix(&gtk::Image::from_icon_name("drive-harddisk-symbolic"));
+            options.append(&target);
 
-            let verified = package.signature == "verified";
-            let integrity = notice_row(
-                if verified {
-                    "emblem-ok-symbolic"
-                } else {
-                    "dialog-warning-symbolic"
-                },
-                if verified {
-                    "Signature verified with a trusted key."
-                } else {
-                    "Signature could not be verified. Install only if you trust this file."
-                },
-                if verified { "success" } else { "warning" },
-            );
-            body.append(&integrity);
-
-            let location = gtk::Box::new(gtk::Orientation::Vertical, 5);
-            let location_title = gtk::Label::new(Some("File and installation method"));
-            location_title.add_css_class("heading");
-            location_title.set_xalign(0.0);
-            location.append(&location_title);
-            let method = gtk::Label::new(Some(&format!(
-                "{} · {}",
-                plan.method.replace('-', " "),
-                path.display()
-            )));
-            method.set_wrap(true);
-            method.set_selectable(true);
-            method.set_xalign(0.0);
-            method.add_css_class("dim-label");
-            location.append(&method);
-            body.append(&location);
+            let source = adw::ExpanderRow::builder()
+                .title(tr("Package file"))
+                .use_markup(false)
+                .subtitle_lines(1)
+                .subtitle(
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .as_ref(),
+                )
+                .build();
+            source.add_prefix(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
+            let full_path = home_label(&path.to_string_lossy(), "dim-label");
+            full_path.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            full_path.set_selectable(true);
+            full_path.set_margin_start(14);
+            full_path.set_margin_end(14);
+            full_path.set_margin_top(10);
+            full_path.set_margin_bottom(10);
+            source.add_row(&full_path);
+            options.append(&source);
+            body.append(&options);
 
             let runtime = gtk::DropDown::from_strings(&["Wine", "Proton"]);
             if ["exe", "setup", "msi"].contains(&package.kind.as_str()) {
@@ -753,35 +760,31 @@ fn open_package(app: &adw::Application, path: &Path) {
                 {
                     runtime.set_selected(1);
                 }
-                let runtime_box = gtk::Box::new(gtk::Orientation::Vertical, 7);
-                let runtime_label = gtk::Label::new(Some("Windows runtime"));
-                runtime_label.add_css_class("heading");
-                runtime_label.set_xalign(0.0);
-                runtime_box.append(&runtime_label);
-                runtime.update_property(&[gtk::accessible::Property::Label("Windows runtime")]);
-                runtime.set_hexpand(true);
-                runtime_box.append(&runtime);
-                body.append(&runtime_box);
-
-                body.append(&notice_row(
-                    "dialog-information-symbolic",
-                    "Windows programs can access files in your home folder.",
-                    "dim-label",
-                ));
+                let choice = adw::ActionRow::builder()
+                    .title(tr("Windows runtime"))
+                    .build();
+                runtime.update_property(&[gtk::accessible::Property::Label(tr("Windows runtime"))]);
+                runtime.set_valign(gtk::Align::Center);
+                choice.add_suffix(&runtime);
+                choice.set_activatable_widget(Some(&runtime));
+                options.insert(&choice, 1);
             }
 
-            let libraries =
-                gtk::CheckButton::with_label("Find and install missing libraries in the container");
+            let libraries = adw::SwitchRow::builder()
+                .title(tr("Install missing libraries"))
+                .subtitle(tr("Search the container repositories for dependencies."))
+                .build();
             if plan.method == "toolbox" {
                 libraries.set_active(true);
-                body.append(&libraries);
+                options.insert(&libraries, 1);
             }
             let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             actions.set_halign(gtk::Align::End);
             actions.set_margin_start(16);
             actions.set_margin_end(16);
-            actions.set_margin_bottom(16);
-            let cancel = gtk::Button::with_label("Cancel");
+            actions.set_margin_top(12);
+            actions.set_margin_bottom(12);
+            let cancel = text_button(tr("Cancel"));
             let weak_window = window.downgrade();
             cancel.connect_clicked(move |_| {
                 if let Some(window) = weak_window.upgrade() {
@@ -790,45 +793,68 @@ fn open_package(app: &adw::Application, path: &Path) {
             });
             actions.append(&cancel);
             let rpm_target = gtk::DropDown::from_strings(&["Fedora", "openSUSE"]);
-            let choose_target = package.kind == "rpm" && package.rpm_family.is_empty();
+            let choose_target = ambiguous_rpm;
             if choose_target {
-                body.append(&gtk::Label::new(Some(
-                    "Choose the distribution this RPM was built for",
-                )));
-                rpm_target.update_property(&[gtk::accessible::Property::Label("RPM distribution")]);
-                body.append(&rpm_target);
+                let distribution = adw::ActionRow::builder()
+                    .title(tr("RPM distribution"))
+                    .build();
+                rpm_target
+                    .update_property(&[gtk::accessible::Property::Label(tr("RPM distribution"))]);
+                rpm_target.set_valign(gtk::Align::Center);
+                distribution.add_suffix(&rpm_target);
+                distribution.set_activatable_widget(Some(&rpm_target));
+                options.insert(&distribution, 1);
+            }
+            let verified = package.signature == "verified";
+            body.append(&package_note(
+                if verified {
+                    "emblem-ok-symbolic"
+                } else {
+                    "dialog-warning-symbolic"
+                },
+                if verified {
+                    tr("Signature verified")
+                } else {
+                    tr("Unverified signature")
+                },
+                if verified {
+                    tr("Signed with a trusted key.")
+                } else {
+                    tr("Install only if you trust the source of this file.")
+                },
+                if verified { "success" } else { "warning" },
+            ));
+            if plan.method == "wine" {
+                body.append(&package_note(
+                    "dialog-information-symbolic",
+                    tr("Home folder access"),
+                    tr("Windows programs can access files in your home folder."),
+                    "dim-label",
+                ));
             }
             let setup = if plan.method == "toolbox" {
                 installer().and_then(|m| m.container_setup())
             } else {
                 Ok(None)
             };
-            let install = gtk::Button::with_label(if matches!(&setup, Ok(Some(_))) {
-                "Set up and install"
+            let install = text_button(if matches!(&setup, Ok(Some(_))) {
+                tr("Set up and install")
+            } else if package.kind == "exe" {
+                tr("Continue")
             } else {
-                "Continue"
+                tr("Install")
             });
             match &setup {
-                Ok(command) if plan.method == "toolbox" => {
-                    let mut summary = if choose_target {
-                        "Install into the selected distribution container.".to_owned()
-                    } else {
-                        format!(
-                            "Install in the {} container using {}.",
-                            plan.family, plan.manager
-                        )
-                    };
-                    if let Some(args) = command {
-                        summary.push_str(&format!(
-                            " Authorize this host setup command: {}",
-                            args.join(" ")
-                        ));
-                        if matches!(args[0].as_str(), "rpm-ostree" | "transactional-update") {
-                            summary.push_str(" Restart required.");
-                        }
+                Ok(Some(args)) => {
+                    let mut summary = tr("Authorize this host setup command: {command}")
+                        .replace("{command}", &args.join(" "));
+                    if matches!(args[0].as_str(), "rpm-ostree" | "transactional-update") {
+                        summary.push(' ');
+                        summary.push_str(tr("Restart required."));
                     }
-                    body.append(&notice_row(
+                    body.append(&package_note(
                         "dialog-information-symbolic",
+                        tr("Toolbx setup"),
                         &summary,
                         "dim-label",
                     ));
@@ -876,13 +902,18 @@ fn open_package(app: &adw::Application, path: &Path) {
                     }
                     let runtime = runtime.clone();
                     if kind == "setup" {
-                        run_job(&app, &window, "Installing program or game", move |logger| {
-                            installer_with_output(logger)?
-                                .install_windows(&package, &runtime)
-                                .map(Some)
-                        });
+                        run_job(
+                            &app,
+                            &window,
+                            tr("Installing program or game"),
+                            move |logger| {
+                                installer_with_output(logger)?
+                                    .install_windows(&package, &runtime)
+                                    .map(Some)
+                            },
+                        );
                     } else {
-                        run_job(&app, &window, "Installing program", move |logger| {
+                        run_job(&app, &window, tr("Installing program"), move |logger| {
                             let manager = installer_with_output(logger)?;
                             if let Some(command) = setup {
                                 manager.setup_container_support(&command)?;
@@ -898,7 +929,7 @@ fn open_package(app: &adw::Application, path: &Path) {
         Err(error) => {
             if matches!(error, PackliftError::HostAccessRequired) && !cfg!(feature = "sandbox-only")
             {
-                let enable = gtk::Button::with_label("Enable access to your system…");
+                let enable = text_button(tr("Enable access to your system…"));
                 enable.set_halign(gtk::Align::Start);
                 let parent = window.downgrade();
                 enable.connect_clicked(move |_| {
@@ -908,17 +939,19 @@ fn open_package(app: &adw::Application, path: &Path) {
                 });
                 body.append(&enable);
             }
-            let title = gtk::Label::new(Some("Could not open package"));
+            let title = gtk::Label::new(Some(tr("Could not open package")));
             title.add_css_class("title-2");
             title.set_xalign(0.0);
             body.append(&title);
-            body.append(&notice_row(
-                "dialog-error-symbolic",
-                &error.to_string(),
-                "error",
-            ));
+            let message = if matches!(error, PackliftError::HostAccessRequired) {
+                tr("This format needs system access. In sandbox mode, choose a type 2 AppImage or a Linux TAR archive.").into()
+            } else {
+                error.to_string()
+            };
+            body.append(&notice_row("dialog-error-symbolic", &message, "error"));
             let file = gtk::Label::new(Some(&path.display().to_string()));
             file.set_wrap(true);
+            file.set_wrap_mode(gtk::pango::WrapMode::WordChar);
             file.set_xalign(0.0);
             file.add_css_class("dim-label");
             body.append(&file);
@@ -932,6 +965,57 @@ fn open_package(app: &adw::Application, path: &Path) {
     toolbar.set_content(Some(&scroll));
     window.set_content(Some(&toolbar));
     window.present();
+}
+
+fn package_identity(package: &Package, path: &Path) -> gtk::Box {
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    hero.add_css_class("packlift-package-hero");
+    let icon = package_image(package, 54);
+    icon.set_valign(gtk::Align::Center);
+    icon.add_css_class("packlift-package-icon");
+    hero.append(&icon);
+
+    let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    identity.set_valign(gtk::Align::Center);
+    identity.set_hexpand(true);
+    let title = home_label(&package.name, "title-2");
+    title.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    identity.append(&title);
+
+    let mut metadata = vec![package.kind.to_uppercase()];
+    if !package.architecture.is_empty() {
+        metadata.push(package.architecture.clone());
+    }
+    if let Ok(file) = std::fs::metadata(path) {
+        metadata.push(human_size(file.len()));
+    }
+    identity.append(&home_label(&metadata.join(" · "), "dim-label"));
+    if !package.version.is_empty() {
+        identity.append(&home_label(
+            &tr("Version {version}").replace("{version}", &package.version),
+            "dim-label",
+        ));
+    }
+    hero.append(&identity);
+    hero
+}
+
+fn package_note(icon_name: &str, title: &str, detail: &str, style: &str) -> gtk::Box {
+    let note = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    note.add_css_class("packlift-package-note");
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(18);
+    icon.set_valign(gtk::Align::Start);
+    icon.add_css_class(style);
+    note.append(&icon);
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    labels.set_hexpand(true);
+    labels.append(&home_label(title, "heading"));
+    let detail = home_label(detail, "dim-label");
+    detail.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    labels.append(&detail);
+    note.append(&labels);
+    note
 }
 
 fn package_image(package: &Package, size: i32) -> gtk::Image {
@@ -962,6 +1046,7 @@ fn notice_row(icon_name: &str, text: &str, style: &str) -> gtk::Box {
     row.append(&icon);
     let message = gtk::Label::new(Some(text));
     message.set_wrap(true);
+    message.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     message.set_xalign(0.0);
     message.set_hexpand(true);
     message.add_css_class(style);
@@ -976,7 +1061,7 @@ fn choose_windows_action(
     runtime: &str,
 ) {
     let dialog = gtk::Window::builder()
-        .title("Choose how to use this .exe")
+        .title(tr("Choose how to use this .exe"))
         .transient_for(parent)
         .modal(true)
         .resizable(false)
@@ -996,13 +1081,13 @@ fn choose_windows_action(
     icon_frame.set_child(Some(&image));
     hero.append(&icon_frame);
     let heading = gtk::Box::new(gtk::Orientation::Vertical, 5);
-    let title = gtk::Label::new(Some("What is this .exe file?"));
+    let title = gtk::Label::new(Some(tr("What is this .exe file?")));
     title.add_css_class("title-2");
     title.set_xalign(0.0);
     heading.append(&title);
-    let subtitle = gtk::Label::new(Some(
+    let subtitle = gtk::Label::new(Some(tr(
         "Choose the option that matches the file you selected.",
-    ));
+    )));
     subtitle.add_css_class("dim-label");
     subtitle.set_wrap(true);
     subtitle.set_xalign(0.0);
@@ -1016,8 +1101,8 @@ fn choose_windows_action(
     let parent_to_add = parent.clone();
     let dialog_to_add = dialog.clone();
     let add = choice_button(
-        "Add an installed program or game",
-        "Creates a menu shortcut for this .exe. Use this if the game or app is already installed.",
+        tr("Add an installed program or game"),
+        tr("Creates a menu shortcut for this .exe. Use this if the game or app is already installed."),
         false,
     );
     add.connect_clicked(move |_| {
@@ -1027,7 +1112,7 @@ fn choose_windows_action(
         run_job(
             &app_to_add,
             &parent_to_add,
-            "Adding program or game to menu",
+            tr("Adding program or game to menu"),
             move |logger| {
                 installer_with_output(logger)?
                     .add_game(&package, &runtime)
@@ -1043,8 +1128,8 @@ fn choose_windows_action(
     let parent_to_install = parent.clone();
     let dialog_to_install = dialog.clone();
     let install = choice_button(
-        "Run this as an installer",
-        "Use this if the .exe contains setup and needs to install the program first.",
+        tr("Run this as an installer"),
+        tr("Use this if the .exe contains setup and needs to install the program first."),
         true,
     );
     install.connect_clicked(move |_| {
@@ -1054,7 +1139,7 @@ fn choose_windows_action(
         run_job(
             &app_to_install,
             &parent_to_install,
-            "Installing program or game",
+            tr("Installing program or game"),
             move |logger| {
                 installer_with_output(logger)?
                     .install_windows(&package, &runtime)
@@ -1064,7 +1149,7 @@ fn choose_windows_action(
     });
     body.append(&install);
 
-    let cancel = gtk::Button::with_label("Cancel");
+    let cancel = text_button(tr("Cancel"));
     cancel.set_hexpand(true);
     let dialog_to_close = dialog.clone();
     cancel.connect_clicked(move |_| dialog_to_close.close());
@@ -1115,15 +1200,19 @@ where
     body.set_margin_start(20);
     body.set_margin_end(20);
     let heading = gtk::Label::new(Some(title));
+    heading.set_wrap(true);
+    heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     heading.add_css_class("title-2");
     body.append(&heading);
-    let stage = gtk::Label::new(Some("Preparing the installation environment…"));
+    let stage = gtk::Label::new(Some(tr("Preparing the installation environment…")));
     stage.set_wrap(true);
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
     body.append(&stage);
     let progress = gtk::ProgressBar::new();
-    progress.update_property(&[gtk::accessible::Property::Label("Installation progress")]);
+    progress.update_property(&[gtk::accessible::Property::Label(tr(
+        "Installation progress",
+    ))]);
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
@@ -1141,16 +1230,16 @@ where
         .min_content_height(130)
         .child(&text)
         .build();
-    let copy = gtk::Button::with_label("Copy log");
+    let copy = text_button(tr("Copy log"));
     copy.set_halign(gtk::Align::End);
     let copy_log = log.clone();
     copy.connect_clicked(move |button| {
         if let Some(display) = gtk::gdk::Display::default() {
             display.clipboard().set_text(&copy_log.borrow().join("\n"));
-            button.set_label("Log copied");
+            button.set_label(tr("Log copied"));
         }
     });
-    let details = gtk::Expander::builder().label("Show details").build();
+    let details = gtk::Expander::builder().label(tr("Show details")).build();
     let detail_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     detail_box.append(&log_scroll);
     detail_box.append(&copy);
@@ -1176,7 +1265,7 @@ where
         match receiver.try_recv() {
             Ok(JobEvent::Log(line)) => {
                 let (label, fraction) = installation_stage(&line);
-                if label != "Working…" && stage.text().as_str() != label {
+                if label != tr("Working…") && stage.text().as_str() != label {
                     stage.set_text(label);
                     stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
                 }
@@ -1242,30 +1331,31 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
 
     let is_game = record["game_shortcut"].as_bool().unwrap_or(false);
     let title = gtk::Label::new(Some(if is_game {
-        "Game added to Packlift"
+        tr("Game added to Packlift")
     } else {
-        "Installation complete"
+        tr("Installation complete")
     }));
     title.add_css_class("title-2");
     title.set_halign(gtk::Align::Center);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     body.append(&title);
-    let name = record["name"].as_str().unwrap_or("Program");
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
     let runnable = record["exports"][0]["argv"].is_array();
     let message = if runnable {
-        format!("{name} is ready to use.")
+        tr("{name} is ready to use.").replace("{name}", name)
     } else {
-        format!("{name} is installed. This package has no application launcher.")
+        tr("{name} is installed. This package has no application launcher.").replace("{name}", name)
     };
     let description = gtk::Label::new(Some(&message));
     description.set_wrap(true);
+    description.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     description.set_halign(gtk::Align::Center);
     description.add_css_class("dim-label");
     body.append(&description);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::Center);
     actions.set_margin_top(4);
-    let close = gtk::Button::with_label("Close");
+    let close = text_button(tr("Close"));
     let weak_window = window.downgrade();
     close.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {
@@ -1273,7 +1363,7 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
         }
     });
     actions.append(&close);
-    let open = gtk::Button::with_label("Open");
+    let open = text_button(tr("Open"));
     open.add_css_class("suggested-action");
     let record = record.clone();
     let weak_window = window.downgrade();
@@ -1317,22 +1407,22 @@ fn record_image(record: &Value, size: i32) -> gtk::Image {
 fn installation_stage(line: &str) -> (&'static str, f64) {
     let line = line.to_ascii_lowercase();
     if line.contains("analyzing") {
-        ("Analyzing the package", 0.12)
+        (tr("Analyzing the package"), 0.12)
     } else if line.contains("compatibility") {
-        ("Checking compatibility", 0.25)
+        (tr("Checking compatibility"), 0.25)
     } else if line.contains("environment") || line.contains("toolbox") || line.contains("prefix") {
-        ("Preparing the installation environment", 0.38)
+        (tr("Preparing the installation environment"), 0.38)
     } else if line.contains("download")
         || line.contains("flatpak install")
         || line.contains("pulling")
     {
-        ("Downloading dependencies", 0.54)
+        (tr("Downloading dependencies"), 0.54)
     } else if line.contains("shortcut") || line.contains("menu") {
-        ("Creating application shortcuts", 0.90)
+        (tr("Creating application shortcuts"), 0.90)
     } else if line.contains("install") || line.contains("package") {
-        ("Installing the program", 0.72)
+        (tr("Installing the program"), 0.72)
     } else {
-        ("Working…", 0.64)
+        (tr("Working…"), 0.64)
     }
 }
 
@@ -1357,11 +1447,11 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
         .modal(true)
         .message_type(gtk::MessageType::Error)
         .buttons(gtk::ButtonsType::Close)
-        .text("Packlift could not complete the operation")
+        .text(tr("Packlift could not complete the operation"))
         .secondary_text(message)
         .build();
-    dialog.add_button("Open log folder", gtk::ResponseType::Help);
-    dialog.add_button("Copy log", gtk::ResponseType::Apply);
+    dialog.add_button(tr("Open log folder"), gtk::ResponseType::Help);
+    dialog.add_button(tr("Copy log"), gtk::ResponseType::Apply);
     dialog.connect_response(|dialog, response| {
         if response == gtk::ResponseType::Help {
             let folder = gio::File::for_path(packlift_data_dir());
@@ -1371,11 +1461,13 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
         }
         if response == gtk::ResponseType::Apply {
             let path = packlift_data_dir().join("flatapk.log");
-            let contents = std::fs::read_to_string(path)
-                .unwrap_or_else(|error| format!("Could not read the Packlift log: {error}"));
+            let contents = std::fs::read_to_string(path).unwrap_or_else(|error| {
+                tr("Could not read the Packlift log: {error}")
+                    .replace("{error}", &error.to_string())
+            });
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&contents);
-                dialog.set_secondary_text(Some("Log copied to clipboard."));
+                dialog.set_secondary_text(Some(tr("Log copied to clipboard.")));
                 return;
             }
         }
@@ -1386,38 +1478,41 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
 
 fn settings_dialog(window: &adw::ApplicationWindow) {
     let dialog = gtk::Dialog::new();
-    dialog.set_title(Some("Packlift settings"));
+    dialog.set_title(Some(tr("Packlift settings")));
     dialog.set_transient_for(Some(window));
     dialog.set_modal(true);
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-    dialog.add_button("Save", gtk::ResponseType::Accept);
+    dialog.add_button(tr("Cancel"), gtk::ResponseType::Cancel);
+    dialog.add_button(tr("Save"), gtk::ResponseType::Accept);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.set_margin_top(12);
     content.set_margin_bottom(12);
     content.set_margin_start(12);
     content.set_margin_end(12);
     let choices = gtk::DropDown::from_strings(&["Wine", "Proton"]);
-    choices.update_property(&[gtk::accessible::Property::Label("Default Windows runtime")]);
+    choices.update_property(&[gtk::accessible::Property::Label(tr(
+        "Default Windows runtime",
+    ))]);
     if installer()
         .map(|m| m.preferences().0 == "proton")
         .unwrap_or(false)
     {
         choices.set_selected(1);
     }
-    content.append(&gtk::Label::new(Some("Default Windows runtime")));
+    content.append(&gtk::Label::new(Some(tr("Default Windows runtime"))));
     content.append(&choices);
-    let associations = gtk::Button::with_label("Set as default for supported files");
+    let associations = text_button(tr("Set as default for supported files"));
     associations.set_sensitive(host_access_available());
     let association_status = gtk::Label::new(Some(
-        "Applies to your account for DEB, RPM, Arch packages, AppImage, EXE, MSI, SETUP and supported TAR archives.",
+        tr("Applies to your account for DEB, RPM, Arch packages, AppImage, EXE, MSI, SETUP and supported TAR archives."),
     ));
     association_status.set_wrap(true);
+    association_status.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     association_status.set_xalign(0.0);
     association_status.add_css_class("dim-label");
     let status = association_status.clone();
     associations.connect_clicked(move |button| {
         button.set_sensitive(false);
-        status.set_text("Updating file associations…");
+        status.set_text(tr("Updating file associations…"));
         let (sender, receiver) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let _ = sender.send(installer().and_then(|manager| manager.set_default_file_handler()));
@@ -1429,11 +1524,11 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
                 return glib::ControlFlow::Break;
             };
             let message = match receiver.try_recv() {
-                Ok(Ok(())) => "Packlift is now the default for supported files.".into(),
+                Ok(Ok(())) => tr("Packlift is now the default for supported files.").into(),
                 Ok(Err(error)) => error.to_string(),
                 Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    "Could not update file associations.".into()
+                    tr("Could not update file associations.").into()
                 }
             };
             status.set_text(&message);
@@ -1444,7 +1539,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     });
     content.append(&associations);
     content.append(&association_status);
-    let logs = gtk::Button::with_label("View Packlift logs");
+    let logs = text_button(tr("View Packlift logs"));
     let weak_window_for_logs = window.downgrade();
     logs.connect_clicked(move |_| {
         if let Some(parent) = weak_window_for_logs.upgrade() {
@@ -1472,7 +1567,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
             };
             if let Some(window) = weak_window.upgrade() {
                 if let Some(app) = window.application().and_downcast::<adw::Application>() {
-                    run_job(&app, &window, "Saving settings", task);
+                    run_job(&app, &window, tr("Saving settings"), task);
                 }
             }
         }
@@ -1482,7 +1577,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
 
 fn show_app_logs(parent: &adw::ApplicationWindow) {
     let window = gtk::Window::builder()
-        .title("Packlift logs")
+        .title(tr("Packlift logs"))
         .transient_for(parent)
         .modal(true)
         .default_width(760)
@@ -1499,10 +1594,10 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
     log.set_cursor_visible(false);
     log.set_monospace(true);
     log.set_wrap_mode(gtk::WrapMode::WordChar);
-    log.buffer().set_text(
-        &std::fs::read_to_string(&log_path)
-            .unwrap_or_else(|error| format!("No Packlift log is available yet. {error}")),
-    );
+    log.buffer()
+        .set_text(&std::fs::read_to_string(&log_path).unwrap_or_else(|error| {
+            tr("No Packlift log is available yet. {error}").replace("{error}", &error.to_string())
+        }));
     let scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .child(&*log)
@@ -1510,18 +1605,18 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
     body.append(&scroll);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let copy = gtk::Button::with_label("Copy all logs");
+    let copy = text_button(tr("Copy all logs"));
     let log_path_copy = log_path.clone();
     copy.connect_clicked(move |button| {
         if let Ok(contents) = std::fs::read_to_string(&log_path_copy) {
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&contents);
-                button.set_label("Logs copied");
+                button.set_label(tr("Logs copied"));
             }
         }
     });
     actions.append(&copy);
-    let close = gtk::Button::with_label("Close");
+    let close = text_button(tr("Close"));
     let weak_window = window.downgrade();
     close.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {

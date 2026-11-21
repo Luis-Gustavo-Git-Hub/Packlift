@@ -4,6 +4,9 @@
   <name>Packlift</name>
   <summary>Install packages with your system, Toolbox or Wine</summary>
   <summary xml:lang="pt-BR">Instale pacotes pelo sistema, Toolbox ou Wine</summary>
+  <summary xml:lang="es">Instala paquetes con el sistema, Toolbx o Wine</summary>
+  <summary xml:lang="ru">Устанавливайте пакеты через систему, Toolbx или Wine</summary>
+  <summary xml:lang="zh-CN">通过系统、Toolbx 或 Wine 安装软件包</summary>
   <developer id="io.github.luisgustavogithub">
     <name>Packlift contributors</name>
   </developer>

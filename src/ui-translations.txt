@@ -1,0 +1,133 @@
+Allow access to your system|Permitir acesso ao sistema|Permitir acceso al sistema|Разрешить доступ к системе|允许访问系统
+Close|Fechar|Cerrar|Закрыть|关闭
+Copy command|Copiar comando|Copiar comando|Скопировать команду|复制命令
+Command copied|Comando copiado|Comando copiado|Команда скопирована|命令已复制
+Packlift needs to run commands on your Linux system to use Toolbx, install packages and open programs. This permission allows commands to run with your account's access. Copy and run the command in your terminal, then close all Packlift windows and reopen the app.|Para usar o Toolbx, instalar pacotes e abrir programas, o Packlift precisa executar comandos no Linux com as permissões da sua conta. Copie o comando, execute-o no terminal, feche todas as janelas do Packlift e abra o app novamente.|Packlift necesita ejecutar comandos con los permisos de tu cuenta para usar Toolbx, instalar paquetes y abrir programas. Copia y ejecuta el comando en la terminal. Después, cierra todas las ventanas de Packlift y vuelve a abrirlo.|Для работы с Toolbx, установки пакетов и запуска программ Packlift нужны права вашей учётной записи. Скопируйте команду и выполните её в терминале. Затем закройте все окна Packlift и снова откройте приложение.|Packlift 需要以您的账户权限运行 Linux 命令，才能使用 Toolbx、安装软件包和打开程序。请在终端中运行复制的命令，然后关闭所有 Packlift 窗口并重新打开应用。
+Packlift menu|Menu do Packlift|Menú de Packlift|Меню Packlift|Packlift 菜单
+Settings|Configurações|Configuración|Настройки|设置
+View Packlift logs|Ver logs do Packlift|Ver registros de Packlift|Открыть журнал Packlift|查看 Packlift 日志
+Clean unused environments…|Limpar ambientes sem uso…|Limpiar entornos sin usar…|Очистить неиспользуемые среды…|清理未使用的环境…
+Clean unused environments?|Limpar ambientes sem uso?|¿Limpiar entornos sin usar?|Очистить неиспользуемые среды?|清理未使用的环境？
+Packlift will remove containers it created that no installed program uses.|O Packlift removerá os contêineres que criou e que nenhum programa instalado usa.|Packlift eliminará los contenedores que creó y que ningún programa instalado utiliza.|Packlift удалит созданные им контейнеры, которые не используются установленными программами.|Packlift 将移除由它创建且没有已安装程序使用的容器。
+Clean|Limpar|Limpiar|Очистить|清理
+Cleaning unused environments|Limpando ambientes sem uso|Limpiando entornos sin usar|Очистка неиспользуемых сред|正在清理未使用的环境
+Add a program or game|Adicionar um programa ou jogo|Añadir un programa o juego|Добавить программу или игру|添加程序或游戏
+Choose a Linux package, AppImage, Windows installer or game executable.|Escolha um pacote Linux, um AppImage, um instalador Windows ou o executável de um jogo.|Elige un paquete de Linux, una AppImage, un instalador de Windows o el ejecutable de un juego.|Выберите пакет Linux, AppImage, установщик Windows или исполняемый файл игры.|选择 Linux 软件包、AppImage、Windows 安装程序或游戏可执行文件。
+Add a compatible type 2 AppImage or Linux TAR archive to this library.|Adicione um AppImage tipo 2 ou um arquivo TAR Linux compatível à biblioteca.|Añade a la biblioteca una AppImage de tipo 2 o un archivo TAR de Linux compatible.|Добавьте в библиотеку совместимый AppImage типа 2 или архив TAR для Linux.|将兼容的第二类 AppImage 或 Linux TAR 文件添加到资料库。
+Choose package…|Escolher pacote…|Elegir paquete…|Выбрать пакет…|选择软件包…
+Choose a package|Escolher um pacote|Elegir un paquete|Выберите пакет|选择软件包
+Sandbox mode|Modo sandbox|Modo de aislamiento|Изолированный режим|沙盒模式
+Enable system access to use Toolbx, Wine or Proton.|Ative o acesso ao sistema para usar Toolbx, Wine ou Proton.|Activa el acceso al sistema para usar Toolbx, Wine o Proton.|Разрешите доступ к системе, чтобы использовать Toolbx, Wine или Proton.|启用系统访问权限以使用 Toolbx、Wine 或 Proton。
+System access…|Acesso ao sistema…|Acceso al sistema…|Доступ к системе…|访问系统…
+Your library|Sua biblioteca|Tu biblioteca|Ваша библиотека|我的资料库
+Your library is empty|Sua biblioteca está vazia|Tu biblioteca está vacía|Ваша библиотека пуста|资料库为空
+Choose a package above to add your first program or game.|Escolha um pacote acima para adicionar seu primeiro programa ou jogo.|Elige un paquete arriba para añadir tu primer programa o juego.|Выберите пакет выше, чтобы добавить первую программу или игру.|在上方选择软件包以添加第一个程序或游戏。
+Search programs and games|Buscar programas e jogos|Buscar programas y juegos|Поиск программ и игр|搜索程序和游戏
+No matches|Nenhum resultado|No hay resultados|Ничего не найдено|没有匹配结果
+Try a different name or runtime.|Tente outro nome ou ambiente de execução.|Prueba con otro nombre o entorno de ejecución.|Попробуйте другое название или среду запуска.|请尝试其他名称或运行环境。
+Could not load your library|Não foi possível carregar sua biblioteca|No se pudo cargar tu biblioteca|Не удалось загрузить библиотеку|无法加载资料库
+Program|Programa|Programa|Программа|程序
+Game shortcut|Atalho de jogo|Acceso directo de juego|Ярлык игры|游戏快捷方式
+Windows program|Programa Windows|Programa de Windows|Программа Windows|Windows 程序
+Container|Contêiner|Contenedor|Контейнер|容器
+Installed on this system|Instalado neste sistema|Instalado en este sistema|Установлено в системе|已安装到本机系统
+Sandbox application|App em sandbox|Aplicación aislada|Изолированное приложение|沙盒应用
+Local Linux application|App Linux local|Aplicación local de Linux|Локальное приложение Linux|本地 Linux 应用
+Open|Abrir|Abrir|Открыть|打开
+Open {name}|Abrir {name}|Abrir {name}|Открыть {name}|打开 {name}
+More options for {name}|Mais opções para {name}|Más opciones para {name}|Другие действия для {name}|{name}的更多选项
+Could not start the program.|Não foi possível abrir o programa.|No se pudo abrir el programa.|Не удалось запустить программу.|无法启动程序。
+Change runtime…|Alterar runtime…|Cambiar entorno de ejecución…|Изменить среду запуска…|更改运行环境…
+Repair installation…|Reparar instalação…|Reparar instalación…|Восстановить установку…|修复安装…
+Repair this installation?|Reparar esta instalação?|¿Reparar esta instalación?|Восстановить эту установку?|修复此安装？
+Packlift will reinstall the package in Toolbx, check dependencies and recreate its shortcuts.|O Packlift reinstalará o pacote no Toolbx, verificará as dependências e recriará os atalhos.|Packlift reinstalará el paquete en Toolbx, comprobará las dependencias y volverá a crear los accesos directos.|Packlift переустановит пакет в Toolbx, проверит зависимости и заново создаст ярлыки.|Packlift 将在 Toolbx 中重新安装软件包、检查依赖并重新创建快捷方式。
+Repair|Reparar|Reparar|Восстановить|修复
+Repairing installation|Reparando instalação|Reparando la instalación|Восстановление установки|正在修复安装
+Remove shortcut|Remover atalho|Eliminar acceso directo|Удалить ярлык|移除快捷方式
+The game files will stay in their original folder.|Os arquivos do jogo ficarão na pasta original.|Los archivos del juego se quedarán en su carpeta original.|Файлы игры останутся в исходной папке.|游戏文件将保留在原来的文件夹中。
+Remove from Packlift|Remover do Packlift|Quitar de Packlift|Удалить из Packlift|从 Packlift 移除
+This removes the program's library entry, shortcut and managed installation files.|Remove a entrada da biblioteca, o atalho e os arquivos de instalação gerenciados pelo Packlift.|Elimina la entrada de la biblioteca, el acceso directo y los archivos de instalación gestionados por Packlift.|Запись в библиотеке, ярлык и файлы установки, которыми управляет Packlift, будут удалены.|这会移除资料库条目、快捷方式和 Packlift 管理的安装文件。
+Uninstall|Desinstalar|Desinstalar|Удалить|卸载
+This removes the installed program and its shortcuts.|Remove o programa instalado e seus atalhos.|Elimina el programa instalado y sus accesos directos.|Установленная программа и её ярлыки будут удалены.|这会卸载程序并移除其快捷方式。
+Removing from your library|Removendo da biblioteca|Eliminando de la biblioteca|Удаление из библиотеки|正在从资料库移除
+Cancel|Cancelar|Cancelar|Отмена|取消
+Proton (automatic)|Proton (automático)|Proton (automático)|Proton (автоматически)|Proton（自动）
+Runtime for this program|Runtime deste programa|Entorno de ejecución del programa|Среда запуска этой программы|此程序的运行环境
+Runtime for {name}|Runtime de {name}|Entorno de ejecución de {name}|Среда запуска для {name}|{name} 的运行环境
+Apply|Aplicar|Aplicar|Применить|应用
+Windows runtime|Runtime do Windows|Entorno de ejecución de Windows|Среда запуска Windows|Windows 运行环境
+Proton (automatic) uses UMU to download Proton as needed. Installed Proton versions will appear here.|O Proton automático usa o UMU para baixar o Proton quando necessário. As versões instaladas aparecem aqui.|Proton automático usa UMU para descargar Proton cuando se necesita. Las versiones instaladas aparecerán aquí.|В автоматическом режиме UMU при необходимости скачивает Proton. Установленные версии появятся здесь.|自动模式会使用 UMU 按需下载 Proton。已安装的 Proton 版本会显示在这里。
+Proton (automatic) uses UMU to manage the version. Pick an installed version to use it for this app.|No modo automático, o UMU gerencia a versão do Proton. Escolha uma versão instalada para usar neste app.|En modo automático, UMU gestiona la versión de Proton. Elige una versión instalada para usarla en esta aplicación.|В автоматическом режиме версией Proton управляет UMU. Для этого приложения можно выбрать установленную версию.|在自动模式下，UMU 会管理 Proton 版本。您也可以为此应用选择已安装的版本。
+This setting applies to this program and its system menu shortcut.|Esta configuração vale para este programa e seu atalho no menu do sistema.|Esta configuración se aplica al programa y a su acceso directo en el menú del sistema.|Настройка действует для этой программы и её ярлыка в системном меню.|此设置适用于该程序及其系统菜单快捷方式。
+The previously selected Proton version is no longer installed.|A versão do Proton selecionada antes não está mais instalada.|La versión de Proton que elegiste ya no está instalada.|Выбранная ранее версия Proton больше не установлена.|先前选择的 Proton 版本已不再安装。
+Saving Windows runtime|Salvando runtime do Windows|Guardando el entorno de Windows|Сохранение среды запуска Windows|正在保存 Windows 运行环境
+Review package|Revisar pacote|Revisar paquete|Проверка пакета|查看软件包
+Windows compatibility environment|Ambiente de compatibilidade com Windows|Entorno de compatibilidad con Windows|Среда совместимости с Windows|Windows 兼容环境
+This Linux system|Neste sistema Linux|Este sistema Linux|Эта система Linux|当前 Linux 系统
+A Toolbx container|Um contêiner do Toolbx|Un contenedor de Toolbx|Контейнер Toolbx|Toolbx 容器
+Packlift sandbox|Sandbox do Packlift|Entorno aislado de Packlift|Изолированная среда Packlift|Packlift 沙盒
+Packlift library|Biblioteca do Packlift|Biblioteca de Packlift|Библиотека Packlift|Packlift 资料库
+Installation destination|Destino da instalação|Destino de la instalación|Место установки|安装位置
+Package file|Arquivo do pacote|Archivo del paquete|Файл пакета|软件包文件
+Install missing libraries|Instalar bibliotecas ausentes|Instalar bibliotecas que faltan|Установить недостающие библиотеки|安装缺少的库
+Search the container repositories for dependencies.|Busca dependências nos repositórios do contêiner.|Busca dependencias en los repositorios del contenedor.|Поиск зависимостей в репозиториях контейнера.|在容器的软件源中查找依赖项。
+RPM distribution|Distribuição do RPM|Distribución del RPM|Дистрибутив для RPM|RPM 对应的发行版
+Signature verified|Assinatura verificada|Firma verificada|Подпись проверена|签名已验证
+Unverified signature|Assinatura não verificada|Firma sin verificar|Подпись не проверена|签名未验证
+Signed with a trusted key.|Assinado com uma chave confiável.|Firmado con una clave de confianza.|Подписано доверенным ключом.|已使用可信密钥签名。
+Install only if you trust the source of this file.|Instale só se confiar na origem deste arquivo.|Instala el archivo solo si confías en su origen.|Устанавливайте файл, только если доверяете его источнику.|仅在信任文件来源时安装。
+Home folder access|Acesso à pasta pessoal|Acceso a la carpeta personal|Доступ к домашней папке|访问主文件夹
+Windows programs can access files in your home folder.|Programas Windows podem acessar arquivos da sua pasta pessoal.|Los programas de Windows pueden acceder a los archivos de tu carpeta personal.|Программы Windows могут обращаться к файлам в вашей домашней папке.|Windows 程序可以访问主文件夹中的文件。
+Set up and install|Configurar e instalar|Configurar e instalar|Настроить и установить|配置并安装
+Continue|Continuar|Continuar|Продолжить|继续
+Install|Instalar|Instalar|Установить|安装
+Authorize this host setup command: {command}|Autorize este comando de configuração do sistema: {command}|Autoriza este comando de configuración del sistema: {command}|Разрешите выполнение команды настройки системы: {command}|授权执行此系统配置命令：{command}
+Restart required.|É preciso reiniciar o sistema.|Hay que reiniciar el sistema.|Требуется перезагрузка системы.|需要重启系统。
+Toolbx setup|Configuração do Toolbx|Configuración de Toolbx|Настройка Toolbx|配置 Toolbx
+Version {version}|Versão {version}|Versión {version}|Версия {version}|版本 {version}
+Installing program or game|Instalando programa ou jogo|Instalando programa o juego|Установка программы или игры|正在安装程序或游戏
+Installing program|Instalando programa|Instalando el programa|Установка программы|正在安装程序
+Enable access to your system…|Ativar acesso ao sistema…|Activar acceso al sistema…|Разрешить доступ к системе…|启用系统访问…
+Could not open package|Não foi possível abrir o pacote|No se pudo abrir el paquete|Не удалось открыть пакет|无法打开软件包
+Choose how to use this .exe|Escolher como usar este .exe|Elegir cómo usar este .exe|Выберите действие для файла .exe|选择此 .exe 的用法
+What is this .exe file?|O que é este arquivo .exe?|¿Qué es este archivo .exe?|Что это за файл .exe?|这是哪种 .exe 文件？
+Choose the option that matches the file you selected.|Escolha a opção que corresponde ao arquivo selecionado.|Elige la opción que corresponda al archivo seleccionado.|Выберите вариант, подходящий для выбранного файла.|选择与所选文件匹配的选项。
+Add an installed program or game|Adicionar programa ou jogo instalado|Añadir un programa o juego instalado|Добавить установленную программу или игру|添加已安装的程序或游戏
+Creates a menu shortcut for this .exe. Use this if the game or app is already installed.|Cria um atalho no menu para este .exe. Use se o jogo ou app já estiver instalado.|Crea un acceso directo en el menú. Usa esta opción si el juego o la aplicación ya está instalado.|Создаёт ярлык для этого .exe. Выберите этот вариант, если игра или программа уже установлена.|为此 .exe 创建菜单快捷方式。适用于已经安装的游戏或应用。
+Adding program or game to menu|Adicionando programa ou jogo ao menu|Añadiendo el programa o juego al menú|Добавление программы или игры в меню|正在将程序或游戏添加到菜单
+Run this as an installer|Executar como instalador|Ejecutar como instalador|Запустить как установщик|作为安装程序运行
+Use this if the .exe contains setup and needs to install the program first.|Use se este .exe for um instalador e precisar instalar o programa primeiro.|Usa esta opción si el .exe es un instalador y el programa aún debe instalarse.|Выберите этот вариант, если .exe — это установщик и программу ещё нужно установить.|如果此 .exe 是安装程序，且尚需安装应用，请选择此项。
+Preparing the installation environment…|Preparando o ambiente de instalação…|Preparando el entorno de instalación…|Подготовка среды установки…|正在准备安装环境…
+Installation progress|Progresso da instalação|Progreso de la instalación|Ход установки|安装进度
+Copy log|Copiar log|Copiar registro|Скопировать журнал|复制日志
+Log copied|Log copiado|Registro copiado|Журнал скопирован|日志已复制
+Show details|Mostrar detalhes|Mostrar detalles|Показать подробности|显示详情
+Game added to Packlift|Jogo adicionado ao Packlift|Juego añadido a Packlift|Игра добавлена в Packlift|游戏已添加到 Packlift
+Installation complete|Instalação concluída|Instalación completada|Установка завершена|安装完成
+{name} is ready to use.|{name} está pronto para uso.|{name} ya se puede usar.|{name} готов к запуску.|{name} 已可使用。
+{name} is installed. This package has no application launcher.|{name} foi instalado. O pacote não inclui um atalho para abrir o app.|{name} está instalado. El paquete no incluye un acceso directo de inicio.|{name} установлен. Пакет не содержит ярлыка для запуска.|{name} 已安装。此软件包不包含应用启动入口。
+Analyzing the package|Analisando o pacote|Analizando el paquete|Анализ пакета|正在分析软件包
+Checking compatibility|Verificando compatibilidade|Comprobando la compatibilidad|Проверка совместимости|正在检查兼容性
+Preparing the installation environment|Preparando o ambiente de instalação|Preparando el entorno de instalación|Подготовка среды установки|正在准备安装环境
+Downloading dependencies|Baixando dependências|Descargando dependencias|Загрузка зависимостей|正在下载依赖项
+Creating application shortcuts|Criando atalhos de aplicativos|Creando accesos directos de aplicaciones|Создание ярлыков приложений|正在创建应用快捷方式
+Installing the program|Instalando o programa|Instalando el programa|Установка программы|正在安装程序
+Working…|Em andamento…|En curso…|Выполняется…|正在处理…
+Packlift could not complete the operation|O Packlift não conseguiu concluir a operação|Packlift no pudo completar la operación|Не удалось завершить операцию в Packlift|Packlift 无法完成操作
+Open log folder|Abrir pasta de logs|Abrir carpeta de registros|Открыть папку журнала|打开日志文件夹
+Could not read the Packlift log: {error}|Não foi possível ler o log do Packlift: {error}|No se pudo leer el registro de Packlift: {error}|Не удалось прочитать журнал Packlift: {error}|无法读取 Packlift 日志：{error}
+Log copied to clipboard.|Log copiado para a área de transferência.|Registro copiado al portapapeles.|Журнал скопирован в буфер обмена.|日志已复制到剪贴板。
+Packlift settings|Configurações do Packlift|Configuración de Packlift|Настройки Packlift|Packlift 设置
+Save|Salvar|Guardar|Сохранить|保存
+Default Windows runtime|Runtime padrão do Windows|Entorno predeterminado de Windows|Среда Windows по умолчанию|默认 Windows 运行环境
+Set as default for supported files|Definir como padrão para arquivos compatíveis|Establecer como predeterminado para archivos compatibles|Открывать поддерживаемые файлы по умолчанию|设为支持文件的默认应用
+Applies to your account for DEB, RPM, Arch packages, AppImage, EXE, MSI, SETUP and supported TAR archives.|Vale para sua conta e para pacotes DEB, RPM e Arch, AppImage, EXE, MSI, SETUP e arquivos TAR compatíveis.|Se aplica a tu cuenta para paquetes DEB, RPM y Arch, AppImage, EXE, MSI, SETUP y archivos TAR compatibles.|Настройка действует для вашей учётной записи и пакетов DEB, RPM, Arch, файлов AppImage, EXE, MSI, SETUP и поддерживаемых архивов TAR.|适用于您的账户和 DEB、RPM、Arch 软件包、AppImage、EXE、MSI、SETUP 以及受支持的 TAR 文件。
+Updating file associations…|Atualizando associações de arquivos…|Actualizando asociaciones de archivos…|Обновление ассоциаций файлов…|正在更新文件关联…
+Packlift is now the default for supported files.|O Packlift agora é o padrão para arquivos compatíveis.|Packlift es ahora la aplicación predeterminada para archivos compatibles.|Теперь поддерживаемые файлы по умолчанию открываются в Packlift.|Packlift 现已设为支持文件的默认应用。
+Could not update file associations.|Não foi possível atualizar as associações de arquivos.|No se pudieron actualizar las asociaciones de archivos.|Не удалось обновить ассоциации файлов.|无法更新文件关联。
+Saving settings|Salvando configurações|Guardando la configuración|Сохранение настроек|正在保存设置
+Packlift logs|Logs do Packlift|Registros de Packlift|Журналы Packlift|Packlift 日志
+No Packlift log is available yet. {error}|Ainda não há log do Packlift. {error}|Aún no hay un registro de Packlift. {error}|Журнал Packlift пока недоступен. {error}|暂无 Packlift 日志。{error}
+Copy all logs|Copiar todos os logs|Copiar todos los registros|Скопировать все журналы|复制全部日志
+Logs copied|Logs copiados|Registros copiados|Журналы скопированы|日志已复制
+This format needs system access. In sandbox mode, choose a type 2 AppImage or a Linux TAR archive.|Este formato exige acesso ao sistema. No modo sandbox, escolha um AppImage tipo 2 ou um arquivo TAR Linux.|Este formato requiere acceso al sistema. En modo aislado, elige una AppImage de tipo 2 o un archivo TAR de Linux.|Для этого формата нужен доступ к системе. В изолированном режиме выберите AppImage типа 2 или архив TAR для Linux.|此格式需要访问系统。在沙盒模式下，请选择第二类 AppImage 或 Linux TAR 文件。

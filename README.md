@@ -32,6 +32,10 @@ If an AppImage shortcut does not open a window, use **Open** in Packlift's insta
 
 Flatpak treats `io.github.luis_gustavo_git_hub.Packlift` as a separate app from `io.github.flatapk.Installer`. Install the new bundle and check your library before removing the previous installation. Host mode still uses your existing Packlift data directory. Enable host access and set your file associations again if you used those features. Sandbox mode has a separate library under the new ID, so add your local packages again there.
 
+### Interface language
+
+Packlift follows your system language. The interface is available in English, Portuguese (Brazil), Spanish, Russian, and Simplified Chinese. Logs and diagnostic output from external tools can remain in their original language.
+
 ## Windows games and programs
 
 On x86-64, Packlift installs Wine WoW64 from Flathub for your account when a host Wine runtime is unavailable. The first Wine or Proton setup requires an internet connection. Choose **Proton (automatic install)** and Packlift uses [UMU Launcher](https://github.com/Open-Wine-Components/umu-launcher) to download UMU-Proton and its Steam Linux Runtime automatically while preparing a game. Proton can run games outside Steam and does not require Steam to be installed. Packlift keeps its shared prefix at `~/.local/share/flatapk/wine/prefix` and UMU's Proton files under `~/.local/share/flatapk/umu` with the default XDG data directory.
