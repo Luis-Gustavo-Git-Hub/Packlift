@@ -216,7 +216,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     if !host_access && !cfg!(feature = "sandbox-only") {
         let access = adw::ActionRow::builder()
             .title(tr("Sandbox mode"))
-            .subtitle(tr("Enable system access to use Toolbx, Wine or Proton."))
+            .subtitle(tr(
+                "Enable system access to use Flatpak, Toolbx, Wine or Proton.",
+            ))
             .build();
         access.add_css_class("card");
         access.add_prefix(&gtk::Image::from_icon_name("changes-prevent-symbolic"));
@@ -397,6 +399,7 @@ fn library_row(
                 .trim_start_matches("flatapk-")
         ),
         "native" => tr("Installed on this system").into(),
+        "flatpak" => tr("Flatpak for your account").into(),
         _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").into(),
         _ => tr("Local Linux application").into(),
     };
@@ -417,7 +420,7 @@ fn library_row(
     row.add_prefix(&record_image(record, 42));
 
     if record["exports"][0]["argv"].is_array() {
-        let launch = text_button(tr("Open"));
+        let launch = gtk::Button::with_label(tr("Open"));
         launch.set_valign(gtk::Align::Center);
         launch.update_property(&[gtk::accessible::Property::Label(
             &tr("Open {name}").replace("{name}", name),
@@ -723,6 +726,7 @@ fn open_package(app: &adw::Application, path: &Path) {
             let destination = match plan.method.as_str() {
                 "wine" => tr("Windows compatibility environment").to_owned(),
                 "native" => tr("This Linux system").to_owned(),
+                "flatpak" => tr("Flatpak for your account").to_owned(),
                 "toolbox" if ambiguous_rpm => tr("A Toolbx container").to_owned(),
                 "toolbox" => format!("Toolbx · {}", plan.family),
                 _ if !host_access_available() => tr("Packlift sandbox").to_owned(),
@@ -757,6 +761,15 @@ fn open_package(app: &adw::Application, path: &Path) {
             full_path.set_margin_bottom(10);
             source.add_row(&full_path);
             options.append(&source);
+            if package.kind == "flatpakref" && !package.description.is_empty() {
+                let repository = adw::ActionRow::builder()
+                    .title(tr("Flatpak repository"))
+                    .use_markup(false)
+                    .subtitle_lines(2)
+                    .subtitle(&package.description)
+                    .build();
+                options.append(&repository);
+            }
             body.append(&options);
 
             let runtime = gtk::DropDown::from_strings(&["Wine", "Proton"]);
@@ -1430,6 +1443,8 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     let runnable = record["exports"][0]["argv"].is_array();
     let message = if runnable {
         tr("{name} is ready to use.").replace("{name}", name)
+    } else if record["method"] == "flatpak" {
+        tr("{name} was installed for your account.").replace("{name}", name)
     } else {
         tr("{name} is installed. This package has no application launcher.").replace("{name}", name)
     };
@@ -1456,7 +1471,7 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
             record["runtime"].as_str().unwrap_or_default(),
         ));
     }
-    let open = text_button(tr("Open"));
+    let open = gtk::Button::with_label(tr("Open"));
     open.add_css_class("suggested-action");
     let record = record.clone();
     let weak_window = window.downgrade();

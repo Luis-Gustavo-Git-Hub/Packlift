@@ -15,4 +15,4 @@ Categories=Settings;PackageManager;GTK;
 Keywords=Packages;Toolbox;Wine;Installer;
 Keywords[pt_BR]=Pacotes;Toolbox;Wine;Instalador;
 StartupNotify=true
-MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-rpm;application/vnd.appimage;application/x-iso9660-appimage;application/x-tar;application/x-compressed-tar;application/x-xz-compressed-tar;application/x-ms-dos-executable;application/x-msdownload;application/vnd.microsoft.portable-executable;application/x-msi;application/x-flatapk-windows-setup;application/x-flatapk-arch-package;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-rpm;application/vnd.appimage;application/x-iso9660-appimage;application/x-tar;application/x-compressed-tar;application/x-xz-compressed-tar;application/x-ms-dos-executable;application/x-msdownload;application/vnd.microsoft.portable-executable;application/x-msi;application/x-flatapk-windows-setup;application/x-flatapk-arch-package;application/vnd.flatpak;application/vnd.flatpak.ref;

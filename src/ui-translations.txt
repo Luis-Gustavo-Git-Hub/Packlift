@@ -17,7 +17,9 @@ Add a compatible type 2 AppImage or Linux TAR archive to this library.|Adicione 
 Choose package…|Escolher pacote…|Elegir paquete…|Выбрать пакет…|选择软件包…
 Choose a package|Escolher um pacote|Elegir un paquete|Выберите пакет|选择软件包
 Sandbox mode|Modo sandbox|Modo de aislamiento|Изолированный режим|沙盒模式
-Enable system access to use Toolbx, Wine or Proton.|Ative o acesso ao sistema para usar Toolbx, Wine ou Proton.|Activa el acceso al sistema para usar Toolbx, Wine o Proton.|Разрешите доступ к системе, чтобы использовать Toolbx, Wine или Proton.|启用系统访问权限以使用 Toolbx、Wine 或 Proton。
+Enable system access to use Flatpak, Toolbx, Wine or Proton.|Ative o acesso ao sistema para usar Flatpak, Toolbx, Wine ou Proton.|Activa el acceso al sistema para usar Flatpak, Toolbx, Wine o Proton.|Разрешите доступ к системе, чтобы использовать Flatpak, Toolbx, Wine или Proton.|启用系统访问权限以使用 Flatpak、Toolbx、Wine 或 Proton。
+Flatpak for your account|Flatpak para sua conta|Flatpak para tu cuenta|Flatpak для вашей учётной записи|为当前账户安装 Flatpak
+Flatpak repository|Repositório Flatpak|Repositorio de Flatpak|Репозиторий Flatpak|Flatpak 软件仓库
 System access…|Acesso ao sistema…|Acceso al sistema…|Доступ к системе…|访问系统…
 Your library|Sua biblioteca|Tu biblioteca|Ваша библиотека|我的资料库
 Your library is empty|Sua biblioteca está vazia|Tu biblioteca está vacía|Ваша библиотека пуста|资料库为空
@@ -107,6 +109,7 @@ Installation complete|Instalação concluída|Instalación completada|Устан
 Open prefix folder|Abrir pasta do prefixo|Abrir carpeta del prefijo|Открыть папку префикса|打开前缀文件夹
 Could not open the prefix folder: {error}|Não foi possível abrir a pasta do prefixo: {error}|No se pudo abrir la carpeta del prefijo: {error}|Не удалось открыть папку префикса: {error}|无法打开前缀文件夹：{error}
 {name} is ready to use.|{name} está pronto para uso.|{name} ya se puede usar.|{name} готов к запуску.|{name} 已可使用。
+{name} was installed for your account.|{name} foi instalado para a sua conta.|{name} se instaló para tu cuenta.|{name} установлен для вашей учётной записи.|{name} 已为当前账户安装。
 {name} is installed. This package has no application launcher.|{name} foi instalado. O pacote não inclui um atalho para abrir o app.|{name} está instalado. El paquete no incluye un acceso directo de inicio.|{name} установлен. Пакет не содержит ярлыка для запуска.|{name} 已安装。此软件包不包含应用启动入口。
 Analyzing the package|Analisando o pacote|Analizando el paquete|Анализ пакета|正在分析软件包
 Checking compatibility|Verificando compatibilidade|Comprobando la compatibilidad|Проверка совместимости|正在检查兼容性

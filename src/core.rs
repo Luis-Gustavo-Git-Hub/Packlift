@@ -159,6 +159,18 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    if header.starts_with(b"flatpak\x00\x01\x00\x89\xe5")
+        || header.starts_with(b"xdg-app\x00\x01\x00\x89\xe5")
+    {
+        return Ok(("flatpak".into(), String::new()));
+    }
+    if suffix == "flatpakref"
+        && String::from_utf8_lossy(&header)
+            .lines()
+            .any(|line| line.trim() == "[Flatpak Ref]")
+    {
+        return Ok(("flatpakref".into(), String::new()));
+    }
     if header.starts_with(b"!<arch>\n")
         && header
             .get(8..24)
@@ -245,6 +257,13 @@ pub fn host_info(release: &str, machine: &str, immutable: bool) -> (HashSet<Stri
 }
 
 pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<Plan> {
+    if matches!(package.kind.as_str(), "flatpak" | "flatpakref") {
+        return Ok(Plan {
+            method: "flatpak".into(),
+            manager: "flatpak".into(),
+            ..Plan::default()
+        });
+    }
     let (distro, host_machine) = host;
     let arch = architecture_group(&package.architecture);
     let machine = architecture_group(host_machine);

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -174,6 +175,7 @@ impl Installer {
             "exe" | "setup" => self.inspect_pe_icon(&mut package)?,
             "appimage" => self.inspect_appimage(&mut package)?,
             "tar" => self.inspect_archive(&mut package)?,
+            "flatpakref" => inspect_flatpak_ref(&mut package)?,
             _ => {}
         }
         self.verify_integrity(&mut package)?;
@@ -622,6 +624,7 @@ impl Installer {
         let (plan, machine) = self.package_plan(package)?;
         match plan.method.as_str() {
             "wine" => self.install_windows_program(package, runtime, &machine),
+            "flatpak" => self.install_flatpak(package),
             "local" => self.install_local(package, &machine),
             "native" | "toolbox" => self.install_system_package(package, &plan, false),
             _ => Err(PackliftError::Message(
@@ -631,6 +634,18 @@ impl Installer {
     }
 
     fn package_plan(&self, package: &Package) -> Result<(crate::core::Plan, String)> {
+        if matches!(package.kind.as_str(), "flatpak" | "flatpakref") {
+            if !host_access_available() {
+                return Err(PackliftError::HostAccessRequired);
+            }
+            if !self.runner.available("flatpak") {
+                return Err(PackliftError::Message(
+                    "The system Flatpak command is required to install this package.".into(),
+                ));
+            }
+            let host = crate::core::host_info("", std::env::consts::ARCH, false);
+            return Ok((crate::core::plan_for(package, &host)?, host.1));
+        }
         let host = if host_access_available() {
             let machine = self.machine()?;
             let release = self
@@ -646,6 +661,75 @@ impl Installer {
         };
         let plan = crate::core::plan_for(package, &host)?;
         Ok((plan, host.1))
+    }
+
+    fn install_flatpak(&self, package: &Package) -> Result<Value> {
+        let _operation = operation(&self.data)?;
+        let before = self.flatpak_apps()?;
+        let option = if package.kind == "flatpakref" {
+            "--from"
+        } else {
+            "--bundle"
+        };
+        self.runner.write("Installing Flatpak for the current user");
+        self.runner.run(
+            &[
+                "flatpak".into(),
+                "install".into(),
+                "--user".into(),
+                "--noninteractive".into(),
+                option.into(),
+                "--".into(),
+                std::path::absolute(&package.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+            false,
+            true,
+            true,
+        )?;
+
+        let mut record = json!({"name": package.name, "method": "flatpak"});
+        let mut changed = self.flatpak_apps()?.into_iter().filter(|(reference, app)| {
+            (package.identifier.is_empty()
+                || reference.split('/').next() == Some(package.identifier.as_str()))
+                && before.get(reference).map(|installed| &installed.commit) != Some(&app.commit)
+        });
+        if let (Some((reference, app)), None) = (changed.next(), changed.next()) {
+            let mut parts = reference.split('/');
+            let id = parts.next().unwrap_or_default();
+            let arch = parts.next().unwrap_or_default();
+            let branch = parts.next().unwrap_or_default();
+            record = json!({
+                "id": short_hash(&format!("flatpak:{reference}"))?,
+                "name": if app.name.is_empty() { id } else { &app.name },
+                "version": app.version, "architecture": arch, "method": "flatpak",
+                "target": reference, "source": package.path, "digest": package.digest,
+                "exports": [{
+                    "icon": id,
+                    "argv": ["flatpak", "run", "--user", "--arch", arch, "--branch", branch, "--", id],
+                }],
+            });
+            self.registry.save(&record)?;
+        } else {
+            self.runner
+                .write("No single installed Flatpak application could be identified");
+        }
+        Ok(record)
+    }
+
+    fn flatpak_apps(&self) -> Result<BTreeMap<String, FlatpakApp>> {
+        let output = self.runner.capture(
+            &[
+                "flatpak".into(),
+                "list".into(),
+                "--user".into(),
+                "--app".into(),
+                "--columns=ref,active:full,name,version".into(),
+            ],
+            false,
+        )?;
+        Ok(flatpak_apps_from_list(&output))
     }
 
     fn install_system_package(
@@ -1930,6 +2014,33 @@ fi"#
                 command.push(target.into());
                 elevated(&self.runner, container, &command)?;
             }
+        } else if method == "flatpak" {
+            if !host_access_available() {
+                return Err(PackliftError::HostAccessRequired);
+            }
+            let target = app["target"]
+                .as_str()
+                .filter(|value| valid_flatpak_ref(value))
+                .ok_or_else(|| {
+                    PackliftError::Message(
+                        "The Flatpak record has no valid application reference.".into(),
+                    )
+                })?;
+            if self.flatpak_apps()?.contains_key(target) {
+                self.runner.run(
+                    &[
+                        "flatpak".into(),
+                        "uninstall".into(),
+                        "--user".into(),
+                        "--noninteractive".into(),
+                        "--".into(),
+                        format!("app/{target}"),
+                    ],
+                    false,
+                    true,
+                    true,
+                )?;
+            }
         } else if method == "local" {
             self.remove_managed_directory(app, "installed")?;
         } else if method == "wine" && !app["game_shortcut"].as_bool().unwrap_or(false) {
@@ -2052,6 +2163,77 @@ fi"#
         }
         Ok(())
     }
+}
+
+fn inspect_flatpak_ref(package: &mut Package) -> Result<()> {
+    const MAX_SIZE: u64 = 1024 * 1024;
+    let mut text = String::new();
+    fs::File::open(&package.path)?
+        .take(MAX_SIZE + 1)
+        .read_to_string(&mut text)?;
+    if text.len() > MAX_SIZE as usize {
+        return Err(PackliftError::Message(
+            "The Flatpak reference is too large.".into(),
+        ));
+    }
+    let fields = text
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != "[Flatpak Ref]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .collect::<BTreeMap<_, _>>();
+    let name = fields
+        .get("Name")
+        .filter(|name| valid_flatpak_component(name))
+        .ok_or_else(|| {
+            PackliftError::Message("The Flatpak reference has no valid application ID.".into())
+        })?;
+    package.identifier = (*name).into();
+    package.name = package.identifier.clone();
+    package.description = fields.get("Url").copied().unwrap_or_default().into();
+    Ok(())
+}
+
+struct FlatpakApp {
+    commit: String,
+    name: String,
+    version: String,
+}
+
+fn valid_flatpak_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+fn valid_flatpak_ref(reference: &str) -> bool {
+    let mut parts = reference.split('/');
+    (0..3).all(|_| parts.next().is_some_and(valid_flatpak_component)) && parts.next().is_none()
+}
+
+fn flatpak_apps_from_list(output: &str) -> BTreeMap<String, FlatpakApp> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.splitn(4, '\t');
+            let reference = columns
+                .next()
+                .filter(|reference| valid_flatpak_ref(reference))?;
+            let commit = columns.next()?;
+            Some((
+                reference.into(),
+                FlatpakApp {
+                    commit: commit.into(),
+                    name: columns.next().unwrap_or_default().into(),
+                    version: columns.next().unwrap_or_default().into(),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn windows_install_directory(executable: &Path, prefix: &Path) -> Option<PathBuf> {
@@ -3571,6 +3753,21 @@ fn collect_exes(
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn flatpak_list_preserves_the_user_app_ref_and_commit() {
+        use super::flatpak_apps_from_list;
+
+        let apps = flatpak_apps_from_list(concat!(
+            "Ref\tActive commit\tName\tVersion\n",
+            "org.example.Demo/x86_64/stable\tcommit1\tDemo App\t1.0\n",
+            "org.example.Demo/x86_64/beta\tcommit2\t\t\n",
+        ));
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps["org.example.Demo/x86_64/stable"].name, "Demo App");
+        assert_eq!(apps["org.example.Demo/x86_64/stable"].version, "1.0");
+        assert_eq!(apps["org.example.Demo/x86_64/beta"].commit, "commit2");
+    }
 
     #[test]
     fn prefix_folder_uses_the_drive_for_the_selected_runtime() {

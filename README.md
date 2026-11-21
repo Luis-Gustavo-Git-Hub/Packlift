@@ -9,6 +9,7 @@ Packlift is a GTK4 and libadwaita app for installing Linux packages and adding W
 | `.deb` | APT on Debian and Ubuntu. Other distributions use an Ubuntu 24.04 Toolbx container. |
 | `.rpm` | DNF on Fedora and RHEL-based distributions, or Zypper on openSUSE. Other distributions use a Fedora Toolbx container. |
 | `.pkg.tar.zst` | Pacman on Arch Linux or in an Arch Toolbx container. |
+| `.flatpak`, `.flatpakref` | Flatpak installs the bundle or repository reference for your user account. |
 | `.AppImage` | Stored as an executable in Packlift's data directory. Type 2 AppImages run in extraction mode. |
 | `.tar.gz`, `.tar.xz` | Extracted locally and launched with a compatible executable. |
 | `.exe`, `.msi`, `.setup` | Run a Windows installer with Wine or Proton. Existing `.exe` games can be added directly to the applications menu. |
@@ -54,7 +55,7 @@ Native packages use the host distribution's package manager and request authoriz
 
 The GitHub Flatpak opens in sandbox mode when host access is unavailable. In this mode it can register and launch compatible type 2 AppImages and Linux TAR archives in its private library. Compatibility depends on the libraries and services available inside the Flatpak. The sandbox library and its logs are separate from the host library.
 
-To use Toolbx, native package managers or Windows runtimes in the GitHub Flatpak, choose **Enable access to your system…** and copy the command shown in the dialog. Run it in your terminal as your user and reopen Packlift. This grants Packlift permission to run host commands with your account's access for Toolbx, native package management, and Wine or Proton. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
+To install Flatpaks or use Toolbx, native package managers or Windows runtimes in the GitHub Flatpak, choose **Enable access to your system…** and copy the command shown in the dialog. Run it in your terminal as your user and reopen Packlift. This grants Packlift permission to run host commands with your account's access. Programs launched through Toolbx or Wine can access your home directory. Install packages only from sources you trust.
 
 ## Package integrity
 
