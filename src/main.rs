@@ -192,29 +192,48 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 fn open_package(app: &adw::Application, path: &Path) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(466, 410);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    body.set_margin_top(18);
-    body.set_margin_bottom(18);
-    body.set_margin_start(18);
-    body.set_margin_end(18);
+    window.set_default_size(520, 570);
+
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new("Package details", "Packlift")));
+    toolbar.add_top_bar(&header);
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    body.set_margin_top(20);
+    body.set_margin_bottom(20);
+    body.set_margin_start(20);
+    body.set_margin_end(20);
 
     match installer().and_then(|manager| manager.probe(path)) {
         Ok((package, plan)) => {
-            if let Some(icon) = package.icon.as_ref().filter(|path| path.is_file()) {
-                let image = gtk::Image::from_file(icon);
-                image.set_pixel_size(48);
-                body.append(&image);
-            }
+            let hero = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+            hero.add_css_class("card");
+            hero.set_margin_top(2);
+            hero.set_margin_bottom(2);
+            hero.set_margin_start(2);
+            hero.set_margin_end(2);
+            let image = package_image(&package, 64);
+            let icon_frame = gtk::Frame::new(None);
+            icon_frame.add_css_class("card");
+            icon_frame.set_child(Some(&image));
+            hero.append(&icon_frame);
+
+            let identity = gtk::Box::new(gtk::Orientation::Vertical, 5);
             let title = gtk::Label::new(Some(&package.name));
             title.add_css_class("title-2");
             title.set_xalign(0.0);
-            body.append(&title);
-            body.append(&gtk::Label::new(Some(&format!(
+            title.set_wrap(true);
+            title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            identity.append(&title);
+            let kind = gtk::Label::new(Some(&format!(
                 "{} · {}",
                 package.kind.to_uppercase(),
                 package.architecture
-            ))));
+            )));
+            kind.add_css_class("dim-label");
+            kind.set_xalign(0.0);
+            identity.append(&kind);
             let version = if package.version.is_empty() {
                 "Version unavailable".to_owned()
             } else {
@@ -223,29 +242,46 @@ fn open_package(app: &adw::Application, path: &Path) {
             let bytes = std::fs::metadata(path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
-            body.append(&gtk::Label::new(Some(&format!(
-                "{version} · {}",
-                human_size(bytes)
-            ))));
-            let integrity = if package.signature == "verified" {
-                gtk::Label::new(Some("Signature verified with a trusted key."))
-            } else {
-                gtk::Label::new(Some(
-                    "Signature could not be verified. Install only if you trust the source.",
-                ))
-            };
-            integrity.set_wrap(true);
-            integrity.set_xalign(0.0);
-            integrity.add_css_class(if package.signature == "verified" {
-                "success"
-            } else {
-                "warning"
-            });
+            let size = gtk::Label::new(Some(&format!("{version} · {}", human_size(bytes))));
+            size.add_css_class("dim-label");
+            size.set_xalign(0.0);
+            identity.append(&size);
+            hero.append(&identity);
+            body.append(&hero);
+
+            let verified = package.signature == "verified";
+            let integrity = notice_row(
+                if verified {
+                    "emblem-ok-symbolic"
+                } else {
+                    "dialog-warning-symbolic"
+                },
+                if verified {
+                    "Signature verified with a trusted key."
+                } else {
+                    "Signature could not be verified. Install only if you trust this file."
+                },
+                if verified { "success" } else { "warning" },
+            );
             body.append(&integrity);
-            let method = gtk::Label::new(Some(&format!("{}\n{}", plan.method, path.display())));
+
+            let location = gtk::Box::new(gtk::Orientation::Vertical, 5);
+            let location_title = gtk::Label::new(Some("File and installation method"));
+            location_title.add_css_class("heading");
+            location_title.set_xalign(0.0);
+            location.append(&location_title);
+            let method = gtk::Label::new(Some(&format!(
+                "{} · {}",
+                plan.method.replace('-', " "),
+                path.display()
+            )));
             method.set_wrap(true);
+            method.set_selectable(true);
             method.set_xalign(0.0);
-            body.append(&method);
+            method.add_css_class("dim-label");
+            location.append(&method);
+            body.append(&location);
+
             let runtime = gtk::DropDown::from_strings(&["Wine", "Proton (automatic install)"]);
             if ["exe", "setup", "msi"].contains(&package.kind.as_str()) {
                 if installer()
@@ -254,21 +290,23 @@ fn open_package(app: &adw::Application, path: &Path) {
                 {
                     runtime.set_selected(1);
                 }
-                body.append(&runtime);
-                let note = gtk::Label::new(Some(
-                    "Packlift downloads UMU-Proton automatically the first time you use it.",
+                let runtime_box = gtk::Box::new(gtk::Orientation::Vertical, 7);
+                let runtime_label = gtk::Label::new(Some("Windows runtime"));
+                runtime_label.add_css_class("heading");
+                runtime_label.set_xalign(0.0);
+                runtime_box.append(&runtime_label);
+                runtime.set_hexpand(true);
+                runtime_box.append(&runtime);
+                body.append(&runtime_box);
+
+                body.append(&notice_row(
+                    "dialog-information-symbolic",
+                    "Proton is downloaded automatically the first time you use it. Windows programs can access files in your home folder.",
+                    "dim-label",
                 ));
-                note.add_css_class("dim-label");
-                note.set_wrap(true);
-                body.append(&note);
-                let isolation = gtk::Label::new(Some(
-                    "Windows programs can access your home folder while running through Wine or Proton.",
-                ));
-                isolation.add_css_class("dim-label");
-                isolation.set_wrap(true);
-                body.append(&isolation);
             }
-            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             actions.set_halign(gtk::Align::End);
             let cancel = gtk::Button::with_label("Cancel");
             let weak_window = window.downgrade();
@@ -278,7 +316,7 @@ fn open_package(app: &adw::Application, path: &Path) {
                 }
             });
             actions.append(&cancel);
-            let install = gtk::Button::with_label("Install");
+            let install = gtk::Button::with_label("Continue");
             install.add_css_class("suggested-action");
             let app = app.clone();
             let package = package.clone();
@@ -292,18 +330,26 @@ fn open_package(app: &adw::Application, path: &Path) {
                     "wine"
                 }
                 .to_owned();
-                if kind == "exe" || kind == "setup" {
+                if kind == "exe" {
                     if let Some(window) = weak_window.upgrade() {
                         choose_windows_action(&app, &window, &package, &runtime);
                     }
                 } else if let Some(window) = weak_window.upgrade() {
                     let package = package.clone();
                     let runtime = runtime.clone();
-                    run_job(&app, &window, "Installing program", move |logger| {
-                        installer_with_output(logger)?
-                            .install_package(&package, &runtime)
-                            .map(Some)
-                    });
+                    if kind == "setup" {
+                        run_job(&app, &window, "Installing program or game", move |logger| {
+                            installer_with_output(logger)?
+                                .install_windows(&package, &runtime)
+                                .map(Some)
+                        });
+                    } else {
+                        run_job(&app, &window, "Installing program", move |logger| {
+                            installer_with_output(logger)?
+                                .install_package(&package, &runtime)
+                                .map(Some)
+                        });
+                    }
                 }
             });
             actions.append(&install);
@@ -312,75 +358,192 @@ fn open_package(app: &adw::Application, path: &Path) {
         Err(error) => {
             let title = gtk::Label::new(Some("Could not open package"));
             title.add_css_class("title-2");
+            title.set_xalign(0.0);
             body.append(&title);
-            let message = gtk::Label::new(Some(&error.to_string()));
-            message.set_wrap(true);
-            body.append(&message);
-            body.append(&gtk::Label::new(Some(&path.display().to_string())));
+            body.append(&notice_row(
+                "dialog-error-symbolic",
+                &error.to_string(),
+                "error",
+            ));
+            let file = gtk::Label::new(Some(&path.display().to_string()));
+            file.set_wrap(true);
+            file.set_xalign(0.0);
+            file.add_css_class("dim-label");
+            body.append(&file);
         }
     }
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&body));
-    window.set_content(Some(&scroll));
+    toolbar.set_content(Some(&scroll));
+    window.set_content(Some(&toolbar));
     window.present();
+}
+
+fn package_image(package: &Package, size: i32) -> gtk::Image {
+    let texture = package
+        .icon
+        .as_ref()
+        .filter(|path| path.is_file())
+        .and_then(|path| gtk::gdk::Texture::from_file(&gio::File::for_path(path)).ok());
+    let image = texture
+        .as_ref()
+        .map(|texture| gtk::Image::from_paintable(Some(texture)))
+        .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable"));
+    image.set_pixel_size(size);
+    image
+}
+
+fn notice_row(icon_name: &str, text: &str, style: &str) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    row.add_css_class("card");
+    row.set_margin_top(2);
+    row.set_margin_bottom(2);
+    row.set_margin_start(2);
+    row.set_margin_end(2);
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(18);
+    icon.add_css_class(style);
+    icon.set_valign(gtk::Align::Start);
+    row.append(&icon);
+    let message = gtk::Label::new(Some(text));
+    message.set_wrap(true);
+    message.set_xalign(0.0);
+    message.set_hexpand(true);
+    message.add_css_class(style);
+    row.append(&message);
+    row
 }
 
 fn choose_windows_action(
     app: &adw::Application,
-    window: &adw::ApplicationWindow,
+    parent: &adw::ApplicationWindow,
     package: &Package,
     runtime: &str,
 ) {
-    let dialog = gtk::Dialog::new();
-    dialog.set_title(Some("How do you want to use this .exe?"));
-    dialog.set_transient_for(Some(window));
-    dialog.set_modal(true);
-    dialog.add_button(
-        "Add existing program or game to menu",
-        gtk::ResponseType::Apply,
+    let dialog = gtk::Window::builder()
+        .title("Choose how to use this .exe")
+        .transient_for(parent)
+        .modal(true)
+        .resizable(false)
+        .default_width(460)
+        .default_height(390)
+        .build();
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    body.set_margin_top(24);
+    body.set_margin_bottom(22);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    let image = package_image(package, 56);
+    let icon_frame = gtk::Frame::new(None);
+    icon_frame.add_css_class("card");
+    icon_frame.set_child(Some(&image));
+    hero.append(&icon_frame);
+    let heading = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    let title = gtk::Label::new(Some("What is this .exe file?"));
+    title.add_css_class("title-2");
+    title.set_xalign(0.0);
+    heading.append(&title);
+    let subtitle = gtk::Label::new(Some(
+        "Choose the option that matches the file you selected.",
+    ));
+    subtitle.add_css_class("dim-label");
+    subtitle.set_wrap(true);
+    subtitle.set_xalign(0.0);
+    heading.append(&subtitle);
+    hero.append(&heading);
+    body.append(&hero);
+
+    let package_to_add = package.clone();
+    let runtime_to_add = runtime.to_owned();
+    let app_to_add = app.clone();
+    let parent_to_add = parent.clone();
+    let dialog_to_add = dialog.clone();
+    let add = choice_button(
+        "Add an installed program or game",
+        "Creates a menu shortcut for this .exe. Use this if the game or app is already installed.",
+        false,
     );
-    dialog.add_button("Install program or game", gtk::ResponseType::Accept);
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-    let message = gtk::Label::new(Some("Add an already installed Windows program or game to Packlift, or run an installer to install one."));
-    message.set_wrap(true);
-    dialog.content_area().append(&message);
-    let package = package.clone();
-    let runtime = runtime.to_owned();
-    let app = app.clone();
-    let weak_window = window.downgrade();
-    dialog.connect_response(move |dialog, response| {
-        dialog.close();
-        if let Some(window) = weak_window.upgrade() {
-            match response {
-                gtk::ResponseType::Accept => {
-                    let package = package.clone();
-                    let runtime = runtime.clone();
-                    run_job(&app, &window, "Installing program or game", move |logger| {
-                        installer_with_output(logger)?
-                            .install_windows(&package, &runtime)
-                            .map(Some)
-                    });
-                }
-                gtk::ResponseType::Apply => {
-                    let package = package.clone();
-                    let runtime = runtime.clone();
-                    run_job(
-                        &app,
-                        &window,
-                        "Adding program or game to Packlift and menu",
-                        move |logger| {
-                            installer_with_output(logger)?
-                                .add_game(&package, &runtime)
-                                .map(Some)
-                        },
-                    );
-                }
-                _ => {}
-            }
-        }
+    add.connect_clicked(move |_| {
+        dialog_to_add.close();
+        let package = package_to_add.clone();
+        let runtime = runtime_to_add.clone();
+        run_job(
+            &app_to_add,
+            &parent_to_add,
+            "Adding program or game to menu",
+            move |logger| {
+                installer_with_output(logger)?
+                    .add_game(&package, &runtime)
+                    .map(Some)
+            },
+        );
     });
+    body.append(&add);
+
+    let package_to_install = package.clone();
+    let runtime_to_install = runtime.to_owned();
+    let app_to_install = app.clone();
+    let parent_to_install = parent.clone();
+    let dialog_to_install = dialog.clone();
+    let install = choice_button(
+        "Run this as an installer",
+        "Use this if the .exe contains setup and needs to install the program first.",
+        true,
+    );
+    install.connect_clicked(move |_| {
+        dialog_to_install.close();
+        let package = package_to_install.clone();
+        let runtime = runtime_to_install.clone();
+        run_job(
+            &app_to_install,
+            &parent_to_install,
+            "Installing program or game",
+            move |logger| {
+                installer_with_output(logger)?
+                    .install_windows(&package, &runtime)
+                    .map(Some)
+            },
+        );
+    });
+    body.append(&install);
+
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.set_hexpand(true);
+    let dialog_to_close = dialog.clone();
+    cancel.connect_clicked(move |_| dialog_to_close.close());
+    body.append(&cancel);
+    dialog.set_child(Some(&body));
     dialog.present();
+}
+
+fn choice_button(title: &str, description: &str, suggested: bool) -> gtk::Button {
+    let button = gtk::Button::new();
+    if suggested {
+        button.add_css_class("suggested-action");
+    } else {
+        button.add_css_class("card");
+    }
+    button.set_hexpand(true);
+    button.set_size_request(-1, 82);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    content.set_margin_top(10);
+    content.set_margin_bottom(10);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    let title_label = gtk::Label::new(Some(title));
+    title_label.add_css_class("heading");
+    title_label.set_xalign(0.0);
+    let description_label = gtk::Label::new(Some(description));
+    description_label.add_css_class("dim-label");
+    description_label.set_wrap(true);
+    description_label.set_xalign(0.0);
+    content.append(&title_label);
+    content.append(&description_label);
+    button.set_child(Some(&content));
+    button
 }
 
 fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &str, task: F)
@@ -473,24 +636,42 @@ where
 }
 
 fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    body.set_margin_top(30);
-    body.set_margin_bottom(24);
-    body.set_margin_start(24);
-    body.set_margin_end(24);
-    let icon = gtk::Image::from_icon_name("emblem-ok-symbolic");
-    icon.set_pixel_size(48);
-    icon.add_css_class("success");
-    body.append(&icon);
-    let title = gtk::Label::new(Some("Installation complete"));
+    window.set_title(Some("Packlift"));
+    window.set_default_size(430, 320);
+    window.set_resizable(false);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(22);
+    body.set_margin_bottom(22);
+    body.set_margin_start(28);
+    body.set_margin_end(28);
+    body.set_valign(gtk::Align::Center);
+
+    let icon = record_image(record, 72);
+    let icon_frame = gtk::Frame::new(None);
+    icon_frame.add_css_class("card");
+    icon_frame.set_halign(gtk::Align::Center);
+    icon_frame.set_child(Some(&icon));
+    body.append(&icon_frame);
+
+    let is_game = record["game_shortcut"].as_bool().unwrap_or(false);
+    let title = gtk::Label::new(Some(if is_game {
+        "Game added to Packlift"
+    } else {
+        "Installation complete"
+    }));
     title.add_css_class("title-2");
+    title.set_halign(gtk::Align::Center);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     body.append(&title);
     let name = record["name"].as_str().unwrap_or("Program");
-    let description = gtk::Label::new(Some(&format!("{name} is ready in Packlift.")));
+    let description = gtk::Label::new(Some(&format!("{name} is ready to use.")));
     description.set_wrap(true);
+    description.set_halign(gtk::Align::Center);
+    description.add_css_class("dim-label");
     body.append(&description);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
+    actions.set_halign(gtk::Align::Center);
+    actions.set_margin_top(4);
     let close = gtk::Button::with_label("Close");
     let close_app = app.clone();
     let weak_window = window.downgrade();
@@ -500,7 +681,11 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
         }
     });
     actions.append(&close);
-    let open = gtk::Button::with_label("Open program");
+    let open = gtk::Button::with_label(if is_game {
+        "Launch game"
+    } else {
+        "Open program"
+    });
     open.add_css_class("suggested-action");
     let record = record.clone();
     let open_app = app.clone();
@@ -517,6 +702,21 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     actions.append(&open);
     body.append(&actions);
     window.set_content(Some(&body));
+}
+
+fn record_image(record: &Value, size: i32) -> gtk::Image {
+    let icon = record["exports"][0]["icon"].as_str().unwrap_or("");
+    let texture = if !icon.is_empty() && Path::new(icon).is_file() {
+        gtk::gdk::Texture::from_file(&gio::File::for_path(icon)).ok()
+    } else {
+        None
+    };
+    let image = texture
+        .as_ref()
+        .map(|texture| gtk::Image::from_paintable(Some(texture)))
+        .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable"));
+    image.set_pixel_size(size);
+    image
 }
 
 fn installation_stage(line: &str) -> (&'static str, f64) {

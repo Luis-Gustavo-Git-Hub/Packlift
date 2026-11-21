@@ -535,7 +535,10 @@ impl Installer {
         if let Some(bytes) = pe_icon(&package.path)? {
             let directory = self.data.join("package-icons");
             fs::create_dir_all(&directory)?;
-            let icon = directory.join(format!("{}.ico", package.digest));
+            let (suffix, bytes) = png_payload_from_ico(&bytes)
+                .map(|png| ("png", png.to_vec()))
+                .unwrap_or_else(|| ("ico", bytes));
+            let icon = directory.join(format!("{}.{}", package.digest, suffix));
             fs::write(&icon, bytes)?;
             package.icon = Some(icon);
         }
@@ -1721,6 +1724,26 @@ fn pe_icon(path: &Path) -> Result<Option<Vec<u8>>> {
     icon.extend_from_slice(&22_u32.to_le_bytes());
     icon.extend_from_slice(&data);
     Ok(Some(icon))
+}
+
+fn png_payload_from_ico(icon: &[u8]) -> Option<&[u8]> {
+    if icon.len() < 22 || icon[..4] != [0, 0, 1, 0] {
+        return None;
+    }
+    let count = u16::from_le_bytes(icon[4..6].try_into().ok()?) as usize;
+    if count == 0 || 6 + count * 16 > icon.len() {
+        return None;
+    }
+    icon[6..6 + count * 16]
+        .chunks_exact(16)
+        .filter_map(|entry| {
+            let size = u32::from_le_bytes(entry[8..12].try_into().ok()?) as usize;
+            let offset = u32::from_le_bytes(entry[12..16].try_into().ok()?) as usize;
+            let end = offset.checked_add(size)?;
+            let data = icon.get(offset..end)?;
+            data.starts_with(b"\x89PNG\r\n\x1a\n").then_some(data)
+        })
+        .max_by_key(|data| data.len())
 }
 
 fn pe_resource_entries(resource: &[u8], offset: u32) -> Vec<(u32, u32)> {
