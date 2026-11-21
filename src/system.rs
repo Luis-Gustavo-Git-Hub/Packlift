@@ -379,6 +379,9 @@ pub fn remove_exports(app: &Value) {
             if let Some(path) = entry.get("desktop").and_then(Value::as_str) {
                 let _ = fs::remove_file(path);
             }
+            if let Some(path) = entry.get("menu_icon_file").and_then(Value::as_str) {
+                let _ = fs::remove_file(path);
+            }
         }
     }
     if let Some(path) = app.get("directory").and_then(Value::as_str) {

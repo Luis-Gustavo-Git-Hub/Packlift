@@ -32,12 +32,14 @@ impl Installer {
             applications.unwrap_or_else(|| crate::system::data_home().join("applications"));
         let runner = Runner::new(Some(data.clone()), output)?;
         let registry = Registry::new(&data)?;
-        Ok(Self {
+        let installer = Self {
             data,
             applications,
             runner,
             registry,
-        })
+        };
+        installer.refresh_game_menu_icons();
+        Ok(installer)
     }
 
     pub fn preferences(&self) -> (String, String) {
@@ -936,13 +938,15 @@ impl Installer {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        export_desktop(&export, &package.name, &argv, &icon, false, "Utility")?;
+        let (menu_icon, menu_icon_file) =
+            self.export_menu_icon(&identifier, package.icon.as_deref())?;
+        export_desktop(&export, &package.name, &argv, &menu_icon, false, "Utility")?;
         let metadata_directory = self.data.join("windows").join(&identifier);
         fs::create_dir_all(&metadata_directory)?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
             "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":package.name,
-            "icon":icon,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
+            "icon":icon,"menu_icon_file":menu_icon_file,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -1001,19 +1005,115 @@ impl Installer {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        export_desktop(&export_path, &package.name, &argv, &icon, false, "Game")?;
+        let (menu_icon, menu_icon_file) =
+            self.export_menu_icon(&identifier, package.icon.as_deref())?;
+        export_desktop(
+            &export_path,
+            &package.name,
+            &argv,
+            &menu_icon,
+            false,
+            "Game",
+        )?;
         self.runner.write("Creating the game menu shortcut");
         let app = json!({
             "id": identifier, "name": package.name, "version": package.version,
             "architecture": package.architecture, "source": package.path,
             "digest": digest, "directory": identifier_path, "exports": [{
                 "desktop": export_path, "name": package.name, "icon": icon,
+                "menu_icon_file": menu_icon_file,
                 "argv": argv, "terminal": false, "wine_args": [package.path.to_string_lossy()]
             }], "method": "wine", "runtime": wine.runtime,
             "game_shortcut": true, "working_directory": app_dir
         });
         self.registry.save(&app)?;
         Ok(app)
+    }
+
+    fn export_menu_icon(
+        &self,
+        identifier: &str,
+        source: Option<&Path>,
+    ) -> Result<(String, Option<String>)> {
+        let Some(source) = source.filter(|path| path.is_file()) else {
+            return Ok(("application-x-executable".into(), None));
+        };
+        let Some(extension) = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .filter(|extension| {
+                ["png", "ico", "svg", "xpm"]
+                    .iter()
+                    .any(|supported| extension.eq_ignore_ascii_case(supported))
+            })
+        else {
+            return Ok(("application-x-executable".into(), None));
+        };
+        let directory = self.applications.join("icons");
+        fs::create_dir_all(&directory)?;
+        let icon = directory.join(format!("packlift-{identifier}.{extension}"));
+        fs::copy(source, &icon)?;
+        let path = icon.to_string_lossy().into_owned();
+        Ok((path.clone(), Some(path)))
+    }
+
+    fn refresh_game_menu_icons(&self) {
+        let Ok(apps) = self.registry.apps() else {
+            return;
+        };
+        for mut app in apps {
+            if !app["game_shortcut"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            let Some(icon) = app["exports"][0]["icon"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            let source = Path::new(&icon);
+            if !source.is_file() {
+                continue;
+            }
+            if app["exports"][0]["menu_icon_file"]
+                .as_str()
+                .is_some_and(|path| Path::new(path).is_file())
+            {
+                continue;
+            }
+            let Some(identifier) = app["id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok((menu_icon, menu_icon_file)) =
+                self.export_menu_icon(&identifier, Some(source))
+            else {
+                continue;
+            };
+            let (Some(desktop), Some(icon_file), Some(name), Some(arguments)) = (
+                app["exports"][0]["desktop"].as_str().map(str::to_owned),
+                menu_icon_file,
+                app["exports"][0]["name"].as_str().map(str::to_owned),
+                app["exports"][0]["argv"].as_array().cloned(),
+            ) else {
+                continue;
+            };
+            let argv = arguments
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let terminal = app["exports"][0]["terminal"].as_bool().unwrap_or(false);
+            if export_desktop(
+                Path::new(&desktop),
+                &name,
+                &argv,
+                &menu_icon,
+                terminal,
+                "Game",
+            )
+            .is_ok()
+            {
+                app["exports"][0]["menu_icon_file"] = json!(icon_file);
+                let _ = self.registry.save(&app);
+            }
+        }
     }
 
     pub fn install_windows(&self, package: &Package, runtime: &str) -> Result<Value> {
