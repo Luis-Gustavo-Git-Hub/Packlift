@@ -1,6 +1,6 @@
 use adw::prelude::*;
 use gtk::prelude::*;
-use std::{path::Path, sync::Arc, thread, time::Duration};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
     core::{Package, PackliftError, Result},
@@ -29,6 +29,10 @@ fn main() -> glib::ExitCode {
 
 fn installer() -> Result<Installer> {
     let logger: LogHandler = Arc::new(|_| {});
+    Installer::new(logger, None, None)
+}
+
+fn installer_with_output(logger: LogHandler) -> Result<Installer> {
     Installer::new(logger, None, None)
 }
 
@@ -242,8 +246,12 @@ fn open_package(app: &adw::Application, path: &Path) {
                         choose_windows_action(&app, &window, &package, &runtime);
                     }
                 } else if let Some(window) = weak_window.upgrade() {
-                    run_job(&app, &window, "Installing program", move || {
-                        installer()?.install_package(&package, &runtime).map(|_| ())
+                    let package = package.clone();
+                    let runtime = runtime.clone();
+                    run_job(&app, &window, "Installing program", move |logger| {
+                        installer_with_output(logger)?
+                            .install_package(&package, &runtime)
+                            .map(|_| ())
                     });
                 }
             });
@@ -297,8 +305,8 @@ fn choose_windows_action(
                 gtk::ResponseType::Accept => {
                     let package = package.clone();
                     let runtime = runtime.clone();
-                    run_job(&app, &window, "Installing program or game", move || {
-                        installer()?.install_windows(&package, &runtime)
+                    run_job(&app, &window, "Installing program or game", move |logger| {
+                        installer_with_output(logger)?.install_windows(&package, &runtime)
                     });
                 }
                 gtk::ResponseType::Apply => {
@@ -308,7 +316,11 @@ fn choose_windows_action(
                         &app,
                         &window,
                         "Adding game to Packlift and menu",
-                        move || installer()?.add_game(&package, &runtime).map(|_| ()),
+                        move |logger| {
+                            installer_with_output(logger)?
+                                .add_game(&package, &runtime)
+                                .map(|_| ())
+                        },
                     );
                 }
                 _ => {}
@@ -320,7 +332,7 @@ fn choose_windows_action(
 
 fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &str, task: F)
 where
-    F: FnOnce() -> Result<()> + Send + 'static,
+    F: FnOnce(LogHandler) -> Result<()> + Send + 'static,
 {
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(30);
@@ -329,20 +341,61 @@ where
     let heading = gtk::Label::new(Some(title));
     heading.add_css_class("title-2");
     body.append(&heading);
+    let stage = gtk::Label::new(Some("Preparing the installation environment…"));
+    stage.set_xalign(0.0);
+    stage.add_css_class("dim-label");
+    body.append(&stage);
     let spinner = gtk::Spinner::new();
     spinner.start();
     body.append(&spinner);
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let buffer = gtk::TextBuffer::new(None);
+    let text = gtk::TextView::with_buffer(&buffer);
+    text.set_editable(false);
+    text.set_cursor_visible(false);
+    text.set_monospace(true);
+    text.set_wrap_mode(gtk::WrapMode::WordChar);
+    let log_scroll = gtk::ScrolledWindow::builder()
+        .min_content_height(130)
+        .child(&text)
+        .build();
+    let copy = gtk::Button::with_label("Copy log");
+    copy.set_halign(gtk::Align::End);
+    let copy_log = log.clone();
+    copy.connect_clicked(move |_| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&copy_log.borrow().join("\n"));
+        }
+    });
+    let details = gtk::Expander::builder().label("Show details").build();
+    let detail_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    detail_box.append(&log_scroll);
+    detail_box.append(&copy);
+    details.set_child(Some(&detail_box));
+    body.append(&details);
     window.set_content(Some(&body));
 
-    let (sender, receiver) = std::sync::mpsc::channel();
+    enum JobEvent {
+        Log(String),
+        Finished(Result<()>),
+    }
+    let (sender, receiver) = std::sync::mpsc::channel::<JobEvent>();
     thread::spawn(move || {
-        let _ = sender.send(task());
+        let log_sender = sender.clone();
+        let logger: LogHandler = Arc::new(move |line| {
+            let _ = log_sender.send(JobEvent::Log(line.to_owned()));
+        });
+        let _ = sender.send(JobEvent::Finished(task(logger)));
     });
     let app = app.clone();
     let weak_window = window.downgrade();
-    glib::timeout_add_local(Duration::from_millis(120), move || {
+    glib::timeout_add_local(Duration::from_millis(120), move || loop {
         match receiver.try_recv() {
-            Ok(result) => {
+            Ok(JobEvent::Log(line)) => {
+                log.borrow_mut().push(line);
+                buffer.set_text(&log.borrow().join("\n"));
+            }
+            Ok(JobEvent::Finished(result)) => {
                 if let Some(window) = weak_window.upgrade() {
                     if let Err(error) = result {
                         show_error(&window, &error.to_string());
@@ -350,10 +403,10 @@ where
                         render_home(&app, &window);
                     }
                 }
-                glib::ControlFlow::Break
+                return glib::ControlFlow::Break;
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
         }
     });
 }
@@ -408,7 +461,7 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
             }
             .to_owned();
             let weak_window = weak_window.clone();
-            let task = move || installer()?.save_preferences(&runtime);
+            let task = move |logger| installer_with_output(logger)?.save_preferences(&runtime);
             if let Some(window) = weak_window.upgrade() {
                 if let Some(app) = window.application().and_downcast::<adw::Application>() {
                     run_job(&app, &window, "Saving settings", task);
