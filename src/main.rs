@@ -201,6 +201,11 @@ fn open_package(app: &adw::Application, path: &Path) {
 
     match installer().and_then(|manager| manager.probe(path)) {
         Ok((package, plan)) => {
+            if let Some(icon) = package.icon.as_ref().filter(|path| path.is_file()) {
+                let image = gtk::Image::from_file(icon);
+                image.set_pixel_size(48);
+                body.append(&image);
+            }
             let title = gtk::Label::new(Some(&package.name));
             title.add_css_class("title-2");
             title.set_xalign(0.0);

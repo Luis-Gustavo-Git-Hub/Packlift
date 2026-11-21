@@ -90,6 +90,7 @@ impl Installer {
             "rpm" => self.inspect_rpm(&mut package)?,
             "arch" => self.inspect_arch(&mut package)?,
             "msi" => self.inspect_msi(&mut package)?,
+            "appimage" => self.inspect_appimage(&mut package)?,
             "tar" => self.inspect_archive(&mut package)?,
             _ => {}
         }
@@ -379,6 +380,156 @@ impl Installer {
         Ok(())
     }
 
+    fn inspect_appimage(&self, package: &mut Package) -> Result<()> {
+        let Some(offset) = appimage_offset(&package.path)? else {
+            return Ok(());
+        };
+        let source = package.path.display().to_string();
+        let listing = self.runner.capture(
+            &[
+                "unsquashfs".into(),
+                "-o".into(),
+                offset.to_string(),
+                "-ls".into(),
+                source.clone(),
+                "*.desktop".into(),
+                ".DirIcon".into(),
+                "*.png".into(),
+                "*.svg".into(),
+                "*.xpm".into(),
+            ],
+            true,
+        )?;
+        let files = listing
+            .lines()
+            .filter_map(|line| line.strip_prefix("squashfs-root/"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut desktop_files = files
+            .iter()
+            .filter(|name| {
+                name.ends_with(".desktop")
+                    && (!name.contains('/') || name.starts_with("usr/share/applications/"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        desktop_files.sort_by_key(|name| (name.contains('/'), name.clone()));
+        let mut requested_icon = String::new();
+        for desktop in desktop_files.iter().take(8) {
+            let output = self.runner.capture(
+                &[
+                    "unsquashfs".into(),
+                    "-o".into(),
+                    offset.to_string(),
+                    "-no-wildcards".into(),
+                    "-cat".into(),
+                    source.clone(),
+                    desktop.clone(),
+                ],
+                true,
+            );
+            let Ok(output) = output else { continue };
+            let mut in_entry = false;
+            for line in output.lines() {
+                if line.starts_with('[') {
+                    in_entry = line == "[Desktop Entry]";
+                    continue;
+                }
+                if !in_entry {
+                    continue;
+                }
+                if let Some(value) = line.strip_prefix("Name=") {
+                    if !value.trim().is_empty() {
+                        package.name = value.trim().to_owned();
+                    }
+                } else if let Some(value) = line.strip_prefix("Icon=") {
+                    requested_icon = value.trim().to_owned();
+                } else if line == "Terminal=true" {
+                    package.terminal = true;
+                }
+            }
+            if !requested_icon.is_empty()
+                || package.name
+                    != package
+                        .path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Program")
+            {
+                break;
+            }
+        }
+        let icon_name = Path::new(&requested_icon)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let mut candidates = files
+            .into_iter()
+            .filter(|name| {
+                ["png", "svg", "xpm"].iter().any(|suffix| {
+                    Path::new(name)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case(suffix))
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|name| {
+            let basename = Path::new(name)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            (
+                basename != icon_name
+                    && Path::new(name)
+                        .file_stem()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        != icon_name,
+                name.contains('/'),
+                name.clone(),
+            )
+        });
+        candidates.push(".DirIcon".into());
+        for candidate in candidates.into_iter().take(16) {
+            let Ok(bytes) = self.runner.capture_bytes(
+                &[
+                    "unsquashfs".into(),
+                    "-o".into(),
+                    offset.to_string(),
+                    "-no-wildcards".into(),
+                    "-cat".into(),
+                    source.clone(),
+                    candidate.clone(),
+                ],
+                true,
+            ) else {
+                continue;
+            };
+            let suffix = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                "png"
+            } else if bytes.starts_with(b"/* XPM */") {
+                "xpm"
+            } else if bytes.starts_with(b"<svg")
+                || String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]).contains("<svg")
+            {
+                "svg"
+            } else {
+                continue;
+            };
+            let directory = self.data.join("package-icons");
+            fs::create_dir_all(&directory)?;
+            let icon = directory.join(format!("{}.{}", package.digest, suffix));
+            fs::write(&icon, bytes)?;
+            package.icon = Some(icon);
+            break;
+        }
+        Ok(())
+    }
+
     pub fn install_package(&self, package: &Package, runtime: &str) -> Result<Value> {
         self.runner
             .write("Checking package compatibility with this system");
@@ -633,7 +784,7 @@ impl Installer {
                     target.to_string_lossy().into_owned(),
                     "--appimage-extract-and-run".into(),
                 ],
-                false,
+                package.terminal,
             )
         } else if package.kind == "tar" {
             let payload = directory.join("payload");
@@ -675,18 +826,16 @@ impl Installer {
         let export = self.applications.join(format!(
             "io.github.flatapk.Installer.{identifier}.0.desktop"
         ));
-        export_desktop(
-            &export,
-            &package.name,
-            &argv,
-            "application-x-executable",
-            terminal,
-            "Utility",
-        )?;
+        let icon = package
+            .icon
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "application-x-executable".into());
+        export_desktop(&export, &package.name, &argv, &icon, terminal, "Utility")?;
         self.runner.write("Creating the application menu shortcut");
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"local","source":package.path,"digest":package.digest,"directory":directory,
-            "exports":[{"desktop":export,"name":package.name,"icon":"application-x-executable","argv":argv,"terminal":terminal}]});
+            "exports":[{"desktop":export,"name":package.name,"icon":icon,"argv":argv,"terminal":terminal}]});
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -1314,6 +1463,64 @@ impl Wine {
 
 fn short_hash(value: &str) -> Result<String> {
     Ok(sha256_bytes(value.as_bytes())?[..20].to_owned())
+}
+
+fn appimage_offset(path: &Path) -> Result<Option<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let mut header = [0_u8; 64];
+    if file.read_exact(&mut header).is_err()
+        || &header[8..11] != b"AI\x02"
+        || !matches!(header[4], 1 | 2)
+        || !matches!(header[5], 1 | 2)
+    {
+        return Ok(None);
+    }
+    let offset = if header[4] == 2 {
+        let base = if header[5] == 1 {
+            u64::from_le_bytes(header[40..48].try_into().unwrap())
+        } else {
+            u64::from_be_bytes(header[40..48].try_into().unwrap())
+        };
+        let entry = if header[5] == 1 {
+            u16::from_le_bytes(header[58..60].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[58..60].try_into().unwrap())
+        };
+        let count = if header[5] == 1 {
+            u16::from_le_bytes(header[60..62].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[60..62].try_into().unwrap())
+        };
+        base.saturating_add(u64::from(entry) * u64::from(count))
+    } else {
+        let base = if header[5] == 1 {
+            u32::from_le_bytes(header[32..36].try_into().unwrap())
+        } else {
+            u32::from_be_bytes(header[32..36].try_into().unwrap())
+        };
+        let entry = if header[5] == 1 {
+            u16::from_le_bytes(header[46..48].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[46..48].try_into().unwrap())
+        };
+        let count = if header[5] == 1 {
+            u16::from_le_bytes(header[48..50].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[48..50].try_into().unwrap())
+        };
+        u64::from(base).saturating_add(u64::from(entry) * u64::from(count))
+    };
+    if offset >= file.metadata()?.len() {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut magic = [0_u8; 4];
+    if file.read_exact(&mut magic).is_ok() && &magic == b"hsqs" {
+        Ok(Some(offset))
+    } else {
+        Ok(None)
+    }
 }
 
 fn valid_package_identifier(value: &str) -> bool {

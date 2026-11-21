@@ -39,6 +39,8 @@ pub struct Package {
     pub signature: String,
     pub terminal: bool,
     pub digest: String,
+    #[serde(skip)]
+    pub icon: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
