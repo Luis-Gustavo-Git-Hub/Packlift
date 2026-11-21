@@ -1,7 +1,0 @@
-#!/usr/bin/python3 -I
-import sys
-
-sys.path.insert(0, "@APP_DIR@")
-from flatapk.ui import main
-
-raise SystemExit(main())
