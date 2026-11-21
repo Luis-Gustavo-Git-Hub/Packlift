@@ -925,6 +925,14 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
     }
     content.append(&gtk::Label::new(Some("Default Windows runtime")));
     content.append(&choices);
+    let logs = gtk::Button::with_label("View Packlift logs");
+    let weak_window_for_logs = window.downgrade();
+    logs.connect_clicked(move |_| {
+        if let Some(parent) = weak_window_for_logs.upgrade() {
+            show_app_logs(&parent);
+        }
+    });
+    content.append(&logs);
     dialog.content_area().append(&content);
     let choices = choices.clone();
     let weak_window = window.downgrade();
@@ -951,4 +959,60 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
         }
     });
     dialog.present();
+}
+
+fn show_app_logs(parent: &adw::ApplicationWindow) {
+    let window = gtk::Window::builder()
+        .title("Packlift logs")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(760)
+        .default_height(520)
+        .build();
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    body.set_margin_top(12);
+    body.set_margin_bottom(12);
+    body.set_margin_start(12);
+    body.set_margin_end(12);
+    let log_path = packlift::system::data_home()
+        .join("flatapk")
+        .join("flatapk.log");
+    let log = std::rc::Rc::new(gtk::TextView::new());
+    log.set_editable(false);
+    log.set_cursor_visible(false);
+    log.set_monospace(true);
+    log.set_wrap_mode(gtk::WrapMode::WordChar);
+    log.buffer().set_text(
+        &std::fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| format!("No Packlift log is available yet. {error}")),
+    );
+    let scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .child(&*log)
+        .build();
+    body.append(&scroll);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let copy = gtk::Button::with_label("Copy all logs");
+    let log_path_copy = log_path.clone();
+    copy.connect_clicked(move |button| {
+        if let Ok(contents) = std::fs::read_to_string(&log_path_copy) {
+            if let Some(display) = gtk::gdk::Display::default() {
+                display.clipboard().set_text(&contents);
+                button.set_label("Logs copied");
+            }
+        }
+    });
+    actions.append(&copy);
+    let close = gtk::Button::with_label("Close");
+    let weak_window = window.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            window.close();
+        }
+    });
+    actions.append(&close);
+    body.append(&actions);
+    window.set_child(Some(&body));
+    window.present();
 }
