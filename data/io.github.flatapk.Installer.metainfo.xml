@@ -16,7 +16,14 @@
     <p xml:lang="pt-BR">O Packlift pode executar comandos no host para usar o gerenciador de pacotes, o Toolbox e o Wine. Programas instalados em Toolbox ou Wine podem acessar sua pasta pessoal.</p>
   </description>
   <launchable type="desktop-id">io.github.flatapk.Installer.desktop</launchable>
-  <url type="homepage">https://github.com/Luis-Gustavo-Git-Hub/flatapk</url>
-  <url type="bugtracker">https://github.com/Luis-Gustavo-Git-Hub/flatapk/issues</url>
+  <url type="homepage">https://github.com/Luis-Gustavo-Git-Hub/Packlift</url>
+  <url type="bugtracker">https://github.com/Luis-Gustavo-Git-Hub/Packlift/issues</url>
+  <releases>
+    <release version="0.1.0" date="2026-11-21" type="stable">
+      <description>
+        <p>Install supported Linux packages, manage Windows programs and games, and run compatible AppImages and TAR archives in the Flatpak sandbox.</p>
+      </description>
+    </release>
+  </releases>
   <content_rating type="oars-1.1"/>
 </component>

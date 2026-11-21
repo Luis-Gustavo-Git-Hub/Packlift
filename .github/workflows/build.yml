@@ -30,6 +30,8 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - name: Install Flatpak build tools
         run: |
           sudo apt-get update
@@ -95,3 +97,26 @@ jobs:
           C
           x86_64-w64-mingw32-gcc "$fixture/game.c" -o "$fixture/Game files/bin/Game.exe"
           dbus-run-session -- cargo run --locked --no-default-features --example wine_game_smoke -- "$fixture"
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [test, flatpak, windows-games]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: Packlift-x86_64
+      - name: Publish the tested Flatpak
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          sha256sum Packlift-x86_64.flatpak > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" Packlift-x86_64.flatpak SHA256SUMS \
+            --verify-tag --title "Packlift $version" --generate-notes --latest

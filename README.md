@@ -15,7 +15,7 @@ Packlift is a GTK4 and libadwaita app for installing Linux packages and adding W
 
 ## Install Packlift
 
-The [GitHub Actions builds](https://github.com/Luis-Gustavo-Git-Hub/packlift/actions) produce `Packlift-x86_64.flatpak`. Download the ZIP artifact from a completed build, extract it, and run:
+Download `Packlift-x86_64.flatpak` and its SHA-256 checksum from [GitHub Releases](https://github.com/Luis-Gustavo-Git-Hub/Packlift/releases/latest). For the first stable release, see the [v0.1.0 Flatpak manifest](https://github.com/Luis-Gustavo-Git-Hub/Packlift/blob/v0.1.0/io.github.flatapk.Installer.json). The release workflow builds the bundle from the exact tagged commit. Install it with:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
