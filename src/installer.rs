@@ -1473,6 +1473,9 @@ impl Wine {
                 format!("--command={tool}"),
                 "--filesystem=home".into(),
             ];
+            if let Some(cwd) = cwd {
+                command.push(format!("--cwd={}", cwd.display()));
+            }
             command.extend(
                 values
                     .iter()
