@@ -139,6 +139,26 @@ impl Runner {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    pub fn capture_bytes(&self, args: &[String], local: bool) -> Result<Vec<u8>> {
+        let command = self.command(args, local, true);
+        let shell = command
+            .iter()
+            .map(|value| shell_quote(value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.write(&format!("{} $ {shell}", chrono_timestamp()));
+        let output = Command::new(&command[0]).args(&command[1..]).output()?;
+        if !output.status.success() {
+            return Err(PackliftError::Message(format!("{} failed.", command[0])));
+        }
+        if output.stdout.len() > 2 * 1024 * 1024 {
+            return Err(PackliftError::Message(
+                "The application icon is too large to export safely.".into(),
+            ));
+        }
+        Ok(output.stdout)
+    }
+
     pub fn available(&self, executable: &str) -> bool {
         self.run(
             &[

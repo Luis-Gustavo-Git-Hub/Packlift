@@ -489,8 +489,37 @@ impl Installer {
         let identifier = short_hash(&format!("{}:{}", package.kind, package.digest))?;
         let directory = self.data.join("installed").join(&identifier);
         fs::create_dir_all(&directory)?;
-        let launchers =
+        let mut launchers =
             system_launchers(&self.runner, package, &plan.manager, &target, &container)?;
+        if !container.is_empty() {
+            for (index, (_, _, icon, _)) in launchers.iter_mut().enumerate() {
+                let source_icon = Path::new(icon);
+                if !source_icon.is_absolute()
+                    || !source_icon.extension().is_some_and(|extension| {
+                        ["png", "svg", "xpm", "ico"]
+                            .iter()
+                            .any(|supported| extension.eq_ignore_ascii_case(supported))
+                    })
+                {
+                    continue;
+                }
+                let bytes = package_capture_bytes(
+                    &self.runner,
+                    &container,
+                    &["cat".into(), "--".into(), icon.clone()],
+                )?;
+                if bytes.len() > 2 * 1024 * 1024 {
+                    continue;
+                }
+                let extension = source_icon
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("png");
+                let exported = directory.join(format!("icon-{index}.{extension}"));
+                fs::write(&exported, bytes)?;
+                *icon = exported.to_string_lossy().into_owned();
+            }
+        }
         self.runner.write("Creating application menu shortcuts");
         let exports = self.write_exports(&identifier, &launchers, "Utility")?;
         let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
@@ -1310,6 +1339,12 @@ fn package_capture(runner: &Runner, container: &str, args: &[String]) -> Result<
     let mut command = package_prefix(container);
     command.extend(args.iter().cloned());
     runner.capture(&command, false)
+}
+
+fn package_capture_bytes(runner: &Runner, container: &str, args: &[String]) -> Result<Vec<u8>> {
+    let mut command = package_prefix(container);
+    command.extend(args.iter().cloned());
+    runner.capture_bytes(&command, false)
 }
 
 fn elevated(runner: &Runner, container: &str, args: &[String]) -> Result<()> {
