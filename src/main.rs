@@ -550,8 +550,11 @@ fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &s
 where
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
+    window.set_default_size(420, 300);
+    window.set_resizable(true);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    body.set_margin_top(30);
+    body.set_margin_top(20);
+    body.set_margin_bottom(18);
     body.set_margin_start(24);
     body.set_margin_end(24);
     let heading = gtk::Label::new(Some(title));
