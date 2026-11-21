@@ -42,12 +42,12 @@ class Installer:
         if runtime not in {"wine", "proton"}:
             raise FlatapkError("Choose Wine or Proton.")
         proton_path = str(Path(proton_path).expanduser()) if proton_path else ""
-        if runtime == "proton" and (not proton_path or not Path(proton_path).is_file()
-                                     or not os.access(proton_path, os.X_OK)):
-            raise FlatapkError("Choose the Proton executable installed on the host.")
+        if runtime == "proton" and proton_path and (not Path(proton_path).is_file()
+                                                     or not os.access(proton_path, os.X_OK)):
+            raise FlatapkError("The selected Proton executable is not available.")
         self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.preferences_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"runtime": runtime, "proton_path": proton_path}),
+        temporary.write_text(json.dumps({"runtime": runtime, "proton_path": ""}),
                              encoding="utf-8")
         temporary.chmod(0o600)
         temporary.replace(self.preferences_path)
@@ -175,7 +175,9 @@ class Installer:
             step("environment")
             wine = Wine(self.runner, self.windows_runtime(runtime, host[1]), host[1])
             if (not (wine.prefix / "system.reg").is_file()
-                    or (wine.proton and not (wine.root / "compatdata" / "pfx").is_symlink())):
+                    or (wine.proton and not wine.umu
+                        and not (wine.root / "compatdata" / "pfx").is_symlink())
+                    or wine.umu):
                 wine.prepare()
             if fingerprint(source) != package.fingerprint:
                 raise FlatapkError("The source file changed after confirmation. Open it again.")

@@ -184,6 +184,15 @@ msgstr "Selecione o executável do Proton instalado no sistema."
 msgid "Windows programs can access your home folder. If needed, Packlift downloads Wine from Flathub for your account."
 msgstr "Programas do Windows podem acessar sua pasta pessoal. Se necessário, o Packlift baixa o Wine do Flathub para sua conta."
 
+msgid "Windows programs can access your home folder. Packlift can install Wine from Flathub or download UMU-Proton automatically."
+msgstr "Programas do Windows podem acessar sua pasta pessoal. O Packlift pode instalar o Wine pelo Flathub ou baixar o UMU-Proton automaticamente."
+
+msgid "Proton (automatic install)"
+msgstr "Proton (instalação automática)"
+
+msgid "Packlift downloads UMU-Proton automatically the first time you use it."
+msgstr "O Packlift baixa o UMU-Proton automaticamente no primeiro uso."
+
 msgid "Adding {} to the menu"
 msgstr "Adicionando {} ao menu"
 
@@ -201,6 +210,15 @@ msgstr "Ambiente padrão para programas do Windows"
 
 msgid "How do you want to use this .exe?"
 msgstr "Como deseja usar este arquivo .exe?"
+
+msgid "Install a program or game from its installer, or add an already installed game to Packlift and your app menu."
+msgstr "Instale um programa ou jogo usando seu instalador, ou adicione um jogo já instalado ao Packlift e ao menu de aplicativos."
+
+msgid "Install program or game"
+msgstr "Instalar programa ou jogo"
+
+msgid "Add installed game to Packlift and menu"
+msgstr "Adicionar jogo instalado ao Packlift e ao menu"
 
 msgid "Choose Wine or Proton for this program and edit its launch settings."
 msgstr "Escolha Wine ou Proton para este programa e ajuste as opções de inicialização."

@@ -231,40 +231,18 @@ class Window(Adw.ApplicationWindow):
         self.run_job(lambda: self.installer.probe(path), self.confirm)
         self.present()
 
-    def runtime_controls(self, runtime="wine", proton_path=""):
+    def runtime_controls(self, runtime="wine"):
         proton = Path(runtime).name == "proton" or runtime == "proton"
         runtime_box = vertical(6)
-        choices = Gtk.DropDown.new_from_strings([_("Wine"), _("Proton")])
+        choices = Gtk.DropDown.new_from_strings([_("Wine"), _("Proton (automatic install)")])
         choices.set_selected(1 if proton else 0)
-        path_box = Gtk.Box(spacing=6)
-        path = Gtk.Entry(placeholder_text=_("Path to the Proton executable"), hexpand=True)
-        path.set_text(proton_path or (runtime if proton and Path(runtime).is_absolute() else ""))
-        path.set_sensitive(proton)
-        choices.connect("notify::selected", lambda dropdown, *_: path.set_sensitive(
-            dropdown.get_selected() == 1))
-        choose = button(_("Choose"), lambda: self.select_proton(path), "flat")
-        path_box.append(path)
-        path_box.append(choose)
         runtime_box.append(choices)
-        runtime_box.append(path_box)
-        return runtime_box, choices, path
-
-    def select_proton(self, entry):
-        dialog = Gtk.FileDialog(title=_("Choose the Proton executable"))
-
-        def opened(dialog, result):
-            try:
-                file = dialog.open_finish(result)
-            except GLib.Error:
-                return
-            if file and file.get_path():
-                entry.set_text(file.get_path())
-
-        dialog.open(self, None, opened)
+        runtime_box.append(label(_("Packlift downloads UMU-Proton automatically the first time you use it."), "dim-label"))
+        return runtime_box, choices
 
     @staticmethod
-    def selected_runtime(choices, path):
-        return "wine" if choices.get_selected() == 0 else path.get_text().strip() or "proton"
+    def selected_runtime(choices):
+        return "wine" if choices.get_selected() == 0 else "proton"
 
     def confirm(self, result):
         package, plan = result
@@ -306,13 +284,12 @@ class Window(Adw.ApplicationWindow):
             self.body.append(label(_("The program can access your home folder."), "dim-label"))
         if plan.method == "wine":
             self.body.append(label(_(
-                "Windows programs can access your home folder. If needed, Packlift downloads Wine from Flathub for your account."),
+                "Windows programs can access your home folder. Packlift can install Wine from Flathub or download UMU-Proton automatically."),
                 "dim-label"))
         if plan.multilib:
             self.body.append(label(_("Extra 32-bit components may be downloaded.")))
         preferences = self.installer.preferences()
-        runtime_box, runtime_choice, proton_path = self.runtime_controls(
-            preferences["runtime"], preferences["proton_path"])
+        runtime_box, runtime_choice = self.runtime_controls(preferences["runtime"])
         options = Gtk.Expander(label=_("Advanced options"))
         advanced = vertical(8)
         if package.requires:
@@ -324,21 +301,21 @@ class Window(Adw.ApplicationWindow):
             options.set_child(advanced)
             self.body.append(options)
         def install_package():
-            selected_runtime = self.selected_runtime(runtime_choice, proton_path)
+            selected_runtime = self.selected_runtime(runtime_choice)
             self.begin(_("Installing {}").format(package.name), lambda: self.installer.install(
                 package, plan, self.step, self.select_executable, selected_runtime))
 
         def add_game():
-            selected_runtime = self.selected_runtime(runtime_choice, proton_path)
+            selected_runtime = self.selected_runtime(runtime_choice)
             self.begin(_("Adding {} to the menu").format(package.name), lambda: self.installer.add_game(
                 package, self.step, selected_runtime))
 
         def choose_windows_action():
             dialog = Adw.AlertDialog(heading=_("How do you want to use this .exe?"),
-                                     body=_("Choose Add to menu for a game that is already extracted. Choose Install Windows program to run a setup file."))
+                                     body=_("Install a program or game from its installer, or add an already installed game to Packlift and your app menu."))
             dialog.add_response("cancel", _("_Cancel"))
-            dialog.add_response("install", _("Install Windows program"))
-            dialog.add_response("game", _("Add game to menu"))
+            dialog.add_response("install", _("Install program or game"))
+            dialog.add_response("game", _("Add installed game to Packlift and menu"))
             dialog.set_default_response("game")
             dialog.set_close_response("cancel")
             dialog.set_response_appearance("game", Adw.ResponseAppearance.SUGGESTED)
@@ -347,8 +324,6 @@ class Window(Adw.ApplicationWindow):
             dialog.present(self)
 
         actions = [button(_("_Cancel"), self.close, "flat")]
-        if package.kind == "exe":
-            actions.append(button(_("_Add game to menu"), add_game))
         install_button = button(_("_Install"), choose_windows_action if package.kind == "exe"
                                else install_package, "suggested-action")
         self.set_actions(*actions, install_button)
@@ -464,8 +439,7 @@ class Window(Adw.ApplicationWindow):
         dialog = Adw.AlertDialog(heading=_("Wine launch settings"),
                                  body=_("Choose Wine or Proton for this program and edit its launch settings."))
         content = vertical(10)
-        runtime_box, runtime_choice, proton_path = self.runtime_controls(
-            app["runtime"], self.installer.preferences()["proton_path"])
+        runtime_box, runtime_choice = self.runtime_controls(app["runtime"])
         content.append(label(_("Windows compatibility runtime"), "heading"))
         content.append(runtime_box)
         content.append(label(_("Enter one NAME=value per line, including WINEDLLOVERRIDES if needed."), "heading"))
@@ -479,7 +453,7 @@ class Window(Adw.ApplicationWindow):
         dialog.set_close_response("cancel")
         def save(*_):
             text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
-            runtime = self.selected_runtime(runtime_choice, proton_path)
+            runtime = self.selected_runtime(runtime_choice)
             self.run_job(lambda: self.installer.configure(app, text, runtime), lambda _: self.manage())
 
         dialog.connect("response::save", save)
@@ -490,8 +464,7 @@ class Window(Adw.ApplicationWindow):
         dialog = Adw.AlertDialog(heading=_("Packlift settings"),
                                  body=_("Choose the default runtime for new Windows games and programs."))
         content = vertical(10)
-        runtime_box, runtime_choice, proton_path = self.runtime_controls(
-            preferences["runtime"], preferences["proton_path"])
+        runtime_box, runtime_choice = self.runtime_controls(preferences["runtime"])
         content.append(label(_("Default Windows runtime"), "heading"))
         content.append(runtime_box)
         dialog.set_extra_child(content)
@@ -501,8 +474,7 @@ class Window(Adw.ApplicationWindow):
 
         def save(*_):
             runtime = "wine" if runtime_choice.get_selected() == 0 else "proton"
-            path = proton_path.get_text().strip()
-            self.run_job(lambda: self.installer.save_preferences(runtime, path),
+            self.run_job(lambda: self.installer.save_preferences(runtime, ""),
                          lambda _: self.manage())
 
         dialog.connect("response::save", save)

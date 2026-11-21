@@ -106,6 +106,20 @@
       ]
     },
     {
+      "name": "umu-launcher",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 umu/umu-run /app/bin/umu-run"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.4/umu-launcher-1.4.4-zipapp.tar",
+          "sha256": "eb590691841f7fad3fc3ad8fd5db4ccb87849fe7948e62b28ece7a4ee48cc851"
+        }
+      ]
+    },
+    {
       "name": "flatapk",
       "buildsystem": "simple",
       "build-commands": ["make install PREFIX=/app"],

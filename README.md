@@ -30,11 +30,11 @@ If an AppImage shortcut does not open a window, use **Open** in Packlift's insta
 
 ## Windows games and programs
 
-On x86-64, Packlift installs Wine WoW64 from Flathub for your account when a host Wine runtime is unavailable. The initial download requires an internet connection. Packlift keeps its shared prefix at `~/.local/share/flatapk/wine/prefix` with the default XDG data directory.
+On x86-64, Packlift installs Wine WoW64 from Flathub for your account when a host Wine runtime is unavailable. The first Wine or Proton setup requires an internet connection. Choose **Proton (automatic install)** and Packlift uses [UMU Launcher](https://github.com/Open-Wine-Components/umu-launcher) to download UMU-Proton and its Steam Linux Runtime automatically while preparing a game. Proton can run games outside Steam and does not require Steam to be installed. Packlift keeps its shared prefix at `~/.local/share/flatapk/wine/prefix` and UMU's Proton files under `~/.local/share/flatapk/umu` with the default XDG data directory.
 
-For a Windows `.exe`, choose **Install** to select between running a Windows setup program and adding an already-extracted game to the applications menu. The game shortcut launches the executable from its original folder, where its DLLs and other game files remain available. Packlift can use the Windows icon embedded in the executable. Removing a game shortcut leaves the game files in place.
+For a Windows `.exe`, choose **Install** to either install a program or game through its setup program, or add an already installed game to Packlift and the applications menu. The game shortcut launches the executable from its original folder, where its DLLs and other game files remain available. Packlift can use the Windows icon embedded in the executable. Removing a game shortcut leaves the game files in place.
 
-Choose Wine or Proton in the package's advanced options. Use the gear button in Packlift to set a default for new Windows programs, or open a program's settings to change its runtime and launch environment. To use Proton, select its executable on the host. Some Proton distributions require Steam and a compatible host runtime.
+Choose Wine or Proton in the package's advanced options. Use the gear button in Packlift to set a default for new Windows programs, or open a program's settings to change its runtime and launch environment. UMU-Proton is installed on first use and runs games outside Steam.
 
 Packlift checks for common Windows components and uses Winetricks when it finds a known dependency. Compressed installers and games may need manual configuration. Set per-program variables such as `WINEDLLOVERRIDES` from the program settings.
 
