@@ -45,7 +45,7 @@ impl Remote {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum CatalogIcon {
     Flathub(String),
     AppStream(PathBuf),
@@ -75,18 +75,43 @@ pub struct AppDetails {
     pub developer: String,
     pub license: String,
     pub description: String,
-    pub release: Option<Release>,
+    pub releases: Vec<Release>,
     pub screenshots: Vec<Screenshot>,
+    pub links: Vec<(&'static str, String)>,
+    pub category: Option<String>,
+    pub free_software: Option<bool>,
+    pub adaptive: Option<bool>,
+    pub age: Option<u64>,
 }
 
 pub struct Release {
     pub version: String,
     pub notes: String,
+    pub date: Option<String>,
+    pub timestamp: Option<i64>,
 }
 
 pub struct Screenshot {
     pub url: String,
+    pub large_url: String,
     pub caption: String,
+}
+
+impl Screenshot {
+    fn from_sizes(sizes: impl Iterator<Item = (u64, String)>, caption: String) -> Option<Self> {
+        let sizes: Vec<_> = sizes.collect();
+        let nearest = |width| {
+            sizes
+                .iter()
+                .min_by_key(|(candidate, _)| candidate.abs_diff(width))
+                .map(|(_, url)| url.clone())
+        };
+        Some(Self {
+            url: nearest(752)?,
+            large_url: nearest(1440)?,
+            caption,
+        })
+    }
 }
 
 pub fn remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>> {
@@ -356,34 +381,14 @@ fn configured_remotes(
 
 pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Result<CatalogPage> {
     if remote.flathub {
-        let response = fetch(
-            runner,
-            &format!("{FLATHUB_API}/search"),
-            Some(&json!({"query":query,"page":page,"hits_per_page":PAGE_SIZE}).to_string()),
-        )?;
-        let response: Value = serde_json::from_slice(&response)?;
-        let hits = response["hits"].as_array().ok_or_else(|| {
-            PackliftError::Message("Flathub returned an invalid catalog response.".into())
-        })?;
-        let apps = hits
+        let response = flathub_search(runner, query, page)?;
+        let apps = response["hits"]
+            .as_array()
+            .ok_or_else(|| {
+                PackliftError::Message("Flathub returned an invalid catalog response.".into())
+            })?
             .iter()
-            .filter_map(|hit| {
-                let id = hit["app_id"].as_str().filter(|id| valid_app_id(id))?;
-                let name = hit["name"]
-                    .as_str()
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(id);
-                Some(CatalogApp {
-                    id: id.into(),
-                    name: name.into(),
-                    summary: hit["summary"].as_str().unwrap_or_default().into(),
-                    reference: id.into(),
-                    icon: hit["icon"]
-                        .as_str()
-                        .filter(|url| flathub_media(url))
-                        .map(|url| CatalogIcon::Flathub(url.into())),
-                })
-            })
+            .filter_map(flathub_catalog_app)
             .collect();
         return Ok(CatalogPage {
             apps,
@@ -412,6 +417,138 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
     }
     Ok(results)
 }
+
+fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
+    let body = json!({"query": query, "page": page, "hits_per_page": PAGE_SIZE}).to_string();
+    Ok(serde_json::from_slice(&fetch(
+        runner,
+        &format!("{FLATHUB_API}/search"),
+        Some(&body),
+    )?)?)
+}
+
+fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
+    let id = hit["app_id"].as_str().filter(|id| valid_app_id(id))?;
+    let name = hit["name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    Some(CatalogApp {
+        id: id.into(),
+        name: name.into(),
+        summary: hit["summary"].as_str().unwrap_or_default().into(),
+        reference: id.into(),
+        icon: hit["icon"]
+            .as_str()
+            .filter(|url| flathub_media(url))
+            .map(|url| CatalogIcon::Flathub(url.into())),
+    })
+}
+
+pub fn similar_apps(runner: &Runner, id: &str, category: &str) -> Result<Vec<CatalogApp>> {
+    let response = flathub_search(runner, category, 1)?;
+    let mut seen = HashSet::new();
+    Ok(response["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|hit| {
+            hit["main_categories"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(category))
+                || hit["sub_categories"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|name| name.as_str() == Some(category))
+        })
+        .filter_map(flathub_catalog_app)
+        .filter(|app| app.id != id && seen.insert(app.id.clone()))
+        .take(6)
+        .collect())
+}
+
+#[derive(Default)]
+pub struct FlathubFacts {
+    pub download_size: Option<u64>,
+    pub installs_last_month: Option<u64>,
+    pub permissions: Option<Vec<(&'static str, String)>>,
+}
+
+pub fn flathub_facts(runner: &Runner, app: &CatalogApp) -> FlathubFacts {
+    if !valid_app_id(&app.id) {
+        return FlathubFacts::default();
+    }
+    let branch = app.reference.rsplit_once('/').map(|(_, branch)| branch);
+    let summary_url = format!("{FLATHUB_API}/summary/{}", app.id);
+    let summary_url = match branch.filter(|branch| valid_path_component(branch)) {
+        Some(branch) => format!("{summary_url}?branch={branch}"),
+        None => summary_url,
+    };
+    let request = |url: &str| -> Option<Value> {
+        serde_json::from_slice(&fetch(runner, url, None).ok()?).ok()
+    };
+    let (summary, stats) = thread::scope(|tasks| {
+        let monthly = format!("{FLATHUB_API}/stats/{}", app.id);
+        let stats = tasks.spawn(move || request(&monthly));
+        (request(&summary_url), stats.join().ok().flatten())
+    });
+    let permissions = summary.as_ref().and_then(|summary| {
+        let permissions = summary["metadata"]["permissions"].as_object()?;
+        Some(
+            [
+                ("Shared resources", "shared"),
+                ("Files", "filesystems"),
+                ("Devices", "devices"),
+                ("Sockets", "sockets"),
+                ("Session bus", "session-bus"),
+                ("System bus", "system-bus"),
+            ]
+            .into_iter()
+            .filter_map(|(label, key)| {
+                let permission = permissions.get(key)?;
+                let values = if let Some(values) = permission.as_array() {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                } else if let Some(values) = permission.as_object() {
+                    values
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                } else {
+                    String::new()
+                };
+                (!values.is_empty()).then_some((label, values))
+            })
+            .collect(),
+        )
+    });
+    FlathubFacts {
+        download_size: summary
+            .as_ref()
+            .and_then(|summary| summary["download_size"].as_u64()),
+        installs_last_month: stats
+            .as_ref()
+            .and_then(|stats| stats["installs_last_month"].as_u64()),
+        permissions,
+    }
+}
+
+const APP_LINKS: [(&str, &str); 9] = [
+    ("homepage", "Project website"),
+    ("vcs_browser", "Source code"),
+    ("bugtracker", "Issue tracker"),
+    ("contribute", "Contribute"),
+    ("help", "Help"),
+    ("faq", "FAQ"),
+    ("translate", "Translate"),
+    ("donation", "Donate"),
+    ("contact", "Contact"),
+];
 
 fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogPage> {
     let query = query.to_lowercase();
@@ -471,37 +608,57 @@ pub fn app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
         .flatten()
         .filter_map(|shot| {
             let sizes = shot["sizes"].as_array()?;
-            let url = sizes
-                .iter()
-                .filter_map(|size| {
-                    let url = size["src"].as_str().filter(|url| flathub_media(url))?;
-                    let width = size["width"]
-                        .as_u64()
-                        .or_else(|| size["width"].as_str()?.parse().ok())
-                        .unwrap_or(0);
-                    Some((width.abs_diff(752), url))
-                })
-                .min_by_key(|(distance, _)| *distance)?
-                .1;
-            Some(Screenshot {
-                url: url.into(),
-                caption: shot["caption"].as_str().unwrap_or("").into(),
-            })
+            let sizes = sizes.iter().filter_map(|size| {
+                let url = size["src"].as_str().filter(|url| flathub_media(url))?;
+                let width = size["width"]
+                    .as_u64()
+                    .or_else(|| size["width"].as_str()?.parse().ok())
+                    .unwrap_or(0);
+                Some((width, url.to_owned()))
+            });
+            Screenshot::from_sizes(sizes, shot["caption"].as_str().unwrap_or("").into())
         })
         .take(8)
         .collect();
-    let release = metadata["releases"]
+    let releases = metadata["releases"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|release| release["type"].as_str() != Some("development"))
-        .find_map(|release| {
+        .filter_map(|release| {
             let version = release["version"].as_str()?.trim();
             (!version.is_empty()).then(|| Release {
                 version: version.into(),
                 notes: appstream_fragment(release["description"].as_str().unwrap_or_default()),
+                date: None,
+                timestamp: release["timestamp"]
+                    .as_i64()
+                    .or_else(|| release["timestamp"].as_str()?.parse().ok()),
             })
-        });
+        })
+        .take(20)
+        .collect();
+    let mut links = vec![(
+        "Flathub page",
+        format!("https://flathub.org/apps/{}", app.id),
+    )];
+    links.extend(APP_LINKS.into_iter().filter_map(|(key, label)| {
+        metadata["urls"][key]
+            .as_str()
+            .filter(|url| https_url(url))
+            .map(|url| (label, url.to_owned()))
+    }));
+    if let Some(url) = metadata["metadata"]["flathub::manifest"]
+        .as_str()
+        .filter(|url| https_url(url))
+    {
+        links.push(("Manifest", url.to_owned()));
+    } else if metadata["metadata"]["flathub::manifest"].is_null() {
+        links.push((
+            "Build repository",
+            format!("https://github.com/flathub/{}", app.id),
+        ));
+    }
     Ok(AppDetails {
         developer: metadata["developer_name"]
             .as_str()
@@ -514,8 +671,22 @@ pub fn app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
             .trim()
             .into(),
         description: appstream_fragment(metadata["description"].as_str().unwrap_or_default()),
-        release,
+        releases,
         screenshots,
+        links,
+        category: metadata["categories"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            }),
+        free_software: metadata["is_free_license"].as_bool(),
+        adaptive: metadata["isMobileFriendly"].as_bool(),
+        age: metadata["content_rating_details"]["en_US"]["minimumAge"].as_u64(),
     })
 }
 
@@ -588,7 +759,9 @@ pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Opti
         return None;
     }
     match icon {
-        CatalogIcon::Flathub(url) if flathub_media(url) => fetch(runner, url, None).ok(),
+        CatalogIcon::Flathub(url) if flathub_media(url) => {
+            fetch_with_timeout(runner, url, None, 8).ok()
+        }
         CatalogIcon::Flathub(_) => None,
         CatalogIcon::AppStream(directory) => ["64x64", "128x128"].iter().find_map(|size| {
             let path = directory.join(size).join(format!("{id}.png"));
@@ -704,7 +877,7 @@ fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
         .descendants()
         .filter(|node| node.has_tag_name("screenshot"))
         .filter_map(|shot| {
-            let url = shot
+            let sizes = shot
                 .children()
                 .filter(|node| node.has_tag_name("image"))
                 .filter_map(|image| {
@@ -726,19 +899,17 @@ fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
                     };
                     let width = image
                         .attribute("width")
-                        .and_then(|width| width.parse::<u32>().ok())
+                        .and_then(|width| width.parse::<u64>().ok())
                         .unwrap_or(0);
-                    Some((width.abs_diff(752), url))
-                })
-                .min_by_key(|(distance, _)| *distance)?
-                .1;
+                    Some((width, url))
+                });
             let caption = shot
                 .children()
                 .find(|node| node.has_tag_name("caption"))
                 .and_then(|node| node.text())
                 .unwrap_or_default()
                 .into();
-            Some(Screenshot { url, caption })
+            Screenshot::from_sizes(sizes, caption)
         })
         .take(8)
         .collect();
@@ -749,23 +920,39 @@ fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
                 .and_then(|child| child.text())
         })
         .or_else(|| field("developer_name").and_then(|node| node.text()));
-    let release = field("releases")
+    let releases = field("releases")
         .into_iter()
         .flat_map(|node| node.children())
         .filter(|node| {
             node.has_tag_name("release") && node.attribute("type") != Some("development")
         })
-        .find_map(|node| {
+        .filter_map(|node| {
             let version = node.attribute("version")?.trim();
             (!version.is_empty()).then(|| Release {
                 version: version.into(),
+                date: node.attribute("date").map(str::to_owned),
+                timestamp: node
+                    .attribute("timestamp")
+                    .and_then(|value| value.parse().ok()),
                 notes: node
                     .children()
                     .find(|child| child.has_tag_name("description"))
                     .map(appstream_text)
                     .unwrap_or_default(),
             })
-        });
+        })
+        .take(20)
+        .collect();
+    let links = component
+        .children()
+        .filter(|node| node.has_tag_name("url"))
+        .filter_map(|node| {
+            let key = node.attribute("type")?;
+            let (_, label) = APP_LINKS.iter().find(|(candidate, _)| *candidate == key)?;
+            let url = node.text()?.trim();
+            https_url(url).then(|| (*label, url.to_owned()))
+        })
+        .collect();
     Ok(AppDetails {
         developer: developer.unwrap_or_default().trim().into(),
         license: field("project_license")
@@ -774,8 +961,10 @@ fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
             .trim()
             .into(),
         description: field("description").map(appstream_text).unwrap_or_default(),
-        release,
+        releases,
         screenshots,
+        links,
+        ..AppDetails::default()
     })
 }
 
@@ -851,6 +1040,15 @@ pub fn install(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<()>
 }
 
 fn fetch(runner: &Runner, url: &str, post: Option<&str>) -> Result<Vec<u8>> {
+    fetch_with_timeout(runner, url, post, 18)
+}
+
+fn fetch_with_timeout(
+    runner: &Runner,
+    url: &str,
+    post: Option<&str>,
+    seconds: u32,
+) -> Result<Vec<u8>> {
     if !runner.available("curl") {
         if !runner.available("wget") {
             return Err(PackliftError::Message(
@@ -888,7 +1086,7 @@ fn fetch(runner: &Runner, url: &str, post: Option<&str>) -> Result<Vec<u8>> {
         "--connect-timeout".into(),
         "6".into(),
         "--max-time".into(),
-        "18".into(),
+        seconds.to_string(),
         "--max-filesize".into(),
         "2097152".into(),
     ];
@@ -1014,12 +1212,13 @@ mod tests {
         assert_eq!(details.developer, "Example team");
         assert_eq!(details.license, "MIT");
         assert_eq!(details.description, "A test & example.\n\n• First feature");
-        let release = details.release.unwrap();
+        let release = &details.releases[0];
         assert_eq!(release.version, "1.0");
         assert_eq!(release.notes, "First release");
         let shots = details.screenshots;
         assert_eq!(shots.len(), 1);
         assert_eq!(shots[0].url, "https://example.org/media/stable.png");
+        assert_eq!(shots[0].large_url, "https://example.net/big.png");
         assert_eq!(shots[0].caption, "App window");
     }
 }

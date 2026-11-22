@@ -256,3 +256,38 @@ About this app|Sobre este app|Acerca de esta aplicación|О приложении
 License|Licença|Licencia|Лицензия|许可证
 {name} was installed.|{name} foi instalado.|Se instaló {name}.|Приложение {name} установлено.|已安装 {name}。
 The selected Flatpak installation was no longer found.|A instalação Flatpak selecionada não foi encontrada.|No se encontró la instalación de Flatpak seleccionada.|Выбранная установка Flatpak не найдена.|找不到所选的 Flatpak 安装。
+Close preview|Fechar visualização|Cerrar vista previa|Закрыть просмотр|关闭预览
+Enlarge screenshot|Ampliar captura|Ampliar captura|Увеличить снимок|放大截图
+Permissions|Permissões|Permisos|Разрешения|权限
+Download size|Tamanho do download|Tamaño de descarga|Размер загрузки|下载大小
+Free software|Software livre|Software libre|Свободное ПО|自由软件
+Proprietary software|Software proprietário|Software propietario|Проприетарное ПО|专有软件
+Device support|Dispositivos|Dispositivos|Поддержка устройств|设备支持
+Adaptive|Adaptável|Adaptable|Адаптивное|自适应
+Desktop|Computador|Escritorio|Компьютер|桌面
+Age rating|Classificação indicativa|Clasificación por edades|Возрастной рейтинг|年龄分级
+Installs last month|Instalações no último mês|Instalaciones del último mes|Установок за месяц|上月安装量
+No permissions listed by the repository|O repositório não lista permissões|El repositorio no enumera permisos|Репозиторий не указал разрешения|软件仓库未列出权限
+Shared resources|Recursos compartilhados|Recursos compartidos|Общие ресурсы|共享资源
+Files|Arquivos|Archivos|Файлы|文件
+Devices|Dispositivos|Dispositivos|Устройства|设备
+Sockets|Sockets|Sockets|Сокеты|套接字
+Sources|Fontes|Fuentes|Источники|来源
+Links|Links|Enlaces|Ссылки|链接
+Similar apps|Apps similares|Aplicaciones similares|Похожие приложения|类似应用
+Version history|Histórico de versões|Historial de versiones|История версий|版本历史
+Flathub page|Página no Flathub|Página de Flathub|Страница на Flathub|Flathub 页面
+Project website|Site do projeto|Sitio del proyecto|Сайт проекта|项目网站
+Source code|Código-fonte|Código fuente|Исходный код|源代码
+Issue tracker|Relatar problemas|Seguimiento de errores|Трекер задач|问题跟踪
+Contribute|Contribuir|Contribuir|Участвовать|参与贡献
+Help|Ajuda|Ayuda|Справка|帮助
+FAQ|Perguntas frequentes|Preguntas frecuentes|Частые вопросы|常见问题
+Translate|Traduzir|Traducir|Перевести|翻译
+Donate|Doar|Donar|Пожертвовать|捐赠
+Contact|Contato|Contacto|Контакты|联系
+Manifest|Manifesto|Manifiesto|Манифест|清单
+Build repository|Repositório de build|Repositorio de compilación|Репозиторий сборки|构建仓库
+Copy link|Copiar link|Copiar enlace|Копировать ссылку|复制链接
+Open link|Abrir link|Abrir enlace|Открыть ссылку|打开链接
+Link copied|Link copiado|Enlace copiado|Ссылка скопирована|链接已复制
