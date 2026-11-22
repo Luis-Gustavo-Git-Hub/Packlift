@@ -1,4 +1,10 @@
-use std::{collections::HashSet, io::Read, path::PathBuf, thread};
+use std::{
+    collections::{hash_map::RandomState, BTreeSet, HashSet},
+    hash::BuildHasher,
+    io::Read,
+    path::PathBuf,
+    thread,
+};
 
 use serde_json::{json, Value};
 
@@ -47,7 +53,7 @@ impl Remote {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum CatalogIcon {
-    Flathub(String),
+    Flathub(Option<String>),
     AppStream(PathBuf),
 }
 
@@ -109,10 +115,10 @@ impl Screenshot {
                 .iter()
                 .min_by_key(|(width, _, _)| width.abs_diff(target))
         };
-        let (width, height, url) = nearest(752)?;
+        let (width, height, url) = nearest(1100)?;
         Some(Self {
             url: url.clone(),
-            large_url: nearest(1440)?.2.clone(),
+            large_url: nearest(1920)?.2.clone(),
             caption,
             aspect_ratio: (*width > 0 && *height > 0).then(|| *width as f64 / *height as f64),
         })
@@ -158,6 +164,7 @@ pub struct CatalogSearch {
     remote_page: usize,
     apps: Vec<(Remote, CatalogApp)>,
     seen: HashSet<String>,
+    excluded: BTreeSet<String>,
 }
 
 impl CatalogSearch {
@@ -168,11 +175,18 @@ impl CatalogSearch {
             remote_page: 1,
             apps: Vec::new(),
             seen: HashSet::new(),
+            excluded: BTreeSet::new(),
         }
     }
 
     pub fn is_explore(&self) -> bool {
         self.query.is_empty()
+    }
+
+    pub fn exclude_installed(&mut self, installed: &BTreeSet<String>) {
+        if self.is_explore() {
+            self.excluded = installed.clone();
+        }
     }
 
     pub fn page(&mut self, runner: &Runner, page: usize) -> Result<StorePage> {
@@ -203,7 +217,10 @@ impl CatalogSearch {
         let featured = usize::from(self.is_explore());
         let start = (page - 1) * PAGE_SIZE + if page > 1 { featured } else { 0 };
         let end = page * PAGE_SIZE + featured;
-        while self.apps.len() <= end && !self.remotes.is_empty() {
+        let rotate = self.is_explore() && self.remote_page == 1 && page == 1;
+        while !self.remotes.is_empty()
+            && (self.apps.len() <= end || (rotate && self.remote_page <= 2))
+        {
             let results = fetch(&self.remotes, &self.query, self.remote_page);
             let mut remaining = Vec::new();
             let mut first_error = None;
@@ -216,8 +233,7 @@ impl CatalogSearch {
                             remaining.push(remote.clone());
                         }
                         self.apps.extend(results.apps.into_iter().filter_map(|app| {
-                            self.seen
-                                .insert(app.id.clone())
+                            (!self.excluded.contains(&app.id) && self.seen.insert(app.id.clone()))
                                 .then(|| (remote.clone(), app))
                         }));
                     }
@@ -237,6 +253,11 @@ impl CatalogSearch {
             }
             self.remotes = remaining;
             self.remote_page += 1;
+        }
+        if rotate {
+            let random = RandomState::new();
+            self.apps
+                .sort_by_cached_key(|(_, app)| random.hash_one(&app.id));
         }
         Ok(StorePage {
             apps: self
@@ -443,10 +464,12 @@ fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
         name: name.into(),
         summary: hit["summary"].as_str().unwrap_or_default().into(),
         reference: id.into(),
-        icon: hit["icon"]
-            .as_str()
-            .filter(|url| flathub_media(url))
-            .map(|url| CatalogIcon::Flathub(url.into())),
+        icon: Some(CatalogIcon::Flathub(
+            hit["icon"]
+                .as_str()
+                .filter(|url| flathub_media(url))
+                .map(flathub_icon_hd),
+        )),
     })
 }
 
@@ -758,7 +781,11 @@ pub fn screenshot_bytes(runner: &Runner, url: &str) -> Result<Vec<u8>> {
     if !https_url(url) {
         return Err(PackliftError::Message("Invalid screenshot address.".into()));
     }
-    fetch(runner, url, None)
+    fetch_with_timeout(runner, url, None, 18, 8 * 1024 * 1024)
+}
+
+fn flathub_icon_hd(url: &str) -> String {
+    url.replace("/icons/128x128/", "/icons/128x128@2/")
 }
 
 pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Option<Vec<u8>> {
@@ -766,11 +793,37 @@ pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Opti
         return None;
     }
     match icon {
-        CatalogIcon::Flathub(url) if flathub_media(url) => {
-            fetch_with_timeout(runner, url, None, 8).ok()
+        CatalogIcon::Flathub(url) => {
+            let get = |url: &str| {
+                flathub_media(url)
+                    .then(|| fetch_with_timeout(runner, url, None, 8, 1024 * 1024).ok())
+                    .flatten()
+            };
+            if let Some(url) = url {
+                if let Some(icon) = get(url) {
+                    return Some(icon);
+                }
+                let normal = url.replace("/icons/128x128@2/", "/icons/128x128/");
+                if normal != *url {
+                    if let Some(icon) = get(&normal) {
+                        return Some(icon);
+                    }
+                }
+            }
+            let metadata = fetch_with_timeout(
+                runner,
+                &format!("{FLATHUB_API}/appstream/{id}"),
+                None,
+                8,
+                2 * 1024 * 1024,
+            )
+            .ok()?;
+            let metadata: Value = serde_json::from_slice(&metadata).ok()?;
+            let icon = metadata["icon"].as_str()?;
+            let hd = flathub_icon_hd(icon);
+            get(&hd).or_else(|| (hd != icon).then(|| get(icon)).flatten())
         }
-        CatalogIcon::Flathub(_) => None,
-        CatalogIcon::AppStream(directory) => ["64x64", "128x128"].iter().find_map(|size| {
+        CatalogIcon::AppStream(directory) => ["128x128", "64x64"].iter().find_map(|size| {
             let path = directory.join(size).join(format!("{id}.png"));
             runner
                 .capture_bytes_limited(
@@ -1049,7 +1102,7 @@ pub fn install(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<()>
 }
 
 fn fetch(runner: &Runner, url: &str, post: Option<&str>) -> Result<Vec<u8>> {
-    fetch_with_timeout(runner, url, post, 18)
+    fetch_with_timeout(runner, url, post, 18, 2 * 1024 * 1024)
 }
 
 fn fetch_with_timeout(
@@ -1057,6 +1110,7 @@ fn fetch_with_timeout(
     url: &str,
     post: Option<&str>,
     seconds: u32,
+    max_bytes: u64,
 ) -> Result<Vec<u8>> {
     if !runner.available("curl") {
         if !runner.available("wget") {
@@ -1082,7 +1136,7 @@ fn fetch_with_timeout(
             ]);
         }
         args.extend(["--".into(), url.into()]);
-        return runner.capture_bytes(&args, false);
+        return runner.capture_bytes_limited(&args, false, max_bytes);
     }
     let mut args = vec![
         "curl".into(),
@@ -1097,7 +1151,7 @@ fn fetch_with_timeout(
         "--max-time".into(),
         seconds.to_string(),
         "--max-filesize".into(),
-        "2097152".into(),
+        max_bytes.to_string(),
     ];
     if let Some(post) = post {
         args.extend([
@@ -1108,7 +1162,7 @@ fn fetch_with_timeout(
         ]);
     }
     args.extend(["--".into(), url.into()]);
-    runner.capture_bytes(&args, false)
+    runner.capture_bytes_limited(&args, false, max_bytes)
 }
 
 fn valid_app_id(id: &str) -> bool {
@@ -1148,6 +1202,32 @@ mod tests {
         assert_eq!(page.apps.len(), 1);
         assert_eq!(page.apps[0].reference, "app/org.example.App/x86_64/stable");
         assert!(!page.has_next);
+    }
+
+    #[test]
+    fn installed_apps_are_excluded_from_explore_but_match_searches() {
+        let installed = BTreeSet::from(["org.example.Installed".to_owned()]);
+        let remote = flathub_remote(Destination::User);
+        let fetch = |_: &[Remote], _: &str, _: usize| {
+            vec![search_remote_list(
+                "org.example.Installed/x86_64/stable\tInstalled\norg.example.Other/x86_64/stable\tOther\n",
+                "",
+                1,
+            )]
+        };
+        let mut explore = CatalogSearch::new(vec![remote.clone()], String::new());
+        explore.exclude_installed(&installed);
+        let results = explore.fill_page(1, fetch).unwrap();
+        assert_eq!(results.apps.len(), 1);
+        assert_eq!(results.apps[0].1.id, "org.example.Other");
+
+        let mut search = CatalogSearch::new(vec![remote], "Installed".into());
+        search.exclude_installed(&installed);
+        let results = search.fill_page(1, fetch).unwrap();
+        assert!(results
+            .apps
+            .iter()
+            .any(|(_, app)| app.id == "org.example.Installed"));
     }
 
     #[test]
@@ -1215,7 +1295,7 @@ mod tests {
                <description><p>First release</p></description>
             </release></releases>
             <screenshots><screenshot><caption>App window</caption><image width="752" height="376">stable.png</image>
-                <image width="1280">https://example.net/big.png</image></screenshot></screenshots>
+                <image width="1600">https://example.net/big.png</image></screenshot></screenshots>
           </component></components>"#;
         let details = details_from_appstream(xml, &app).unwrap();
         assert_eq!(details.developer, "Example team");

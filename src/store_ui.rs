@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     rc::Rc,
     sync::Arc,
 };
@@ -29,6 +29,7 @@ struct StoreView {
     next: gtk::Button,
     page_label: gtk::Label,
     remotes: RefCell<Vec<Remote>>,
+    installed: RefCell<Option<BTreeSet<String>>>,
     catalog_search: RefCell<Option<CatalogSearch>>,
     page: Cell<usize>,
     busy: Cell<bool>,
@@ -141,6 +142,7 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         next,
         page_label,
         remotes: RefCell::new(Vec::new()),
+        installed: RefCell::new(None),
         catalog_search: RefCell::new(None),
         page: Cell::new(1),
         busy: Cell::new(false),
@@ -174,6 +176,12 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
             view.load_page(view.page.get() + 1);
         }
     });
+    let weak = Rc::downgrade(&view);
+    toolbar.connect_map(move |_| {
+        if let Some(view) = weak.upgrade() {
+            view.refresh_explore();
+        }
+    });
     let keep_alive = view.clone();
     toolbar.connect_destroy(move |_| {
         let _ = &keep_alive;
@@ -204,10 +212,16 @@ impl StoreView {
         self.set_status(tr("Loading repositories…"));
         let view = self.clone();
         background(
-            move || worker().and_then(|runner| store::catalog_remotes(&runner)),
+            move || {
+                let remotes = worker().and_then(|runner| store::catalog_remotes(&runner))?;
+                let installed =
+                    crate::installer().and_then(|installer| installer.installed_flatpak_ids());
+                Ok::<_, packlift::core::PackliftError>((remotes, installed.ok()))
+            },
             move |result| match result {
-                Ok(remotes) => {
+                Ok((remotes, installed)) => {
                     *view.remotes.borrow_mut() = remotes;
+                    *view.installed.borrow_mut() = installed;
                     view.new_search();
                 }
                 Err(error) => {
@@ -218,11 +232,67 @@ impl StoreView {
         );
     }
 
+    fn refresh_explore(self: &Rc<Self>) {
+        if !self
+            .catalog_search
+            .borrow()
+            .as_ref()
+            .is_some_and(CatalogSearch::is_explore)
+        {
+            return;
+        }
+        self.feature.set_visible(false);
+        self.list.set_visible(false);
+        let view = self.clone();
+        background(
+            move || crate::installer().and_then(|installer| installer.installed_flatpak_ids()),
+            move |result| {
+                if let Ok(installed) = result {
+                    let changed = view.installed.borrow().as_ref() != Some(&installed);
+                    *view.installed.borrow_mut() = Some(installed);
+                    if changed
+                        && !view.busy.get()
+                        && view
+                            .catalog_search
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(CatalogSearch::is_explore)
+                    {
+                        view.search_for(String::new());
+                        return;
+                    }
+                }
+                view.feature.set_visible(true);
+                view.list.set_visible(true);
+            },
+        );
+    }
+
     fn new_search(self: &Rc<Self>) {
+        self.search_for(self.search.text().trim().to_owned());
+    }
+
+    fn search_for(self: &Rc<Self>, query: String) {
         self.pending_search.set(false);
-        let query = self.search.text().trim().to_owned();
-        *self.catalog_search.borrow_mut() =
-            Some(CatalogSearch::new(self.remotes.borrow().clone(), query));
+        let mut search = CatalogSearch::new(self.remotes.borrow().clone(), query);
+        if search.is_explore() {
+            let installed = self.installed.borrow();
+            let Some(installed) = installed.as_ref() else {
+                self.catalog_search.borrow_mut().take();
+                self.feature.set_visible(false);
+                self.list.remove_all();
+                self.page_label.set_text("");
+                self.previous.set_sensitive(false);
+                self.next.set_sensitive(false);
+                self.set_status(tr("Could not check which Flatpaks are installed."));
+                self.set_busy(false);
+                return;
+            };
+            search.exclude_installed(installed);
+        }
+        self.feature.set_visible(true);
+        self.list.set_visible(true);
+        *self.catalog_search.borrow_mut() = Some(search);
         self.load_page(1);
     }
 
@@ -313,13 +383,33 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     developer.set_visible(false);
     title.append(&developer);
     identity.append(&title);
-    let install = gtk::Button::with_label(tr("Install"));
-    install.set_valign(gtk::Align::Center);
+    let install_controls = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    install_controls.set_valign(gtk::Align::Center);
+    let repository = gtk::DropDown::new(
+        Some(gtk::StringList::new(&[&remote.label()])),
+        None::<gtk::Expression>,
+    );
+    repository.set_tooltip_text(Some(tr("Repository")));
+    repository.update_property(&[gtk::accessible::Property::Label(tr("Repository"))]);
+    repository.set_sensitive(false);
+    install_controls.append(&repository);
+    let install = gtk::MenuButton::builder()
+        .label(tr("Install"))
+        .direction(gtk::ArrowType::Down)
+        .sensitive(false)
+        .build();
     install.add_css_class("suggested-action");
     install.add_css_class("pill");
     install.set_width_request(104);
-    install.update_property(&[gtk::accessible::Property::Label(tr("Install"))]);
-    identity.append(&install);
+    install_controls.append(&install);
+    identity.append(&install_controls);
+
+    let uninstall = gtk::Button::with_label(tr("Uninstall"));
+    uninstall.set_valign(gtk::Align::Center);
+    uninstall.add_css_class("destructive-action");
+    uninstall.add_css_class("pill");
+    uninstall.set_visible(false);
+    identity.append(&uninstall);
     hero.append(&identity);
     let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
     install_options.set_visible(false);
@@ -400,119 +490,48 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     window.set_title(Some(&app.name));
     let installed = Rc::new(RefCell::new(Vec::new()));
     let installed_state = installed.clone();
-    let refresh_button = install.downgrade();
+    let controls = install_controls.downgrade();
+    let refresh_button = uninstall.downgrade();
     let app_id = app.id.clone();
     toolbar.connect_map(move |_| {
-        let Some(button) = refresh_button.upgrade() else {
-            return;
-        };
-        button.set_sensitive(false);
         let id = app_id.clone();
         let state = installed_state.clone();
-        let refresh_button = refresh_button.clone();
+        let (controls, refresh_button) = (controls.clone(), refresh_button.clone());
         background(
             move || crate::installer()?.flatpak_app_installations(&id),
             move |result| {
-                let Some(button) = refresh_button.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(records) => {
-                        let is_installed = !records.is_empty();
-                        *state.borrow_mut() = records;
-                        let label = if is_installed {
-                            tr("Uninstall")
-                        } else {
-                            tr("Install")
-                        };
-                        button.set_label(label);
-                        button.update_property(&[gtk::accessible::Property::Label(label)]);
-                        button.set_css_classes(&[
-                            "pill",
-                            if is_installed {
-                                "destructive-action"
-                            } else {
-                                "suggested-action"
-                            },
-                        ]);
-                        button.set_sensitive(true);
-                        if button.has_visible_focus()
-                            || button.root().is_some_and(|root| root.focus().is_none())
-                        {
-                            button.grab_focus();
-                        }
-                    }
-                    Err(error) => button.set_tooltip_text(Some(&error.to_string())),
-                }
-            },
-        );
-    });
-    let selected = remote.clone();
-    let package = app.clone();
-    let dialog = window.downgrade();
-    let install_options = install_options.downgrade();
-    install.connect_clicked(move |button| {
-        let Some(dialog) = dialog.upgrade() else {
-            return;
-        };
-        let records = installed.borrow().clone();
-        if !records.is_empty() {
-            if let Some(options) = install_options.upgrade() {
-                choose_uninstall_destination(&dialog, &options, button, records);
-            }
-            return;
-        }
-        let Some(current_page) = dialog.content() else {
-            return;
-        };
-        let current_page = current_page.downgrade();
-        button.set_sensitive(false);
-        let spinner = gtk::Spinner::new();
-        spinner.start();
-        button.set_child(Some(&spinner));
-        button.announce(
-            tr("Loading repositories…"),
-            gtk::AccessibleAnnouncementPriority::Low,
-        );
-        let source = selected.clone();
-        let candidate = package.clone();
-        let button = button.downgrade();
-        let dialog = dialog.downgrade();
-        let preferred = source.destination;
-        let options = install_options.clone();
-        background(
-            move || {
-                let Ok(runner) = worker() else {
-                    return (Vec::new(), Vec::new());
-                };
-                std::thread::scope(|tasks| {
-                    let user = tasks.spawn(|| {
-                        store::install_choices(&runner, &source, &candidate, Destination::User)
-                    });
-                    let system =
-                        store::install_choices(&runner, &source, &candidate, Destination::System);
-                    (user.join().unwrap_or_default(), system)
-                })
-            },
-            move |choices| {
-                let Some(button) = button.upgrade() else {
-                    return;
-                };
-                button.set_sensitive(true);
-                button.set_label(tr("Install"));
-                let (Some(dialog), Some(options), Some(page)) =
-                    (dialog.upgrade(), options.upgrade(), current_page.upgrade())
+                let (Some(controls), Some(button)) = (controls.upgrade(), refresh_button.upgrade())
                 else {
                     return;
                 };
-                if dialog.content().as_ref() == Some(&page) {
-                    choose_install_destination(&dialog, &options, &button, preferred, choices);
+                if let Ok(records) = result {
+                    let is_installed = !records.is_empty();
+                    *state.borrow_mut() = records;
+                    controls.set_visible(!is_installed);
+                    button.set_visible(is_installed);
+                    if is_installed && button.root().is_some_and(|root| root.focus().is_none()) {
+                        button.grab_focus();
+                    }
                 }
             },
         );
     });
+    let dialog = window.downgrade();
+    let options = install_options.downgrade();
+    uninstall.connect_clicked(move |button| {
+        if let (Some(window), Some(options)) = (dialog.upgrade(), options.upgrade()) {
+            choose_uninstall_destination(&window, &options, button, installed.borrow().clone());
+        }
+    });
 
-    load_detail_sources(remote, app, sources_section, sources);
+    let preferred = remote.clone();
+    let parent = window.downgrade();
+    let (repository, install) = (repository.downgrade(), install.downgrade());
+    load_detail_sources(remote, app, sources_section, sources, move |choices| {
+        if let (Some(repository), Some(install)) = (repository.upgrade(), install.upgrade()) {
+            bind_install_menu(&parent, &repository, &install, &preferred, choices);
+        }
+    });
     if remote.flathub {
         let selected = app.clone();
         let indicators = facts.clone();
@@ -654,7 +673,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         },
     );
     window.set_content(Some(&toolbar));
-    install.grab_focus();
     window.present();
 }
 
@@ -765,7 +783,15 @@ fn show_detail_links(
     }
 }
 
-fn load_detail_sources(remote: &Remote, app: &CatalogApp, section: gtk::Box, rows: gtk::ListBox) {
+type StoreChoice = (Remote, CatalogApp);
+
+fn load_detail_sources(
+    remote: &Remote,
+    app: &CatalogApp,
+    section: gtk::Box,
+    rows: gtk::ListBox,
+    loaded: impl FnOnce(Vec<StoreChoice>) + 'static,
+) {
     let source = remote.clone();
     let candidate = app.clone();
     background(
@@ -790,7 +816,7 @@ fn load_detail_sources(remote: &Remote, app: &CatalogApp, section: gtk::Box, row
                 return;
             };
             section.set_visible(!choices.is_empty());
-            for (remote, _) in choices {
+            for (remote, _) in &choices {
                 let row = detail_row(&remote.label(), &remote.url);
                 let scope = match remote.destination {
                     Destination::User => tr("For my account"),
@@ -802,6 +828,7 @@ fn load_detail_sources(remote: &Remote, app: &CatalogApp, section: gtk::Box, row
                 row.add_suffix(&scope);
                 rows.append(&row);
             }
+            loaded(choices);
         },
     );
 }
@@ -940,36 +967,29 @@ fn featured_app(
     let selected = app.clone();
     let origin = remote.clone();
     let image = picture.downgrade();
-    self::background(
+    background(
         move || {
             let runner = worker().ok()?;
-            let shot = store::app_details(&runner, &origin, &selected)
+            store::app_details(&runner, &origin, &selected)
                 .ok()?
                 .screenshots
                 .into_iter()
-                .next()?;
-            let bytes = store::screenshot_bytes(&runner, &shot.url).ok()?;
-            Some((bytes, shot.caption))
+                .next()
         },
         move |result| {
-            let (Some((bytes, caption)), Some(picture)) = (result, image.upgrade()) else {
+            let (Some(shot), Some(picture)) = (result, image.upgrade()) else {
                 return;
             };
-            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
-            if let Ok(preview) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
-                &stream,
-                520,
-                244,
-                true,
-                gio::Cancellable::NONE,
-            ) {
-                let texture = gtk::gdk::Texture::for_pixbuf(&preview);
-                picture.set_paintable(Some(&texture));
-                if !caption.is_empty() {
-                    picture.set_alternative_text(Some(&caption));
+            let caption = shot.caption;
+            load_screenshot(&picture, shot.url, None, move |picture, texture| {
+                if let Some(texture) = texture {
+                    picture.set_paintable(Some(texture));
+                    if !caption.is_empty() {
+                        picture.set_alternative_text(Some(&caption));
+                    }
+                    picture.set_visible(true);
                 }
-                picture.set_visible(true);
-            }
+            });
         },
     );
     let parent = window.clone();
@@ -1008,7 +1028,7 @@ fn catalog_icon(app: &CatalogApp, size: i32) -> gtk::Image {
     let image = gtk::Image::from_icon_name(fallback);
     image.set_pixel_size(size);
     image.set_size_request(size, size);
-    if let Some(source) = app.icon.clone().filter(|_| !has_icon) {
+    if let Some(source) = app.icon.clone() {
         let key = (source, app.id.clone());
         // Cache hits must be painted before mapping so the fallback does not flash.
         let ready = ICONS.with_borrow(|icons| icons.ready.get(&key).cloned());
@@ -1059,19 +1079,7 @@ fn load_queued_icons() {
                 icons.pending[key]
                     .iter()
                     .filter_map(|(image, _)| image.upgrade())
-                    .any(|image| {
-                        if !image.is_mapped() {
-                            return false;
-                        }
-                        if let Some(scroll) = image.ancestor(gtk::ScrolledWindow::static_type()) {
-                            image.compute_bounds(&scroll).is_some_and(|bounds| {
-                                bounds.y() < scroll.height() as f32
-                                    && bounds.y() + bounds.height() > 0.0
-                            })
-                        } else {
-                            true
-                        }
-                    })
+                    .any(|image| media_is_visible(&image))
             });
             let key = icons.queue.remove(visible.unwrap_or(0)).unwrap();
             if icons.pending[&key]
@@ -1100,8 +1108,8 @@ fn load_queued_icons() {
                         gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
                     gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
                         &stream,
-                        96,
-                        96,
+                        256,
+                        256,
                         true,
                         gio::Cancellable::NONE,
                     )
@@ -1133,143 +1141,179 @@ fn load_queued_icons() {
 }
 
 fn paint_icon(image: &gtk::Image, pixbuf: &gtk::gdk_pixbuf::Pixbuf, size: i32) {
-    let scale = f64::from(size) / f64::from(pixbuf.width().max(pixbuf.height()));
-    if let Some(icon) = pixbuf.scale_simple(
-        (f64::from(pixbuf.width()) * scale).round().max(1.0) as i32,
-        (f64::from(pixbuf.height()) * scale).round().max(1.0) as i32,
-        gtk::gdk_pixbuf::InterpType::Bilinear,
-    ) {
-        image.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&icon)));
-    }
+    image.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(pixbuf)));
+    image.set_pixel_size(size);
 }
 
-fn choose_install_destination(
-    window: &adw::ApplicationWindow,
-    container: &gtk::Box,
-    open_options: &gtk::Button,
-    preferred: Destination,
-    (user, system): (Vec<(Remote, CatalogApp)>, Vec<(Remote, CatalogApp)>),
+fn media_is_visible(widget: &impl IsA<gtk::Widget>) -> bool {
+    if !widget.is_mapped() {
+        return false;
+    }
+    let mut ancestor = widget.parent();
+    while let Some(parent) = ancestor {
+        if parent.is::<gtk::ScrolledWindow>()
+            && !widget.compute_bounds(&parent).is_some_and(|bounds| {
+                bounds.x() + bounds.width() > 0.0
+                    && bounds.x() < parent.width() as f32
+                    && bounds.y() + bounds.height() > 0.0
+                    && bounds.y() < parent.height() as f32
+            })
+        {
+            return false;
+        }
+        ancestor = parent.parent();
+    }
+    true
+}
+
+struct InstallSource {
+    remote: Remote,
+    scopes: [Option<StoreChoice>; 2],
+}
+
+fn same_repository(left: &Remote, right: &Remote) -> bool {
+    (left.flathub && right.flathub)
+        || (left.url.trim_end_matches('/') == right.url.trim_end_matches('/')
+            && (!left.url.is_empty() || left.name == right.name))
+}
+
+fn bind_install_menu(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    repository: &gtk::DropDown,
+    install: &gtk::MenuButton,
+    preferred: &Remote,
+    choices: Vec<StoreChoice>,
 ) {
-    let scope = gtk::DropDown::from_strings(&[tr("For my account"), tr("For the system")]);
-    scope.set_selected((preferred == Destination::System) as u32);
-    let repository = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
-    let controls = inline_store_options();
-    let fields = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .min_children_per_line(1)
-        .max_children_per_line(2)
-        .column_spacing(12)
-        .row_spacing(8)
-        .homogeneous(true)
-        .build();
-    fields.append(&labeled_control(tr("Install scope"), &scope));
-    fields.append(&labeled_control(tr("Repository"), &repository));
-    controls.append(&fields);
-    let info = home_label("", "dim-label");
-    controls.append(&info);
-    let dismiss = dismiss_store_options(container, &controls, open_options);
-    let install = store_options_actions(
-        &controls,
-        dismiss.clone(),
-        tr("Install"),
-        "suggested-action",
-    );
-
-    let choices = Rc::new([user, system]);
-    let refresh = {
-        let choices = choices.clone();
-        let repository = repository.clone();
-        move |scope: u32| {
-            let options = choices[scope.min(1) as usize]
-                .iter()
-                .map(|(remote, _)| remote.label())
-                .collect::<Vec<_>>();
-            let labels = options.iter().map(String::as_str).collect::<Vec<_>>();
-            repository.set_model(Some(&gtk::StringList::new(&labels)));
-            repository.set_selected(0);
-            repository.notify("selected");
-        }
-    };
-    refresh(scope.selected());
-    scope.connect_selected_notify(move |scope| refresh(scope.selected()));
-    let weak_scope = scope.downgrade();
-    let update = {
-        let choices = choices.clone();
-        let button = install.downgrade();
-        move |repository: &gtk::DropDown| {
-            let (Some(button), Some(scope)) = (button.upgrade(), weak_scope.upgrade()) else {
-                return;
-            };
-            let selected =
-                choices[scope.selected().min(1) as usize].get(repository.selected() as usize);
-            button.set_sensitive(selected.is_some());
-            repository.set_sensitive(selected.is_some());
-            let message = match selected {
-                None => tr("No repository offers this app for the selected scope."),
-                Some((remote, _)) if remote.flathub && remote.name.is_empty() => {
-                    tr("Packlift will add Flathub to the selected scope if needed.")
-                }
-                _ => "",
-            };
-            info.set_text(message);
-            info.set_visible(!message.is_empty());
-        }
-    };
-    update(&repository);
-    repository.connect_selected_notify(update);
-
-    let target = window.downgrade();
-    let weak_scope = scope.downgrade();
-    let repository = repository.downgrade();
-    install.connect_clicked(move |_| {
-        let (Some(window), Some(repository), Some(scope)) =
-            (target.upgrade(), repository.upgrade(), weak_scope.upgrade())
-        else {
-            return;
-        };
-        let Some((source, candidate)) = choices[scope.selected().min(1) as usize]
-            .get(repository.selected() as usize)
-            .cloned()
-        else {
-            return;
-        };
-        let Some(application) = window.application().and_downcast::<adw::Application>() else {
-            return;
-        };
-        dismiss();
-        run_job(
-            &application,
-            &window,
-            tr("Installing program"),
-            move |log| {
-                let runner = Runner::new(None, log)?;
-                store::install(&runner, &source, &candidate)?;
-                let scope = match source.destination {
-                    Destination::User => "user",
-                    Destination::System => "system",
-                };
-                let installed = crate::installer()
-                    .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
-                    .unwrap_or_default();
-                let expected = candidate.reference.trim_start_matches("app/");
-                let mut matches = installed.into_iter().filter(|record| {
-                    record["flatpak_scope"].as_str() == Some(scope)
-                        && (expected == candidate.id || record["target"].as_str() == Some(expected))
+    let mut sources: Vec<InstallSource> = Vec::new();
+    for choice in choices {
+        let remote = &choice.0;
+        let index = sources
+            .iter()
+            .position(|source| same_repository(&source.remote, remote))
+            .unwrap_or_else(|| {
+                sources.push(InstallSource {
+                    remote: remote.clone(),
+                    scopes: [None, None],
                 });
-                let record = match (matches.next(), matches.next()) {
-                    (Some(record), None) => record,
-                    _ => json!({
-                        "name": candidate.name, "method": "flatpak", "flatpak_app_id": candidate.id,
-                    }),
-                };
-                Ok(Some(record))
-            },
+                sources.len() - 1
+            });
+        let scope = usize::from(remote.destination == Destination::System);
+        if sources[index].scopes[scope].is_none() {
+            sources[index].scopes[scope] = Some(choice);
+        }
+    }
+    if sources.is_empty() {
+        repository.set_model(None::<&gtk::StringList>);
+        install.set_tooltip_text(Some(tr("No repositories offer this app.")));
+        return;
+    }
+    let labels = sources
+        .iter()
+        .map(|source| source.remote.label())
+        .collect::<Vec<_>>();
+    let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
+    let selected = sources
+        .iter()
+        .position(|source| same_repository(&source.remote, preferred))
+        .unwrap_or(0);
+    repository.set_model(Some(&gtk::StringList::new(&labels)));
+    repository.set_selected(selected as u32);
+    repository.set_sensitive(true);
+    let parent = window.clone();
+    let button = install.downgrade();
+    let update = move |repository: &gtk::DropDown| {
+        if let (Some(button), Some(source)) = (
+            button.upgrade(),
+            sources.get(repository.selected() as usize),
+        ) {
+            button.set_popover(Some(&install_scope_popover(&parent, source)));
+            button.set_sensitive(true);
+            if button.is_mapped() && button.root().is_some_and(|root| root.focus().is_none()) {
+                button.grab_focus();
+            }
+        }
+    };
+    update(repository);
+    repository.connect_selected_notify(update);
+}
+
+fn install_scope_popover(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    source: &InstallSource,
+) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.set_offset(-56, 0);
+    let options = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let heading = home_label(tr("Who should this app be installed for?"), "heading");
+    heading.set_max_width_chars(28);
+    options.append(&heading);
+    for (label, choice) in [tr("For my account"), tr("For the system")]
+        .into_iter()
+        .zip(&source.scopes)
+    {
+        let button = gtk::Button::with_label(label);
+        button.add_css_class("flat");
+        button.set_sensitive(choice.is_some());
+        if let Some((remote, candidate)) = choice.clone() {
+            let window = window.clone();
+            let popover = popover.downgrade();
+            button.connect_clicked(move |_| {
+                if let (Some(window), Some(popover)) = (window.upgrade(), popover.upgrade()) {
+                    popover.popdown();
+                    install_store_app(&window, remote.clone(), candidate.clone());
+                }
+            });
+        } else {
+            button.set_tooltip_text(Some(tr(
+                "No repository offers this app for the selected scope.",
+            )));
+        }
+        options.append(&button);
+    }
+    if source
+        .scopes
+        .iter()
+        .flatten()
+        .any(|(remote, _)| remote.flathub && remote.name.is_empty())
+    {
+        let note = home_label(
+            tr("Packlift will add Flathub to the selected scope if needed."),
+            "dim-label",
         );
+        note.set_max_width_chars(34);
+        options.append(&note);
+    }
+    popover.set_child(Some(&options));
+    popover
+}
+
+fn install_store_app(window: &adw::ApplicationWindow, source: Remote, candidate: CatalogApp) {
+    let Some(application) = window.application().and_downcast::<adw::Application>() else {
+        return;
+    };
+    run_job(&application, window, tr("Installing program"), move |log| {
+        let runner = Runner::new(None, log)?;
+        store::install(&runner, &source, &candidate)?;
+        let scope = match source.destination {
+            Destination::User => "user",
+            Destination::System => "system",
+        };
+        let installed = crate::installer()
+            .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
+            .unwrap_or_default();
+        let expected = candidate.reference.trim_start_matches("app/");
+        let mut matches = installed.into_iter().filter(|record| {
+            record["flatpak_scope"].as_str() == Some(scope)
+                && (expected == candidate.id || record["target"].as_str() == Some(expected))
+        });
+        let record = match (matches.next(), matches.next()) {
+            (Some(record), None) => record,
+            _ => json!({
+                "name": candidate.name, "method": "flatpak", "flatpak_app_id": candidate.id,
+            }),
+        };
+        Ok(Some(record))
     });
-    container.append(&controls);
-    container.set_visible(true);
-    open_options.set_visible(false);
-    scope.grab_focus();
 }
 
 fn inline_store_options() -> gtk::Box {
@@ -1398,7 +1442,6 @@ fn choose_uninstall_destination(
 
 struct ScreenshotGallery {
     shots: Vec<Screenshot>,
-    cache: ScreenshotCache,
     selected: Cell<Option<usize>>,
     strip: gtk::Adjustment,
     stack: glib::WeakRef<gtk::Stack>,
@@ -1464,7 +1507,7 @@ impl ScreenshotGallery {
         if let Some(old) = preview.first_child() {
             preview.remove(&old);
         }
-        preview.append(&screenshot_frame(shot, None, &self.cache));
+        preview.append(&screenshot_frame(shot, None));
         self.selected.set(Some(index));
         stack.set_visible_child_name("preview");
         self.update_controls();
@@ -1539,18 +1582,16 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     stack.add_named(&enlarged, Some("preview"));
     gallery.append(&stack);
 
-    let cache = Rc::new(RefCell::new(HashMap::new()));
     let thumbnails = shots
         .iter()
         .map(|shot| {
             let button = gtk::Button::new();
-            previews.append(&screenshot_frame(shot, Some(&button), &cache));
+            previews.append(&screenshot_frame(shot, Some(&button)));
             button
         })
         .collect::<Vec<_>>();
     let view = Rc::new(ScreenshotGallery {
         shots,
-        cache,
         selected: Cell::new(None),
         strip: strip.hadjustment(),
         stack: stack.downgrade(),
@@ -1612,13 +1653,7 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     gallery.add_controller(keys);
 }
 
-type ScreenshotCache = Rc<RefCell<HashMap<String, gtk::gdk::Texture>>>;
-
-fn screenshot_frame(
-    shot: &Screenshot,
-    thumbnail: Option<&gtk::Button>,
-    cache: &ScreenshotCache,
-) -> gtk::Box {
+fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>) -> gtk::Box {
     const THUMBNAIL_HEIGHT: i32 = 260;
     let enlarged = thumbnail.is_none();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1671,66 +1706,162 @@ fn screenshot_frame(
         caption.set_tooltip_text((!shot.caption.is_empty()).then_some(shot.caption.as_str()));
     }
     frame.append(&caption);
-    let url = if enlarged { &shot.large_url } else { &shot.url };
-    let text = shot.caption.clone();
-    let finish =
-        move |picture: &gtk::Picture, caption: &gtk::Label, texture: Option<&gtk::gdk::Texture>| {
-            if let Some(texture) = texture {
-                picture.set_paintable(Some(texture));
-                caption.set_text(&text);
-                caption.set_visible(!text.is_empty());
-            } else {
-                caption.set_text(tr("Screenshots could not be loaded."));
-            }
-        };
-    if let Some(texture) = cache.borrow().get(url) {
-        finish(&picture, &caption, Some(texture));
+    let (url, fallback) = if enlarged && shot.large_url != shot.url {
+        (shot.large_url.clone(), Some(shot.url.clone()))
     } else {
-        let key = url.clone();
-        let url = key.clone();
-        let fallback = shot.url.clone();
-        let limit = if enlarged || shot.url == shot.large_url {
-            1440
-        } else {
-            800
+        (shot.url.clone(), None)
+    };
+    let text = shot.caption.clone();
+    let status = caption.downgrade();
+    load_screenshot(&picture, url, fallback, move |picture, texture| {
+        let Some(caption) = status.upgrade() else {
+            return;
         };
-        let (picture, caption) = (picture.downgrade(), caption.downgrade());
-        let cache = cache.clone();
+        if let Some(texture) = texture {
+            picture.set_paintable(Some(texture));
+            caption.set_text(&text);
+            caption.set_visible(!text.is_empty());
+        } else {
+            caption.set_text(tr("Screenshots could not be loaded."));
+        }
+    });
+    frame
+}
+
+type ScreenshotLoaded = Box<dyn FnOnce(&gtk::Picture, Option<&gtk::gdk::Texture>)>;
+
+struct ScreenshotRequest {
+    picture: glib::WeakRef<gtk::Picture>,
+    loaded: ScreenshotLoaded,
+}
+
+#[derive(Default)]
+struct ScreenshotQueue {
+    ready: VecDeque<(String, gtk::gdk::Texture)>,
+    pending: HashMap<String, Vec<ScreenshotRequest>>,
+    queue: VecDeque<(String, Option<String>)>,
+    active: usize,
+    scheduled: bool,
+}
+
+thread_local! {
+    static SCREENSHOTS: RefCell<ScreenshotQueue> = RefCell::new(ScreenshotQueue::default());
+}
+
+fn load_screenshot(
+    picture: &gtk::Picture,
+    url: String,
+    fallback: Option<String>,
+    loaded: impl FnOnce(&gtk::Picture, Option<&gtk::gdk::Texture>) + 'static,
+) {
+    let cached = SCREENSHOTS.with_borrow_mut(|queue| {
+        let index = queue.ready.iter().position(|(key, _)| *key == url)?;
+        let entry = queue.ready.remove(index)?;
+        let texture = entry.1.clone();
+        queue.ready.push_back(entry);
+        Some(texture)
+    });
+    if let Some(texture) = cached {
+        loaded(picture, Some(&texture));
+        return;
+    }
+    SCREENSHOTS.with_borrow_mut(|queue| {
+        let pending = queue.pending.entry(url.clone()).or_insert_with(|| {
+            queue.queue.push_back((url, fallback));
+            Vec::new()
+        });
+        pending.push(ScreenshotRequest {
+            picture: picture.downgrade(),
+            loaded: Box::new(loaded),
+        });
+        if !queue.scheduled {
+            queue.scheduled = true;
+            glib::idle_add_local_once(pump_screenshots);
+        }
+    });
+}
+
+fn pump_screenshots() {
+    const MAX_ACTIVE: usize = 4;
+    let jobs = SCREENSHOTS.with_borrow_mut(|queue| {
+        queue.scheduled = false;
+        let mut jobs = Vec::new();
+        while queue.active < MAX_ACTIVE && !queue.queue.is_empty() {
+            let first = queue.queue.iter().position(|(url, _)| {
+                queue.pending[url]
+                    .iter()
+                    .filter_map(|request| request.picture.upgrade())
+                    .any(|picture| media_is_visible(&picture))
+            });
+            let (url, fallback) = queue.queue.remove(first.unwrap_or(0)).unwrap();
+            if queue.pending[&url]
+                .iter()
+                .all(|request| request.picture.upgrade().is_none())
+            {
+                queue.pending.remove(&url);
+                continue;
+            }
+            queue.active += 1;
+            jobs.push((url, fallback));
+        }
+        jobs
+    });
+    for (url, fallback) in jobs {
+        let download = url.clone();
         background(
             move || {
                 let runner = worker()?;
-                store::screenshot_bytes(&runner, &url).or_else(|error| {
-                    if url == fallback {
-                        Err(error)
-                    } else {
-                        store::screenshot_bytes(&runner, &fallback)
-                    }
-                })
+                match store::screenshot_bytes(&runner, &download) {
+                    Ok(bytes) => Ok((bytes, true)),
+                    Err(error) => fallback.map_or(Err(error), |fallback| {
+                        store::screenshot_bytes(&runner, &fallback).map(|bytes| (bytes, false))
+                    }),
+                }
             },
-            move |result| {
-                let texture = result.ok().and_then(|bytes| {
+            move |result: packlift::core::Result<(Vec<u8>, bool)>| {
+                let texture = result.ok().and_then(|(bytes, full_quality)| {
                     let stream =
                         gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
                     gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
                         &stream,
-                        limit,
-                        limit,
+                        2048,
+                        2048,
                         true,
                         gio::Cancellable::NONE,
                     )
                     .ok()
-                    .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+                    .map(|pixbuf| (gtk::gdk::Texture::for_pixbuf(&pixbuf), full_quality))
                 });
-                if let (Some(picture), Some(caption)) = (picture.upgrade(), caption.upgrade()) {
-                    finish(&picture, &caption, texture.as_ref());
+                let pending = SCREENSHOTS.with_borrow_mut(|queue| {
+                    queue.active -= 1;
+                    if let Some((texture, true)) = &texture {
+                        queue.ready.push_back((url.clone(), texture.clone()));
+                        let bytes = |image: &gtk::gdk::Texture| {
+                            i64::from(image.width()) * i64::from(image.height()) * 4
+                        };
+                        let mut usage = queue
+                            .ready
+                            .iter()
+                            .map(|(_, texture)| bytes(texture))
+                            .sum::<i64>();
+                        while usage > 48 * 1024 * 1024 {
+                            let Some((_, old)) = queue.ready.pop_front() else {
+                                break;
+                            };
+                            usage -= bytes(&old);
+                        }
+                    }
+                    queue.pending.remove(&url).unwrap_or_default()
+                });
+                for request in pending {
+                    if let Some(picture) = request.picture.upgrade() {
+                        (request.loaded)(&picture, texture.as_ref().map(|(image, _)| image));
+                    }
                 }
-                if let Some(texture) = texture {
-                    cache.borrow_mut().insert(key, texture);
-                }
+                pump_screenshots();
             },
         );
     }
-    frame
 }
 
 fn labeled_control(label: &str, control: &gtk::DropDown) -> gtk::Box {

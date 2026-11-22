@@ -175,6 +175,8 @@ impl Installer {
             "exe" | "setup" => self.inspect_pe_icon(&mut package)?,
             "appimage" => self.inspect_appimage(&mut package)?,
             "tar" => self.inspect_archive(&mut package)?,
+            #[cfg(feature = "gui")]
+            "flatpak" => self.inspect_flatpak_bundle(&mut package)?,
             "flatpakref" => inspect_flatpak_ref(&mut package)?,
             _ => {}
         }
@@ -701,9 +703,117 @@ impl Installer {
         Ok((plan, host.1))
     }
 
+    #[cfg(feature = "gui")]
+    fn inspect_flatpak_bundle(&self, package: &mut Package) -> Result<()> {
+        let Some((reference, _, metadata)) = read_flatpak_bundle(&package.path) else {
+            return Ok(());
+        };
+        let Some((id, arch, _)) = flatpak_ref_parts(&reference) else {
+            return Ok(());
+        };
+        package.identifier = id.into();
+        package.architecture = arch.into();
+        package.name = if id == APP_ID {
+            "Packlift".into()
+        } else {
+            id.into()
+        };
+        if let Some(data) = metadata.lookup_value("appdata", Some(glib::VariantTy::BYTE_STRING)) {
+            if let Ok(compressed) = data.fixed_array::<u8>() {
+                let mut xml = String::new();
+                let decoded = flate2::read::GzDecoder::new(compressed)
+                    .take(1024 * 1024 + 1)
+                    .read_to_string(&mut xml);
+                if decoded.is_ok() && xml.len() <= 1024 * 1024 {
+                    if let Ok(document) = roxmltree::Document::parse(&xml) {
+                        if let Some(name) = document
+                            .descendants()
+                            .find(|node| {
+                                node.has_tag_name("name")
+                                    && node
+                                        .parent()
+                                        .is_some_and(|parent| parent.has_tag_name("component"))
+                                    && node
+                                        .attribute(("http://www.w3.org/XML/1998/namespace", "lang"))
+                                        .is_none()
+                            })
+                            .and_then(|node| node.text())
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                        {
+                            package.name = name.into();
+                        }
+                    }
+                }
+            }
+        }
+        for key in ["icon-128", "icon-64"] {
+            let Some(data) = metadata.lookup_value(key, Some(glib::VariantTy::BYTE_STRING)) else {
+                continue;
+            };
+            let Ok(bytes) = data.fixed_array::<u8>() else {
+                continue;
+            };
+            if bytes.len() > 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                continue;
+            }
+            let valid_size = bytes.get(16..24).is_some_and(|size| {
+                size.chunks_exact(4)
+                    .all(|value| (1..=512).contains(&u32::from_be_bytes(value.try_into().unwrap())))
+            });
+            if !valid_size {
+                continue;
+            }
+            let directory = self.data.join("package-icons");
+            fs::create_dir_all(&directory)?;
+            let icon = directory.join(format!("{}.png", package.digest));
+            fs::write(&icon, bytes)?;
+            package.icon = Some(icon);
+            break;
+        }
+        Ok(())
+    }
+
     fn install_flatpak(&self, package: &Package) -> Result<Value> {
         let _operation = operation(&self.data)?;
-        let before = self.flatpak_apps()?;
+        #[cfg(feature = "gui")]
+        let bundle = (package.kind == "flatpak")
+            .then(|| read_flatpak_bundle(&package.path))
+            .flatten()
+            .map(|(reference, commit, _)| (reference, commit));
+        #[cfg(not(feature = "gui"))]
+        let bundle: Option<(String, String)> = None;
+        if let Some((reference, commit)) = &bundle {
+            // Some Flatpak versions abbreviate the commit even with active:full.
+            if flatpak_ref_parts(reference).is_some_and(|(id, _, _)| id == APP_ID)
+                && self
+                    .runner
+                    .capture(
+                        &[
+                            "flatpak".into(),
+                            "info".into(),
+                            "--user".into(),
+                            "--show-commit".into(),
+                            "--".into(),
+                            reference.clone(),
+                        ],
+                        false,
+                    )
+                    .is_ok_and(|active| active.trim() == commit)
+            {
+                self.runner
+                    .write("This Packlift build is already installed for the current user");
+                return Ok(json!({
+                    "name": package.name, "method": "flatpak", "flatpak_app_id": APP_ID,
+                    "flatpak_already_installed": true,
+                }));
+            }
+        }
+        let before = if bundle.is_none() {
+            self.flatpak_apps()?
+        } else {
+            BTreeMap::new()
+        };
         let option = if package.kind == "flatpakref" {
             "--from"
         } else {
@@ -729,6 +839,9 @@ impl Installer {
 
         let mut record = json!({"name": package.name, "method": "flatpak"});
         let mut changed = self.flatpak_apps()?.into_iter().filter(|(reference, app)| {
+            if let Some((expected_ref, _)) = &bundle {
+                return reference == expected_ref;
+            }
             (package.identifier.is_empty()
                 || reference.split('/').next() == Some(package.identifier.as_str()))
                 && before.get(reference).map(|installed| &installed.commit) != Some(&app.commit)
@@ -791,6 +904,27 @@ impl Installer {
             records.extend(flatpaks);
         }
         Ok(records)
+    }
+
+    pub fn installed_flatpak_ids(&self) -> Result<BTreeSet<String>> {
+        let installations = self.installed_flatpaks(None).or_else(|_| {
+            let user = self.installed_flatpaks(Some("--user"));
+            let system = self.installed_flatpaks(Some("--system"));
+            match (user, system) {
+                (Ok(mut user), Ok(system)) => {
+                    user.extend(system);
+                    Ok(user)
+                }
+                (Ok(apps), Err(_)) | (Err(_), Ok(apps)) => Ok(apps),
+                (Err(error), Err(_)) => Err(error),
+            }
+        })?;
+        Ok(installations
+            .into_iter()
+            .filter_map(|(_, reference, _)| {
+                flatpak_ref_parts(&reference).map(|(id, _, _)| id.to_owned())
+            })
+            .collect())
     }
 
     pub fn flatpak_app_installations(&self, id: &str) -> Result<Vec<Value>> {
@@ -2336,6 +2470,60 @@ fi"#
     }
 }
 
+#[cfg(feature = "gui")]
+fn read_flatpak_bundle(path: &Path) -> Option<(String, String, glib::VariantDict)> {
+    use std::io::{Seek, SeekFrom};
+
+    // The first child of an OSTree static-delta superblock is an a{sv}
+    // metadata dictionary. The trailing GVariant tuple offsets are stored
+    // in reverse order, so we can read it without loading the delta payload.
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let width = match size {
+        0..=255 => 1,
+        256..=65535 => 2,
+        65536..=4294967295 => 4,
+        _ => 8,
+    };
+    let framing = size.checked_sub(width * 3)?;
+    file.seek(SeekFrom::Start(framing)).ok()?;
+    let mut offset = || {
+        let mut bytes = [0; 8];
+        file.read_exact(&mut bytes[..width as usize]).ok()?;
+        Some(u64::from_le_bytes(bytes))
+    };
+    let to = offset()?;
+    let from = offset()?;
+    let metadata_end = offset()?;
+    if metadata_end == 0
+        || metadata_end > 8 * 1024 * 1024
+        || from < metadata_end.next_multiple_of(8) + 8
+        || to.checked_sub(from)? != 32
+        || to > framing
+    {
+        return None;
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut bytes = vec![0; metadata_end as usize];
+    file.read_exact(&mut bytes).ok()?;
+    let metadata = glib::Variant::from_data_with_type(bytes, glib::VariantTy::VARDICT);
+    if !metadata.is_normal_form() {
+        return None;
+    }
+    let dict = glib::VariantDict::new(Some(&metadata));
+    let reference = dict.lookup::<String>("ref").ok()??;
+    let reference = reference.strip_prefix("app/")?;
+    flatpak_ref_parts(reference)?;
+    let mut bytes = [0; 32];
+    file.seek(SeekFrom::Start(from)).ok()?;
+    file.read_exact(&mut bytes).ok()?;
+    let commit = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some((reference.into(), commit, dict))
+}
+
 fn inspect_flatpak_ref(package: &mut Package) -> Result<()> {
     const MAX_SIZE: u64 = 1024 * 1024;
     let mut text = String::new();
@@ -2363,7 +2551,12 @@ fn inspect_flatpak_ref(package: &mut Package) -> Result<()> {
             PackliftError::Message("The Flatpak reference has no valid application ID.".into())
         })?;
     package.identifier = (*name).into();
-    package.name = package.identifier.clone();
+    package.name = fields
+        .get("Title")
+        .filter(|title| !title.is_empty())
+        .copied()
+        .unwrap_or(name)
+        .into();
     package.description = fields.get("Url").copied().unwrap_or_default().into();
     Ok(())
 }

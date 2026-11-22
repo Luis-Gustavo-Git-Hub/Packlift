@@ -1357,10 +1357,31 @@ fn package_image(package: &Package, size: i32) -> gtk::Image {
         .as_ref()
         .filter(|path| path.is_file())
         .and_then(|path| gtk::gdk::Texture::from_file(&gio::File::for_path(path)).ok());
-    let image = texture
-        .as_ref()
-        .map(|texture| gtk::Image::from_paintable(Some(texture)))
-        .unwrap_or_else(|| gtk::Image::from_icon_name("application-x-executable"));
+    let flatpak = matches!(package.kind.as_str(), "flatpak" | "flatpakref");
+    let texture = texture.or_else(|| {
+        (flatpak && package.identifier == APP_ID)
+            .then(|| {
+                let bytes = glib::Bytes::from_static(include_bytes!(
+                    "../data/io.github.luis_gustavo_git_hub.Packlift.png"
+                ));
+                gtk::gdk::Texture::from_bytes(&bytes).ok()
+            })
+            .flatten()
+    });
+    let image = if let Some(texture) = texture {
+        gtk::Image::from_paintable(Some(&texture))
+    } else if flatpak {
+        let has_icon = gtk::gdk::Display::default().is_some_and(|display| {
+            gtk::IconTheme::for_display(&display).has_icon(&package.identifier)
+        });
+        gtk::Image::from_icon_name(if has_icon {
+            &package.identifier
+        } else {
+            "system-software-install-symbolic"
+        })
+    } else {
+        gtk::Image::from_icon_name("application-x-executable")
+    };
     image.set_pixel_size(size);
     image
 }
@@ -1530,21 +1551,13 @@ where
     }
     window.add_css_class("packlift-running-job");
     let previous = PageReturn::capture(window);
-    let content_sensitive = previous
-        .as_ref()
-        .is_some_and(|page| page.content.is_sensitive());
-    let overlay = gtk::Overlay::new();
-    if let Some(page) = &previous {
-        window.set_content(None::<&gtk::Widget>);
-        page.content.set_sensitive(false);
-        overlay.set_child(Some(&page.content));
-    }
     let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
     body.add_css_class("packlift-progress");
     body.set_halign(gtk::Align::Center);
-    body.set_valign(gtk::Align::End);
+    body.set_valign(gtk::Align::Center);
     body.set_size_request(280, -1);
-    body.set_margin_bottom(22);
+    body.set_margin_top(20);
+    body.set_margin_bottom(20);
     body.set_margin_start(20);
     body.set_margin_end(20);
     let heading = gtk::Label::new(Some(title));
@@ -1570,8 +1583,7 @@ where
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
-    overlay.add_overlay(&body);
-    window.set_content(Some(&overlay));
+    window.set_content(Some(&body));
     stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
 
     enum JobEvent {
@@ -1603,7 +1615,9 @@ where
             Ok(JobEvent::Finished(result)) => {
                 if let Ok(Some(record)) = &result {
                     if record["method"] == "flatpak" {
-                        notify_flatpak_installed(&app, record);
+                        if record["flatpak_already_installed"].as_bool() != Some(true) {
+                            notify_flatpak_installed(&app, record);
+                        }
                         if record["flatpak_app_id"].as_str() == Some(APP_ID) {
                             for window in app.windows() {
                                 window.destroy();
@@ -1616,9 +1630,7 @@ where
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
                     window.remove_css_class("packlift-running-job");
-                    overlay.set_child(None::<&gtk::Widget>);
                     if let Some(page) = &previous {
-                        page.content.set_sensitive(content_sensitive);
                         page.restore(&window);
                     }
                     match result {
