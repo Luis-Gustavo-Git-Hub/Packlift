@@ -227,6 +227,15 @@ impl Runner {
     }
 
     pub fn capture_bytes(&self, args: &[String], local: bool) -> Result<Vec<u8>> {
+        self.capture_bytes_limited(args, local, 2 * 1024 * 1024)
+    }
+
+    pub(crate) fn capture_bytes_limited(
+        &self,
+        args: &[String],
+        local: bool,
+        limit: u64,
+    ) -> Result<Vec<u8>> {
         let command = self.command(args, local, true);
         let shell = command
             .iter()
@@ -234,16 +243,30 @@ impl Runner {
             .collect::<Vec<_>>()
             .join(" ");
         self.write(&format!("{} $ {shell}", chrono_timestamp()));
-        let output = Command::new(&command[0]).args(&command[1..]).output()?;
-        if !output.status.success() {
-            return Err(PackliftError::Message(format!("{} failed.", command[0])));
-        }
-        if output.stdout.len() > 2 * 1024 * 1024 {
+        let mut child = Command::new(&command[0])
+            .args(&command[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let mut data = Vec::new();
+        let read = child
+            .stdout
+            .take()
+            .expect("piped command stdout")
+            .take(limit + 1)
+            .read_to_end(&mut data);
+        if read.is_err() || data.len() as u64 > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            read?;
             return Err(PackliftError::Message(
-                "The application icon is too large to export safely.".into(),
+                "The downloaded data exceeds the size limit.".into(),
             ));
         }
-        Ok(output.stdout)
+        if !child.wait()?.success() {
+            return Err(PackliftError::Message(format!("{} failed.", command[0])));
+        }
+        Ok(data)
     }
 
     pub fn available(&self, executable: &str) -> bool {

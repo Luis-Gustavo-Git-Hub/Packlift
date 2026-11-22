@@ -1,5 +1,6 @@
 mod flatpak_ui;
 mod i18n;
+mod store_ui;
 
 use adw::prelude::*;
 use i18n::tr;
@@ -118,6 +119,22 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
 
     let (menu, popover, actions) = action_menu(tr("Packlift menu"), "open-menu-symbolic");
+    let store = gtk::Button::builder()
+        .child(
+            &adw::ButtonContent::builder()
+                .icon_name("system-software-install-symbolic")
+                .label(tr("Store"))
+                .build(),
+        )
+        .build();
+    let store_app = app.clone();
+    let parent = window.downgrade();
+    store.connect_clicked(move |_| {
+        if let Some(parent) = parent.upgrade() {
+            store_ui::show(&store_app, &parent);
+        }
+    });
+    header.pack_start(&store);
     let library_app = app.clone();
     let parent = window.downgrade();
     add_menu_item(&popover, &actions, tr("Refresh library"), move || {

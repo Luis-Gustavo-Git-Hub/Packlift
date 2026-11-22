@@ -227,3 +227,23 @@ Local Linux apps|Apps Linux locais|Aplicaciones locales de Linux|Локальн�
 Native Linux packages|Pacotes nativos Linux|Paquetes nativos de Linux|Системные пакеты Linux|Linux 原生软件包
 Toolbx apps|Apps do Toolbx|Aplicaciones de Toolbx|Приложения Toolbx|Toolbx 应用
 The app’s data will be kept when removing this installation ({scope}).|Os dados do app serão mantidos ao remover esta instalação ({scope}).|Los datos de la aplicación se conservarán al eliminar esta instalación ({scope}).|При удалении этой установки ({scope}) данные приложения сохранятся.|卸载此安装（{scope}）时会保留应用数据。
+Store|Loja|Tienda|Магазин|商店
+Discover apps|Encontre aplicativos|Descubre aplicaciones|Найдите приложения|发现应用
+Repository|Repositório|Repositorio|Репозиторий|软件仓库
+Install scope|Destino da instalação|Destino de instalación|Область установки|安装范围
+For my account|Para minha conta|Para mi cuenta|Для моей учётной записи|为当前账户安装
+For the system|Para o sistema|Para el sistema|Для всей системы|为整个系统安装
+Search the store|Buscar na loja|Buscar en la tienda|Поиск в магазине|搜索商店
+Search|Buscar|Buscar|Найти|搜索
+Previous|Anterior|Anterior|Назад|上一页
+Next|Próximo|Siguiente|Далее|下一页
+Page {number}|Página {number}|Página {number}|Страница {number}|第 {number} 页
+Loading repositories…|Carregando repositórios…|Cargando repositorios…|Загрузка репозиториев…|正在加载软件仓库…
+Searching the store…|Buscando na loja…|Buscando en la tienda…|Поиск в магазине…|正在搜索商店…
+No apps match this search.|Nenhum app corresponde à busca.|Ninguna aplicación coincide con la búsqueda.|Приложения не найдены.|没有匹配的应用。
+Loading screenshots…|Carregando capturas de tela…|Cargando capturas de pantalla…|Загрузка снимков экрана…|正在加载截图…
+No screenshots are available from this repository.|Este repositório não disponibiliza capturas de tela.|Este repositorio no ofrece capturas de pantalla.|В этом репозитории нет снимков экрана.|此软件仓库没有提供截图。
+Screenshots could not be loaded.|Não foi possível carregar as capturas de tela.|No se pudieron cargar las capturas de pantalla.|Не удалось загрузить снимки экрана.|无法加载截图。
+Flathub will be added to the selected installation before installing the app.|O Flathub será adicionado ao destino escolhido antes de instalar o app.|Flathub se añadirá al destino elegido antes de instalar la aplicación.|Перед установкой приложения Flathub будет добавлен в выбранную область.|安装应用前，会将 Flathub 添加到选定的安装范围。
+Install this app from the selected repository and scope?|Instalar este app pelo repositório e no destino escolhidos?|¿Instalar esta aplicación desde el repositorio y en el destino seleccionados?|Установить приложение из выбранного репозитория в указанную область?|要从选定的软件仓库安装到指定范围吗？
+Install from the store?|Instalar pela loja?|¿Instalar desde la tienda?|Установить из магазина?|从商店安装？

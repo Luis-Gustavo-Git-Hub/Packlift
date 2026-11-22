@@ -37,6 +37,10 @@ Open **Permissions…** from a Flatpak's three-dot menu to change network, displ
 
 Overrides apply to your user account, including when the app was installed system-wide. Restart the app after saving. **Restore defaults…** removes its user overrides, while **Reset portal permissions…** clears its saved desktop portal grants.
 
+### Store
+
+Open **Store** to search Flathub and Flatpak repositories configured for the selected installation scope. App details show screenshots when the catalog provides them. Choose **For my account** or **For the system** before choosing a repository and installing an app. Packlift asks before adding the official Flathub repository to a scope where it is missing. System installs use the host's Flatpak authorization, and online catalog artwork uses curl or wget on the host.
+
 ### Updating from v0.1.0
 
 Flatpak treats `io.github.luis_gustavo_git_hub.Packlift` as a separate app from `io.github.flatapk.Installer`. Install the new bundle and check your library before removing the previous installation. Host mode still uses your existing Packlift data directory. Enable host access and set your file associations again if you used those features. Sandbox mode has a separate library under the new ID, so add your local packages again there.
