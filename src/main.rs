@@ -58,13 +58,15 @@ fn main() -> glib::ExitCode {
         if let Some(display) = gtk::gdk::Display::default() {
             let css = gtk::CssProvider::new();
             css.load_from_data(
-                ".packlift-home-hero { padding: 20px; border-radius: 16px; background-color: alpha(@accent_bg_color, 0.12); border: 1px solid alpha(@accent_bg_color, 0.25); }
+                "scrollbar.vertical { opacity: 0; }
+                 .packlift-home-hero { padding: 20px; border-radius: 16px; background-color: alpha(@accent_bg_color, 0.12); border: 1px solid alpha(@accent_bg_color, 0.25); }
                  .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }
                  .packlift-package-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.17), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.22); }
                  .packlift-package-icon { padding: 9px; border-radius: 12px; background-color: alpha(@card_bg_color, 0.8); }
                  .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }
                  .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; box-shadow: 0 4px 18px alpha(black, 0.24); }
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.18), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.23); }
+                 .packlift-store-feature:hover, .packlift-store-feature:focus-visible { border-color: alpha(@accent_bg_color, 0.65); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
@@ -76,8 +78,19 @@ fn main() -> glib::ExitCode {
                  button.packlift-store-shot-button { padding: 0; border-radius: 10px; }
                  .packlift-store-zoom { margin: 8px; padding: 6px; border-radius: 8px; background: @card_bg_color; }
                  .packlift-store-release { padding: 16px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
+                 .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.08); border: 1px solid alpha(@window_fg_color, 0.10); }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
-                 button.packlift-store-card:hover { background: alpha(@accent_bg_color, 0.13); }",
+                 .packlift-store-card.blue { background-image: linear-gradient(115deg, alpha(#3584e4, 0.26), alpha(#3584e4, 0.08)); }
+                 .packlift-store-card.teal { background-image: linear-gradient(115deg, alpha(#20a6a2, 0.26), alpha(#20a6a2, 0.08)); }
+                 .packlift-store-card.green { background-image: linear-gradient(115deg, alpha(#4b9e45, 0.26), alpha(#4b9e45, 0.08)); }
+                 .packlift-store-card.amber { background-image: linear-gradient(115deg, alpha(#b58a2b, 0.26), alpha(#b58a2b, 0.08)); }
+                 .packlift-store-card.orange { background-image: linear-gradient(115deg, alpha(#dc7438, 0.26), alpha(#dc7438, 0.08)); }
+                 .packlift-store-card.red { background-image: linear-gradient(115deg, alpha(#ce4845, 0.26), alpha(#ce4845, 0.08)); }
+                 .packlift-store-card.pink { background-image: linear-gradient(115deg, alpha(#bd5793, 0.26), alpha(#bd5793, 0.08)); }
+                 .packlift-store-card.purple { background-image: linear-gradient(115deg, alpha(#8d65d6, 0.26), alpha(#8d65d6, 0.08)); }
+                 button.packlift-store-card:hover { border-color: alpha(@window_fg_color, 0.28); }
+                 button.packlift-store-card:focus-visible { border-color: @accent_color; }",
             );
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
@@ -162,6 +175,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     window.set_widget_name("packlift-library");
     window.set_resizable(true);
     let host_access = host_access_available();
+    if host_access {
+        store_ui::preload(app, window);
+    }
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
@@ -416,6 +432,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
@@ -550,7 +567,9 @@ fn home_label(text: &str, class: &str) -> gtk::Label {
     label.set_xalign(0.0);
     label.set_wrap(true);
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    label.add_css_class(class);
+    if !class.is_empty() {
+        label.add_css_class(class);
+    }
     label
 }
 
@@ -1292,7 +1311,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
         }
     }
     let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
     scroll.set_propagate_natural_height(true);
     scroll.set_max_content_height(480);
     scroll.set_child(Some(&body));
@@ -2017,6 +2036,7 @@ fn show_error(window: &adw::ApplicationWindow, message: &str) {
     let clamp = adw::Clamp::builder().maximum_size(640).child(&body).build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
@@ -2129,6 +2149,7 @@ fn show_editor(
     let clamp = adw::Clamp::builder().maximum_size(620).child(body).build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
@@ -2159,6 +2180,7 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
         }));
     let scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .child(&*log)
         .build();
     body.append(&scroll);

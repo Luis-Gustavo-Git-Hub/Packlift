@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{hash_map::RandomState, BTreeSet, HashMap, VecDeque},
+    hash::BuildHasher,
     rc::Rc,
     sync::Arc,
 };
@@ -22,6 +23,7 @@ struct StoreView {
     search: gtk::SearchEntry,
     submit: gtk::Button,
     feature: gtk::Box,
+    carousel: adw::Carousel,
     list: gtk::FlowBox,
     status: gtk::Label,
     scroll: gtk::ScrolledWindow,
@@ -31,30 +33,81 @@ struct StoreView {
     remotes: RefCell<Vec<Remote>>,
     installed: RefCell<Option<BTreeSet<String>>>,
     catalog_search: RefCell<Option<CatalogSearch>>,
+    explore_search: RefCell<Option<CatalogSearch>>,
+    banners: RefCell<Vec<FeaturedApp>>,
+    banner_requested: RefCell<BTreeSet<String>>,
     page: Cell<usize>,
     busy: Cell<bool>,
     pending_search: Cell<bool>,
 }
 
-pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
+#[derive(Clone)]
+struct StoreSession {
+    window: glib::WeakRef<adw::ApplicationWindow>,
+    toolbar: adw::ToolbarView,
+    search: gtk::SearchEntry,
+}
+
+thread_local! {
+    static STORE_SESSIONS: RefCell<Vec<StoreSession>> = const { RefCell::new(Vec::new()) };
+    static CARD_COLORS: RandomState = RandomState::new();
+}
+
+fn store_session(app: &adw::Application, window: &adw::ApplicationWindow) -> StoreSession {
+    if let Some(session) = STORE_SESSIONS.with_borrow(|sessions| {
+        sessions
+            .iter()
+            .find(|session| session.window.upgrade().as_ref() == Some(window))
+            .cloned()
+    }) {
+        return session;
+    }
+    let session = create_store(app, window);
+    STORE_SESSIONS.with_borrow_mut(|sessions| sessions.push(session.clone()));
+    window.connect_destroy(|window| {
+        STORE_SESSIONS.with_borrow_mut(|sessions| {
+            sessions.retain(|session| {
+                session
+                    .window
+                    .upgrade()
+                    .is_some_and(|owner| owner != *window)
+            });
+        });
+    });
+    session
+}
+
+pub(super) fn preload(app: &adw::Application, window: &adw::ApplicationWindow) {
+    store_session(app, window);
+}
+
+pub(super) fn show(app: &adw::Application, window: &adw::ApplicationWindow) {
     if !packlift::system::host_access_available() {
-        show_host_access_dialog(parent);
+        show_host_access_dialog(window);
         return;
     }
-    let window = parent;
+    let session = store_session(app, window);
+    window.set_widget_name("packlift-store");
+    window.set_title(Some(tr("Store")));
+    window.set_content(Some(&session.toolbar));
+    window.present();
+    session.search.grab_focus();
+}
+
+fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> StoreSession {
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
     let home = window.downgrade();
-    let application = app.clone();
+    let application = app.downgrade();
     page_navigation(
         &toolbar,
         &header,
         tr("Library"),
         "view-grid-symbolic",
         move || {
-            if let Some(window) = home.upgrade() {
-                render_home(&application, &window);
+            if let (Some(app), Some(window)) = (application.upgrade(), home.upgrade()) {
+                render_home(&app, &window);
             }
         },
     );
@@ -87,7 +140,7 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
     let status = home_label("", "dim-label");
     status.set_selectable(true);
     body.append(&status);
-    let feature = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let (feature, carousel) = store_carousel();
     let list = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(1)
@@ -101,6 +154,7 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
     catalog.append(&list);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .vexpand(true)
         .child(&catalog)
         .build();
@@ -120,9 +174,6 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         .child(&body)
         .build();
     toolbar.set_content(Some(&layout));
-    window.set_widget_name("packlift-store");
-    window.set_title(Some(tr("Store")));
-    window.set_content(Some(&toolbar));
     let search_target = search.downgrade();
     page_shortcut(&toolbar, "<Control>f", move || {
         if let Some(search) = search_target.upgrade() {
@@ -135,6 +186,7 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         search,
         submit,
         feature,
+        carousel,
         list,
         status,
         scroll,
@@ -144,6 +196,9 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         remotes: RefCell::new(Vec::new()),
         installed: RefCell::new(None),
         catalog_search: RefCell::new(None),
+        explore_search: RefCell::new(None),
+        banners: RefCell::new(Vec::new()),
+        banner_requested: RefCell::new(BTreeSet::new()),
         page: Cell::new(1),
         busy: Cell::new(false),
         pending_search: Cell::new(false),
@@ -187,8 +242,11 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         let _ = &keep_alive;
     });
     view.load_remotes();
-    window.present();
-    view.search.grab_focus();
+    StoreSession {
+        window: window.downgrade(),
+        toolbar,
+        search: view.search.clone(),
+    }
 }
 
 impl StoreView {
@@ -241,29 +299,29 @@ impl StoreView {
         {
             return;
         }
-        self.feature.set_visible(false);
-        self.list.set_visible(false);
         let view = self.clone();
         background(
             move || crate::installer().and_then(|installer| installer.installed_flatpak_ids()),
             move |result| {
                 if let Ok(installed) = result {
                     let changed = view.installed.borrow().as_ref() != Some(&installed);
-                    *view.installed.borrow_mut() = Some(installed);
-                    if changed
+                    let refresh = changed
                         && !view.busy.get()
                         && view
                             .catalog_search
                             .borrow()
                             .as_ref()
-                            .is_some_and(CatalogSearch::is_explore)
-                    {
-                        view.search_for(String::new());
-                        return;
+                            .is_some_and(CatalogSearch::is_explore);
+                    if refresh {
+                        if let Some(search) = view.catalog_search.borrow_mut().as_mut() {
+                            search.exclude_installed(&installed);
+                        }
+                    }
+                    *view.installed.borrow_mut() = Some(installed);
+                    if refresh {
+                        view.load_catalog_page(view.page.get(), true);
                     }
                 }
-                view.feature.set_visible(true);
-                view.list.set_visible(true);
             },
         );
     }
@@ -274,7 +332,21 @@ impl StoreView {
 
     fn search_for(self: &Rc<Self>, query: String) {
         self.pending_search.set(false);
-        let mut search = CatalogSearch::new(self.remotes.borrow().clone(), query);
+        if let Some(active) = self
+            .catalog_search
+            .borrow_mut()
+            .take()
+            .filter(CatalogSearch::is_explore)
+        {
+            *self.explore_search.borrow_mut() = Some(active);
+        }
+        let explore = query.is_empty();
+        let mut search = if explore {
+            self.explore_search.borrow_mut().take()
+        } else {
+            None
+        }
+        .unwrap_or_else(|| CatalogSearch::new(self.remotes.borrow().clone(), query));
         if search.is_explore() {
             let installed = self.installed.borrow();
             let Some(installed) = installed.as_ref() else {
@@ -290,23 +362,25 @@ impl StoreView {
             };
             search.exclude_installed(installed);
         }
-        self.feature.set_visible(true);
         self.list.set_visible(true);
         *self.catalog_search.borrow_mut() = Some(search);
         self.load_page(1);
     }
 
     fn load_page(self: &Rc<Self>, page: usize) {
+        self.load_catalog_page(page, false);
+    }
+
+    fn load_catalog_page(self: &Rc<Self>, page: usize, keep_position: bool) {
         let Some(mut catalog_search) = self.catalog_search.borrow_mut().take() else {
             return;
         };
         self.set_busy(true);
-        self.list.remove_all();
-        if let Some(child) = self.feature.first_child() {
-            self.feature.remove(&child);
+        if !keep_position {
+            self.clear_results();
+            self.page_label.set_text("");
+            self.set_status(tr("Searching the store…"));
         }
-        self.page_label.set_text("");
-        self.set_status(tr("Searching the store…"));
         let explore = catalog_search.is_explore() && page == 1;
         let view = self.clone();
         background(
@@ -323,9 +397,14 @@ impl StoreView {
                 view.set_busy(false);
                 match result {
                     Ok(results) => {
+                        if keep_position {
+                            view.clear_results();
+                        }
                         view.page.set(page);
-                        let adjustment = view.scroll.vadjustment();
-                        adjustment.set_value(adjustment.lower());
+                        if !keep_position {
+                            let adjustment = view.scroll.vadjustment();
+                            adjustment.set_value(adjustment.lower());
+                        }
                         view.previous.set_sensitive(page > 1);
                         view.next.set_sensitive(results.has_next);
                         view.page_label
@@ -335,15 +414,17 @@ impl StoreView {
                         } else {
                             ""
                         });
-                        let mut apps = results.apps.into_iter();
-                        if explore {
-                            if let Some((remote, app)) = apps.next() {
-                                view.feature
-                                    .append(&featured_app(&view.window, remote, app));
+                        let featured_id = if explore {
+                            let featured = view.render_banner(&results.apps);
+                            view.prepare_banner(&results.apps);
+                            featured
+                        } else {
+                            None
+                        };
+                        for (remote, app) in results.apps {
+                            if featured_id.as_deref() != Some(app.id.as_str()) {
+                                view.list.append(&app_card(&view.window, remote, app));
                             }
-                        }
-                        for (remote, app) in apps {
-                            view.list.append(&app_card(&view.window, remote, app));
                         }
                     }
                     Err(error) => {
@@ -354,6 +435,207 @@ impl StoreView {
                 }
             },
         );
+    }
+
+    fn clear_results(&self) {
+        self.list.remove_all();
+        let slides: Vec<_> = (0..self.carousel.n_pages())
+            .map(|index| self.carousel.nth_page(index))
+            .collect();
+        for slide in slides {
+            self.carousel.remove(&slide);
+        }
+        self.feature.set_visible(false);
+    }
+
+    fn prepare_banner(self: &Rc<Self>, apps: &[StoreChoice]) {
+        let mut requested = self.banner_requested.borrow_mut();
+        if requested.len() >= 6 && self.carousel.n_pages() > 0 {
+            return;
+        }
+        for (remote, app) in apps
+            .iter()
+            .filter(|(_, app)| requested.insert(app.id.clone()))
+            .take(6)
+            .cloned()
+        {
+            let view = Rc::downgrade(self);
+            background(
+                move || {
+                    let runner = worker().ok()?;
+                    let details = store::app_details(&runner, &remote, &app).ok()?;
+                    let (bytes, caption) =
+                        details.screenshots.into_iter().take(2).find_map(|shot| {
+                            store::screenshot_bytes(&runner, &shot.url)
+                                .ok()
+                                .map(|bytes| (bytes, shot.caption))
+                        })?;
+                    Some((remote, app, bytes, caption))
+                },
+                move |result| {
+                    let (Some(view), Some((remote, app, bytes, caption))) =
+                        (view.upgrade(), result)
+                    else {
+                        return;
+                    };
+                    let stream =
+                        gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+                    let Ok(image) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+                        &stream,
+                        1440,
+                        1440,
+                        true,
+                        gio::Cancellable::NONE,
+                    ) else {
+                        return;
+                    };
+                    let banner = FeaturedApp {
+                        remote,
+                        app,
+                        image: gtk::gdk::Texture::for_pixbuf(&image),
+                        caption,
+                    };
+                    if !view.busy.get()
+                        && view.page.get() == 1
+                        && view
+                            .catalog_search
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(CatalogSearch::is_explore)
+                        && view.carousel.n_pages() < 4
+                    {
+                        let mut child = view.list.first_child();
+                        while let Some(row) = child {
+                            if row
+                                .downcast_ref::<gtk::FlowBoxChild>()
+                                .and_then(gtk::FlowBoxChild::child)
+                                .is_some_and(|card| card.widget_name() == banner.app.id)
+                            {
+                                if view.carousel.n_pages() == 0 {
+                                    view.list.remove(&row);
+                                }
+                                view.append_banner(&banner);
+                                break;
+                            }
+                            child = row.next_sibling();
+                        }
+                    }
+                    view.banners.borrow_mut().push(banner);
+                },
+            );
+        }
+    }
+
+    fn append_banner(&self, banner: &FeaturedApp) {
+        self.carousel.append(&featured_app(&self.window, banner));
+        self.feature.set_visible(true);
+    }
+
+    fn render_banner(&self, apps: &[StoreChoice]) -> Option<String> {
+        let banners = self.banners.borrow();
+        let mut first = None;
+        for banner in banners
+            .iter()
+            .filter(|banner| apps.iter().any(|(_, app)| app.id == banner.app.id))
+            .take(4)
+        {
+            first.get_or_insert_with(|| banner.app.id.clone());
+            self.append_banner(banner);
+        }
+        first
+    }
+}
+
+fn store_carousel() -> (gtk::Box, adw::Carousel) {
+    let feature = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    feature.set_visible(false);
+    let carousel = adw::Carousel::builder()
+        .allow_scroll_wheel(false)
+        .reveal_duration(0)
+        .hexpand(true)
+        .build();
+    feature.append(&carousel);
+
+    let wheel = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::DISCRETE,
+    );
+    wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let slides = carousel.downgrade();
+    wheel.connect_scroll(move |_, dx, dy| {
+        let Some(carousel) = slides.upgrade().filter(|carousel| carousel.n_pages() > 1) else {
+            return glib::Propagation::Proceed;
+        };
+        let delta = if dy.abs() >= dx.abs() { dy } else { dx };
+        if delta == 0.0 {
+            return glib::Propagation::Proceed;
+        }
+        advance_banner(&carousel, if delta > 0.0 { 1 } else { -1 });
+        glib::Propagation::Stop
+    });
+    carousel.add_controller(wheel);
+
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    controls.set_halign(gtk::Align::Center);
+    controls.set_visible(false);
+    let indicator = adw::CarouselIndicatorDots::builder()
+        .carousel(&carousel)
+        .build();
+    for (step, icon, label) in [
+        (-1, "go-previous-symbolic", tr("Previous")),
+        (1, "go-next-symbolic", tr("Next")),
+    ] {
+        if step == 1 {
+            controls.append(&indicator);
+        }
+        let button = gtk::Button::from_icon_name(icon);
+        button.add_css_class("flat");
+        button.set_tooltip_text(Some(label));
+        button.update_property(&[gtk::accessible::Property::Label(label)]);
+        let slides = carousel.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(carousel) = slides.upgrade() {
+                advance_banner(&carousel, step);
+            }
+        });
+        controls.append(&button);
+    }
+    let nav = controls.downgrade();
+    carousel.connect_n_pages_notify(move |carousel| {
+        if let Some(nav) = nav.upgrade() {
+            nav.set_visible(carousel.n_pages() > 1);
+        }
+    });
+    feature.append(&controls);
+
+    let pointer = gtk::EventControllerMotion::new();
+    feature.add_controller(pointer.clone());
+    let focus = gtk::EventControllerFocus::new();
+    feature.add_controller(focus.clone());
+    let interval = std::time::Duration::from_secs(6);
+    let next_rotation = Cell::new(std::time::Instant::now() + interval);
+    let slides = carousel.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+        let Some(carousel) = slides.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let now = std::time::Instant::now();
+        if !carousel.is_mapped() || pointer.contains_pointer() || focus.contains_focus() {
+            next_rotation.set(now + interval);
+        } else if now >= next_rotation.get() {
+            advance_banner(&carousel, 1);
+            next_rotation.set(now + interval);
+        }
+        glib::ControlFlow::Continue
+    });
+    (feature, carousel)
+}
+
+fn advance_banner(carousel: &adw::Carousel, step: i64) {
+    let count = i64::from(carousel.n_pages());
+    if count > 1 {
+        let current = carousel.position().round() as i64;
+        let next = (current + step).rem_euclid(count) as u32;
+        carousel.scroll_to(&carousel.nth_page(next), true);
     }
 }
 
@@ -460,7 +742,18 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     body.append(&releases);
     let (sources_section, sources) = detail_list(tr("Sources"));
     body.append(&sources_section);
-    let (links_section, links) = detail_list(tr("Links"));
+    let links_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    links_section.set_visible(false);
+    links_section.append(&home_label(tr("Links"), "title-3"));
+    let links = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(true)
+        .row_spacing(4)
+        .column_spacing(6)
+        .build();
+    links_section.append(&links);
     body.append(&links_section);
     let similar_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
     similar_section.set_visible(false);
@@ -483,6 +776,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .child(&layout)
         .build();
     toolbar.set_content(Some(&scroll));
@@ -744,21 +1038,40 @@ fn release_card(release: store::Release) -> gtk::Box {
 
 fn show_detail_links(
     section: &gtk::Box,
-    rows: &gtk::ListBox,
+    rows: &gtk::FlowBox,
     parent: &glib::WeakRef<adw::ApplicationWindow>,
     links: Vec<(&'static str, String)>,
 ) {
     section.set_visible(!links.is_empty());
     for (name, url) in links {
-        let row = detail_row(tr(name), &url);
+        let name = tr(name);
+        let tile = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        tile.set_size_request(190, -1);
+        tile.add_css_class("packlift-store-link");
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        content.append(&gtk::Image::from_icon_name("go-jump-symbolic"));
+        let title = home_label(name, "");
+        title.set_wrap(false);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        content.append(&title);
+        let open = gtk::Button::new();
+        open.add_css_class("flat");
+        open.set_hexpand(true);
+        open.set_child(Some(&content));
+        open.set_tooltip_text(Some(&url));
+        open.update_property(&[
+            gtk::accessible::Property::Label(name),
+            gtk::accessible::Property::Description(&url),
+        ]);
+        tile.append(&open);
         let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
-        let open = gtk::Button::from_icon_name("go-jump-symbolic");
-        for (button, label) in [(&copy, tr("Copy link")), (&open, tr("Open link"))] {
-            button.set_valign(gtk::Align::Center);
-            button.set_tooltip_text(Some(label));
-            button.update_property(&[gtk::accessible::Property::Label(label)]);
-            row.add_suffix(button);
-        }
+        copy.add_css_class("flat");
+        copy.set_tooltip_text(Some(tr("Copy link")));
+        copy.update_property(&[
+            gtk::accessible::Property::Label(tr("Copy link")),
+            gtk::accessible::Property::Description(name),
+        ]);
+        tile.append(&copy);
         let link = url.clone();
         copy.connect_clicked(move |button| {
             button.clipboard().set_text(&link);
@@ -779,6 +1092,9 @@ fn show_detail_links(
                 );
             }
         });
+        let row = gtk::FlowBoxChild::new();
+        row.set_focusable(false);
+        row.set_child(Some(&tile));
         rows.append(&row);
     }
 }
@@ -887,11 +1203,27 @@ fn app_card(
 ) -> gtk::Button {
     let button = gtk::Button::builder().hexpand(true).build();
     button.add_css_class("packlift-store-card");
+    let colors = [
+        "blue", "teal", "green", "amber", "orange", "red", "pink", "purple",
+    ];
+    let color = CARD_COLORS.with(|random| random.hash_one(&app.id) as usize % colors.len());
+    button.add_css_class(colors[color]);
+    button.set_widget_name(&app.id);
     button.set_size_request(190, 76);
     button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     content.set_valign(gtk::Align::Center);
-    content.append(&catalog_icon(&app, 46));
+    let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    frame.add_css_class("packlift-store-card-icon");
+    frame.set_size_request(52, 52);
+    frame.set_hexpand(false);
+    frame.set_valign(gtk::Align::Center);
+    let icon = catalog_icon(&app, 40);
+    icon.set_hexpand(true);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    frame.append(&icon);
+    content.append(&frame);
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
     let name = home_label(&app.name, "heading");
@@ -922,18 +1254,29 @@ fn app_card(
     button
 }
 
-fn featured_app(
-    window: &glib::WeakRef<adw::ApplicationWindow>,
+struct FeaturedApp {
     remote: Remote,
     app: CatalogApp,
-) -> gtk::Box {
+    image: gtk::gdk::Texture,
+    caption: String,
+}
+
+fn featured_app(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    featured: &FeaturedApp,
+) -> gtk::Button {
+    let FeaturedApp {
+        remote,
+        app,
+        image,
+        caption,
+    } = featured;
     let hero = gtk::Box::new(gtk::Orientation::Horizontal, 24);
-    hero.add_css_class("packlift-store-feature");
     let intro = gtk::Box::new(gtk::Orientation::Vertical, 8);
     intro.set_hexpand(true);
     intro.set_halign(gtk::Align::Center);
     intro.set_valign(gtk::Align::Center);
-    let icon = catalog_icon(&app, 56);
+    let icon = catalog_icon(app, 56);
     icon.set_halign(gtk::Align::Start);
     intro.append(&icon);
     let name = home_label(&app.name, "title-1");
@@ -944,11 +1287,6 @@ fn featured_app(
     if !app.summary.is_empty() {
         intro.append(&summary);
     }
-    let details = text_button(tr("View app"));
-    details.set_halign(gtk::Align::Start);
-    details.set_margin_top(4);
-    details.add_css_class("suggested-action");
-    intro.append(&details);
     hero.append(&intro);
 
     let picture = gtk::Picture::builder()
@@ -961,44 +1299,30 @@ fn featured_app(
         .build();
     picture.add_css_class("packlift-store-preview");
     picture.set_overflow(gtk::Overflow::Hidden);
-    picture.set_visible(false);
+    picture.set_paintable(Some(image));
+    if !caption.is_empty() {
+        picture.set_alternative_text(Some(caption));
+    }
     hero.append(&picture);
 
-    let selected = app.clone();
-    let origin = remote.clone();
-    let image = picture.downgrade();
-    background(
-        move || {
-            let runner = worker().ok()?;
-            store::app_details(&runner, &origin, &selected)
-                .ok()?
-                .screenshots
-                .into_iter()
-                .next()
-        },
-        move |result| {
-            let (Some(shot), Some(picture)) = (result, image.upgrade()) else {
-                return;
-            };
-            let caption = shot.caption;
-            load_screenshot(&picture, shot.url, None, move |picture, texture| {
-                if let Some(texture) = texture {
-                    picture.set_paintable(Some(texture));
-                    if !caption.is_empty() {
-                        picture.set_alternative_text(Some(&caption));
-                    }
-                    picture.set_visible(true);
-                }
-            });
-        },
-    );
+    let remote = remote.clone();
+    let app = app.clone();
     let parent = window.clone();
-    details.connect_clicked(move |_| {
+    let banner = gtk::Button::new();
+    banner.add_css_class("packlift-store-feature");
+    banner.set_hexpand(true);
+    banner.set_cursor_from_name(Some("pointer"));
+    banner.set_child(Some(&hero));
+    banner.update_property(&[
+        gtk::accessible::Property::Label(&app.name),
+        gtk::accessible::Property::Description(&app.summary),
+    ]);
+    banner.connect_clicked(move |_| {
         if let Some(window) = parent.upgrade() {
             show_app(&window, &remote, &app);
         }
     });
-    hero
+    banner
 }
 
 type IconKey = (CatalogIcon, String);
@@ -1035,6 +1359,7 @@ fn catalog_icon(app: &CatalogApp, size: i32) -> gtk::Image {
         if let Some(pixbuf) = ready {
             paint_icon(&image, &pixbuf, size);
         } else {
+            queue_icon(&image, size, &key);
             image.connect_map(move |image| queue_icon(image, size, &key));
         }
     }

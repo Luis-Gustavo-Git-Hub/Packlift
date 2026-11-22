@@ -3,6 +3,7 @@ use std::{
     hash::BuildHasher,
     io::Read,
     path::PathBuf,
+    sync::OnceLock,
     thread,
 };
 
@@ -16,6 +17,7 @@ use crate::{
 const FLATHUB_REPO: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 const FLATHUB_API: &str = "https://flathub.org/api/v2";
 const PAGE_SIZE: usize = 24;
+static DISCOVER_ORDER: OnceLock<RandomState> = OnceLock::new();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Destination {
@@ -219,7 +221,13 @@ impl CatalogSearch {
         let end = page * PAGE_SIZE + featured;
         let rotate = self.is_explore() && self.remote_page == 1 && page == 1;
         while !self.remotes.is_empty()
-            && (self.apps.len() <= end || (rotate && self.remote_page <= 2))
+            && (self
+                .apps
+                .iter()
+                .filter(|(_, app)| !self.excluded.contains(&app.id))
+                .count()
+                <= end
+                || (rotate && self.remote_page <= 2))
         {
             let results = fetch(&self.remotes, &self.query, self.remote_page);
             let mut remaining = Vec::new();
@@ -233,7 +241,8 @@ impl CatalogSearch {
                             remaining.push(remote.clone());
                         }
                         self.apps.extend(results.apps.into_iter().filter_map(|app| {
-                            (!self.excluded.contains(&app.id) && self.seen.insert(app.id.clone()))
+                            self.seen
+                                .insert(app.id.clone())
                                 .then(|| (remote.clone(), app))
                         }));
                     }
@@ -245,7 +254,13 @@ impl CatalogSearch {
             if !loaded {
                 if let Some(error) = first_error {
                     // A buffered page is still usable when the lookahead fails.
-                    if self.apps.len() <= start {
+                    if self
+                        .apps
+                        .iter()
+                        .filter(|(_, app)| !self.excluded.contains(&app.id))
+                        .count()
+                        <= start
+                    {
                         return Err(error);
                     }
                     break;
@@ -255,19 +270,18 @@ impl CatalogSearch {
             self.remote_page += 1;
         }
         if rotate {
-            let random = RandomState::new();
+            let random = DISCOVER_ORDER.get_or_init(RandomState::new);
             self.apps
                 .sort_by_cached_key(|(_, app)| random.hash_one(&app.id));
         }
+        let mut visible = self
+            .apps
+            .iter()
+            .filter(|(_, app)| !self.excluded.contains(&app.id))
+            .skip(start);
         Ok(StorePage {
-            apps: self
-                .apps
-                .iter()
-                .skip(start)
-                .take(end - start)
-                .cloned()
-                .collect(),
-            has_next: self.apps.len() > end || !self.remotes.is_empty(),
+            apps: visible.by_ref().take(end - start).cloned().collect(),
+            has_next: visible.next().is_some() || !self.remotes.is_empty(),
         })
     }
 }
