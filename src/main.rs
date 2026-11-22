@@ -1,3 +1,4 @@
+mod flatpak_ui;
 mod i18n;
 
 use adw::prelude::*;
@@ -117,6 +118,13 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
 
     let (menu, popover, actions) = action_menu(tr("Packlift menu"), "open-menu-symbolic");
+    let library_app = app.clone();
+    let parent = window.downgrade();
+    add_menu_item(&popover, &actions, tr("Refresh library"), move || {
+        if let Some(window) = parent.upgrade() {
+            render_home(&library_app, &window);
+        }
+    });
     let parent = window.downgrade();
     add_menu_item(&popover, &actions, tr("Settings"), move || {
         if let Some(window) = parent.upgrade() {
@@ -240,7 +248,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
 
     let library = gtk::Box::new(gtk::Orientation::Vertical, 12);
     library.append(&home_label(tr("Your library"), "title-2"));
-    match installer().and_then(|manager| manager.registry.apps()) {
+    match installer().and_then(|manager| manager.library_apps()) {
         Ok(records) if records.is_empty() => library.append(&library_status(
             "folder-symbolic",
             tr("Your library is empty"),
@@ -251,10 +259,22 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 .sort_by_cached_key(|record| record["name"].as_str().unwrap_or("").to_lowercase());
             let search = gtk::SearchEntry::new();
             search.set_placeholder_text(Some(tr("Search programs and games")));
+            search.set_hexpand(true);
             search.update_property(&[gtk::accessible::Property::Label(tr(
                 "Search programs and games",
             ))]);
-            library.append(&search);
+            let filters = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            filters.append(&search);
+            let scope = gtk::DropDown::from_strings(&[
+                tr("All apps"),
+                tr("Flatpak apps"),
+                tr("Other apps"),
+            ]);
+            scope.update_property(&[gtk::accessible::Property::Label(tr("Filter by app type"))]);
+            if records.iter().any(|record| record["method"] == "flatpak") {
+                filters.append(&scope);
+            }
+            library.append(&filters);
 
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::None);
@@ -263,11 +283,15 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 .into_iter()
                 .map(|record| {
                     let row = library_row(app, window, &record);
-                    let searchable =
-                        format!("{} {}", row.title(), row.subtitle().unwrap_or_default())
-                            .to_lowercase();
+                    let searchable = format!(
+                        "{} {} {}",
+                        row.title(),
+                        row.subtitle().unwrap_or_default(),
+                        record["target"].as_str().unwrap_or_default()
+                    )
+                    .to_lowercase();
                     list.append(&row);
-                    (row, searchable)
+                    (row, searchable, record["method"] == "flatpak")
                 })
                 .collect();
             library.append(&list);
@@ -278,16 +302,35 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             );
             empty.set_visible(false);
             library.append(&empty);
-            search.connect_search_changed(move |entry| {
-                let query = entry.text().trim().to_lowercase();
+            let update_filter = Rc::new(move |query: &str, scope| {
+                let query = query.trim().to_lowercase();
                 let mut matches = false;
-                for (row, searchable) in &rows {
-                    let visible = searchable.contains(&query);
+                for (row, searchable, flatpak) in &rows {
+                    let visible = searchable.contains(&query)
+                        && match scope {
+                            1 => *flatpak,
+                            2 => !*flatpak,
+                            _ => true,
+                        };
                     row.set_visible(visible);
                     matches |= visible;
                 }
                 list.set_visible(matches);
                 empty.set_visible(!matches);
+            });
+            let search_filter = update_filter.clone();
+            let scope_ref = scope.downgrade();
+            search.connect_search_changed(move |entry| {
+                search_filter(
+                    &entry.text(),
+                    scope_ref.upgrade().map_or(0, |scope| scope.selected()),
+                );
+            });
+            let search = search.downgrade();
+            scope.connect_selected_notify(move |scope| {
+                if let Some(search) = search.upgrade() {
+                    update_filter(&search.text(), scope.selected());
+                }
             });
         }
         Err(error) => library.append(&library_status(
@@ -399,7 +442,13 @@ fn library_row(
                 .trim_start_matches("flatapk-")
         ),
         "native" => tr("Installed on this system").into(),
-        "flatpak" => tr("Flatpak for your account").into(),
+        "flatpak" => match record["flatpak_scope"].as_str() {
+            Some("system") => tr("System Flatpak").into(),
+            Some(scope) if scope.starts_with("system (") => {
+                format!("{} · {}", tr("System Flatpak"), &scope["system ".len()..])
+            }
+            _ => tr("Flatpak for your account").into(),
+        },
         _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").into(),
         _ => tr("Local Linux application").into(),
     };
@@ -463,6 +512,20 @@ fn library_row(
         "view-more-symbolic",
     );
     menu.set_valign(gtk::Align::Center);
+    if method == "flatpak" {
+        let external = record["external_flatpak"] == true;
+        let parent = window.downgrade();
+        let record = record.clone();
+        add_menu_item(&popover, &actions, tr("Permissions…"), move || {
+            if let Some(window) = parent.upgrade() {
+                flatpak_ui::show(&window, &record);
+            }
+        });
+        if external {
+            row.add_suffix(&menu);
+            return row;
+        }
+    }
     if method == "wine" {
         let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
         let parent = window.downgrade();
@@ -1528,7 +1591,11 @@ fn record_image(record: &Value, size: i32) -> gtk::Image {
         .as_ref()
         .map(|texture| gtk::Image::from_paintable(Some(texture)))
         .unwrap_or_else(|| {
-            gtk::Image::from_icon_name(if !icon.is_empty() && !Path::new(icon).is_absolute() {
+            let named_icon = !icon.is_empty() && !Path::new(icon).is_absolute();
+            let missing_flatpak_icon = record["method"] == "flatpak"
+                && gtk::gdk::Display::default()
+                    .is_some_and(|display| !gtk::IconTheme::for_display(&display).has_icon(icon));
+            gtk::Image::from_icon_name(if named_icon && !missing_flatpak_icon {
                 icon
             } else {
                 "application-x-executable"

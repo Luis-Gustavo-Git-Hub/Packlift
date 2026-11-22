@@ -140,3 +140,81 @@ Choose the installed executable|Escolher o executável instalado|Elegir el ejecu
 Windows installer finished|Instalador do Windows concluído|El instalador de Windows finalizó|Установщик Windows завершил работу|Windows 安装程序已结束
 Packlift could not identify a single program to open. Select the game's .exe from the folder where it was installed.|O Packlift não identificou um único programa para abrir. Selecione o .exe do jogo na pasta onde ele foi instalado.|Packlift no pudo identificar un único programa para abrir. Selecciona el .exe del juego en la carpeta donde se instaló.|Packlift не смог определить, какую программу запустить. Выберите файл .exe игры в папке установки.|Packlift 无法确定要打开哪个程序。请在游戏的安装文件夹中选择其 .exe 文件。
 Choose .exe…|Escolher .exe…|Elegir .exe…|Выбрать .exe…|选择 .exe…
+Refresh library|Atualizar biblioteca|Actualizar biblioteca|Обновить библиотеку|刷新应用库
+System Flatpak|Flatpak do sistema|Flatpak del sistema|Системный Flatpak|系统级 Flatpak
+Permissions…|Permissões…|Permisos…|Разрешения…|权限…
+Flatpak permissions|Permissões do Flatpak|Permisos de Flatpak|Разрешения Flatpak|Flatpak 权限
+Application ID|ID do aplicativo|ID de la aplicación|Идентификатор приложения|应用 ID
+Access|Acessos|Acceso|Доступ|访问权限
+Advanced|Avançado|Avanzado|Дополнительно|高级
+Details|Detalhes|Detalles|Подробности|详细信息
+Network and display|Rede e tela|Red y pantalla|Сеть и дисплей|网络与显示
+Network access|Acesso à rede|Acceso a la red|Доступ к сети|网络访问
+Shared memory (IPC)|Memória compartilhada (IPC)|Memoria compartida (IPC)|Общая память (IPC)|共享内存（IPC）
+Wayland|Wayland|Wayland|Wayland|Wayland
+X11|X11|X11|X11|X11
+Fallback X11|X11 como alternativa|X11 como alternativa|Запасной режим X11|备用 X11
+Audio and devices|Áudio e dispositivos|Audio y dispositivos|Звук и устройства|音频与设备
+Audio|Áudio|Audio|Звук|音频
+Graphics acceleration|Aceleração gráfica|Aceleración gráfica|Ускорение графики|图形加速
+Input devices|Dispositivos de entrada|Dispositivos de entrada|Устройства ввода|输入设备
+USB devices|Dispositivos USB|Dispositivos USB|Устройства USB|USB 设备
+All devices|Todos os dispositivos|Todos los dispositivos|Все устройства|所有设备
+Virtualization (KVM)|Virtualização (KVM)|Virtualización (KVM)|Виртуализация (KVM)|虚拟化（KVM）
+System services|Serviços do sistema|Servicios del sistema|Системные службы|系统服务
+Printing|Impressão|Impresión|Печать|打印
+SSH agent|Agente SSH|Agente SSH|Агент SSH|SSH 代理
+GPG agent|Agente GPG|Agente GPG|Агент GPG|GPG 代理
+Smart cards|Cartões inteligentes|Tarjetas inteligentes|Смарт-карты|智能卡
+Unrestricted session bus|Barramento de sessão sem restrições|Bus de sesión sin restricciones|Неограниченный доступ к шине сеанса|不受限的会话总线
+Unrestricted system bus|Barramento do sistema sem restrições|Bus del sistema sin restricciones|Неограниченный доступ к системной шине|不受限的系统总线
+Bluetooth|Bluetooth|Bluetooth|Bluetooth|蓝牙
+Custom rules|Regras personalizadas|Reglas personalizadas|Пользовательские правила|自定义规则
+Enter the path, service or variable you want to change. View current rules in Details.|Informe o caminho, serviço ou variável que deseja alterar. Veja as regras atuais em Detalhes.|Introduce la ruta, el servicio o la variable que quieres cambiar. Consulta las reglas actuales en Detalles.|Укажите путь, службу или переменную. Действующие правила можно увидеть во вкладке «Подробности».|输入要更改的路径、服务或变量。可在「详细信息」中查看当前规则。
+Files and folders|Arquivos e pastas|Archivos y carpetas|Файлы и папки|文件和文件夹
+Location|Local|Ubicación|Расположение|位置
+Custom path|Caminho personalizado|Ruta personalizada|Пользовательский путь|自定义路径
+Home folder|Pasta pessoal|Carpeta personal|Домашняя папка|主文件夹
+Host files|Arquivos do sistema anfitrião|Archivos del sistema anfitrión|Файлы основной системы|宿主系统文件
+Downloads|Downloads|Descargas|Загрузки|下载
+Path|Caminho|Ruta|Путь|路径
+File access|Acesso a arquivos|Acceso a archivos|Доступ к файлам|文件访问
+Read and write|Leitura e escrita|Lectura y escritura|Чтение и запись|读写
+Read only|Somente leitura|Solo lectura|Только чтение|只读
+Create if missing|Criar se não existir|Crear si no existe|Создать при отсутствии|不存在时创建
+Block|Bloquear|Bloquear|Запретить|阻止
+D-Bus services|Serviços do D-Bus|Servicios de D-Bus|Службы D-Bus|D-Bus 服务
+Service name|Nome do serviço|Nombre del servicio|Имя службы|服务名称
+Bus|Barramento|Bus|Шина|总线
+Session bus|Barramento de sessão|Bus de sesión|Шина сеанса|会话总线
+System bus|Barramento do sistema|Bus del sistema|Системная шина|系统总线
+Service access|Acesso ao serviço|Acceso al servicio|Доступ к службе|服务访问
+Talk|Comunicar|Comunicar|Обмен сообщениями|通信
+Own name|Assumir o nome|Poseer el nombre|Владение именем|拥有名称
+Environment variables|Variáveis de ambiente|Variables de entorno|Переменные окружения|环境变量
+Variable name|Nome da variável|Nombre de la variable|Имя переменной|变量名
+Value|Valor|Valor|Значение|值
+Variable action|Ação da variável|Acción de la variable|Действие с переменной|变量操作
+Set value|Definir valor|Establecer valor|Задать значение|设置值
+Unset variable|Remover variável|Eliminar variable|Удалить переменную|取消设置变量
+Effective permissions|Permissões em vigor|Permisos efectivos|Действующие разрешения|有效权限
+Portal permissions|Permissões do portal|Permisos del portal|Разрешения портала|门户权限
+These permissions were granted through desktop prompts.|Essas permissões foram concedidas em solicitações do ambiente gráfico.|Estos permisos se concedieron mediante avisos del escritorio.|Эти разрешения были выданы через запросы рабочего стола.|这些权限通过桌面提示授予。
+Reset portal permissions…|Redefinir permissões do portal…|Restablecer permisos del portal…|Сбросить разрешения портала…|重置门户权限…
+Changes apply to all installations of this app for your account. Restart the app to apply them.|As mudanças valem para todas as instalações deste app na sua conta. Reinicie o app para aplicá-las.|Los cambios se aplican a todas las instalaciones de esta aplicación en tu cuenta. Reiníciala para aplicarlos.|Изменения действуют для всех установок приложения в вашей учётной записи. Перезапустите приложение, чтобы применить их.|更改适用于当前账户中此应用的所有安装。重启应用后生效。
+Restore defaults…|Restaurar padrões…|Restaurar valores predeterminados…|Восстановить настройки по умолчанию…|恢复默认设置…
+No permissions reported.|Nenhuma permissão informada.|No se informó de ningún permiso.|Сведения о разрешениях отсутствуют.|没有报告任何权限。
+No portal permissions saved.|Nenhuma permissão do portal foi salva.|No hay permisos del portal guardados.|Сохранённых разрешений портала нет.|没有已保存的门户权限。
+The desktop permission store is unavailable.|O armazenamento de permissões do ambiente gráfico está indisponível.|El almacén de permisos del escritorio no está disponible.|Хранилище разрешений рабочего стола недоступно.|桌面权限存储不可用。
+No changes to save.|Nenhuma alteração para salvar.|No hay cambios que guardar.|Нет изменений для сохранения.|没有可保存的更改。
+Permissions saved. Restart the app to apply them.|Permissões salvas. Reinicie o app para aplicá-las.|Permisos guardados. Reinicia la aplicación para aplicarlos.|Разрешения сохранены. Перезапустите приложение, чтобы применить их.|权限已保存。重启应用后生效。
+Restore default permissions?|Restaurar permissões padrão?|¿Restaurar los permisos predeterminados?|Восстановить разрешения по умолчанию?|恢复默认权限？
+Remove all custom sandbox rules for this app from your account.|Remove todas as regras personalizadas do sandbox deste app na sua conta.|Elimina todas las reglas personalizadas de aislamiento de esta aplicación en tu cuenta.|Удаляет все пользовательские правила изоляции этого приложения для вашей учётной записи.|移除当前账户中此应用的所有自定义沙盒规则。
+Reset portal permissions?|Redefinir permissões do portal?|¿Restablecer los permisos del portal?|Сбросить разрешения портала?|重置门户权限？
+The app may ask again for permissions granted through desktop prompts.|O app poderá solicitar novamente as permissões concedidas pelo ambiente gráfico.|La aplicación puede volver a solicitar los permisos concedidos por el escritorio.|Приложение может снова запросить разрешения через рабочий стол.|应用可能再次通过桌面提示请求权限。
+Reset|Redefinir|Restablecer|Сбросить|重置
+Permissions reset.|Permissões redefinidas.|Permisos restablecidos.|Разрешения сброшены.|权限已重置。
+All apps|Todos os apps|Todas las aplicaciones|Все приложения|所有应用
+Flatpak apps|Apps Flatpak|Aplicaciones Flatpak|Приложения Flatpak|Flatpak 应用
+Other apps|Outros apps|Otras aplicaciones|Другие приложения|其他应用
+Filter by app type|Filtrar por tipo de app|Filtrar por tipo de aplicación|Фильтр по типу приложения|按应用类型筛选

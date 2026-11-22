@@ -183,15 +183,36 @@ impl Runner {
     }
 
     pub fn capture(&self, args: &[String], local: bool) -> Result<String> {
+        self.capture_with_private_prefix(args, local, None)
+    }
+
+    pub(crate) fn capture_with_private_prefix(
+        &self,
+        args: &[String],
+        local: bool,
+        private_prefix: Option<&str>,
+    ) -> Result<String> {
         let command = self.command(args, local, true);
         let shell = command
             .iter()
-            .map(|v| shell_quote(v))
+            .map(
+                |value| match private_prefix.filter(|prefix| value.starts_with(prefix)) {
+                    Some(prefix) => shell_quote(&format!("{prefix}[redacted]")),
+                    None => shell_quote(value),
+                },
+            )
             .collect::<Vec<_>>()
             .join(" ");
         self.write(&format!("{} $ {shell}", chrono_timestamp()));
         let output = Command::new(&command[0]).args(&command[1..]).output()?;
         if !output.status.success() {
+            if private_prefix.is_some() {
+                self.write(&format!("{} exited with {}", args[0], output.status));
+                return Err(PackliftError::Message(format!(
+                    "{} exited with {}.",
+                    args[0], output.status
+                )));
+            }
             let detail: String = String::from_utf8_lossy(&output.stderr)
                 .chars()
                 .take(2500)

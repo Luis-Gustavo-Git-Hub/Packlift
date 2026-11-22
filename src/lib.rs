@@ -1,4 +1,5 @@
 pub mod core;
+pub mod flatpak;
 pub mod installer;
 pub mod system;
 

@@ -29,6 +29,12 @@ Open a package from your file manager with **Open With Packlift**, use **Open pa
 
 If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **Show details** for its launch output.
 
+### Flatpak permissions
+
+With system access enabled, **Your library** also lists apps installed through Flatpak for your account or system-wide. Use the **Flatpak apps** filter to find them and open **Permissions…** from an app's three-dot menu. You can change network, display, audio and device access, set filesystem and D-Bus rules, and edit environment variables. **Details** shows effective permissions and saved desktop portal grants.
+
+Overrides apply to your user account, including when the app was installed system-wide. Restart the app after saving. **Restore defaults…** removes its user overrides, while **Reset portal permissions…** clears its saved desktop portal grants.
+
 ### Updating from v0.1.0
 
 Flatpak treats `io.github.luis_gustavo_git_hub.Packlift` as a separate app from `io.github.flatapk.Installer`. Install the new bundle and check your library before removing the previous installation. Host mode still uses your existing Packlift data directory. Enable host access and set your file associations again if you used those features. Sandbox mode has a separate library under the new ID, so add your local packages again there.

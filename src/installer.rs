@@ -719,17 +719,70 @@ impl Installer {
     }
 
     fn flatpak_apps(&self) -> Result<BTreeMap<String, FlatpakApp>> {
-        let output = self.runner.capture(
-            &[
-                "flatpak".into(),
-                "list".into(),
-                "--user".into(),
-                "--app".into(),
-                "--columns=ref,active:full,name,version".into(),
-            ],
-            false,
-        )?;
+        Ok(self
+            .installed_flatpaks(true)?
+            .into_iter()
+            .map(|(_, reference, app)| (reference, app))
+            .collect())
+    }
+
+    fn installed_flatpaks(&self, user_only: bool) -> Result<Vec<(String, String, FlatpakApp)>> {
+        let mut args = vec![
+            "flatpak".into(),
+            "list".into(),
+            "--app".into(),
+            "--columns=installation,ref,active:full,name,version".into(),
+        ];
+        if user_only {
+            args.push("--user".into());
+        }
+        let output = self.runner.capture(&args, false)?;
         Ok(flatpak_apps_from_list(&output))
+    }
+
+    pub fn library_apps(&self) -> Result<Vec<Value>> {
+        let mut records = self.registry.apps()?;
+        if !host_access_available() || !self.runner.available("flatpak") {
+            return Ok(records);
+        }
+        let Ok(installed) = self
+            .installed_flatpaks(false)
+            .or_else(|_| self.installed_flatpaks(true))
+        else {
+            return Ok(records);
+        };
+        let managed: BTreeSet<String> = records
+            .iter()
+            .filter(|record| record["method"] == "flatpak")
+            .filter_map(|record| record["target"].as_str().map(str::to_owned))
+            .collect();
+        records.retain(|record| record["method"] != "flatpak");
+        for (scope, reference, app) in installed {
+            let Some(flag) = crate::flatpak::installation_flag(&scope) else {
+                continue;
+            };
+            let Some((id, arch, branch)) = flatpak_ref_parts(&reference) else {
+                continue;
+            };
+            let external = scope != "user" || !managed.contains(&reference);
+            let key = if external {
+                format!("flatpak:{scope}:{reference}")
+            } else {
+                format!("flatpak:{reference}")
+            };
+            records.push(json!({
+                "id": short_hash(&key)?,
+                "name": if app.name.is_empty() { id } else { &app.name },
+                "version": app.version, "architecture": arch,
+                "method": "flatpak", "target": reference, "flatpak_scope": scope,
+                "external_flatpak": external,
+                "exports": [{
+                    "icon": id,
+                    "argv": ["flatpak", "run", flag, "--arch", arch, "--branch", branch, "--", id],
+                }],
+            }));
+        }
+        Ok(records)
     }
 
     fn install_system_package(
@@ -2210,21 +2263,29 @@ fn valid_flatpak_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
-fn valid_flatpak_ref(reference: &str) -> bool {
+fn flatpak_ref_parts(reference: &str) -> Option<(&str, &str, &str)> {
     let mut parts = reference.split('/');
-    (0..3).all(|_| parts.next().is_some_and(valid_flatpak_component)) && parts.next().is_none()
+    let mut next = || parts.next().filter(|part| valid_flatpak_component(part));
+    let reference = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(reference)
 }
 
-fn flatpak_apps_from_list(output: &str) -> BTreeMap<String, FlatpakApp> {
+fn valid_flatpak_ref(reference: &str) -> bool {
+    flatpak_ref_parts(reference).is_some()
+}
+
+fn flatpak_apps_from_list(output: &str) -> Vec<(String, String, FlatpakApp)> {
     output
         .lines()
         .filter_map(|line| {
-            let mut columns = line.splitn(4, '\t');
+            let mut columns = line.splitn(5, '\t');
+            let scope = columns.next()?;
             let reference = columns
                 .next()
                 .filter(|reference| valid_flatpak_ref(reference))?;
             let commit = columns.next()?;
             Some((
+                scope.into(),
                 reference.into(),
                 FlatpakApp {
                     commit: commit.into(),
@@ -3759,14 +3820,15 @@ mod tests {
         use super::flatpak_apps_from_list;
 
         let apps = flatpak_apps_from_list(concat!(
-            "Ref\tActive commit\tName\tVersion\n",
-            "org.example.Demo/x86_64/stable\tcommit1\tDemo App\t1.0\n",
-            "org.example.Demo/x86_64/beta\tcommit2\t\t\n",
+            "Installation\tRef\tActive commit\tName\tVersion\n",
+            "user\torg.example.Demo/x86_64/stable\tcommit1\tDemo App\t1.0\n",
+            "system (games)\torg.example.Demo/x86_64/beta\tcommit2\t\t\n",
         ));
         assert_eq!(apps.len(), 2);
-        assert_eq!(apps["org.example.Demo/x86_64/stable"].name, "Demo App");
-        assert_eq!(apps["org.example.Demo/x86_64/stable"].version, "1.0");
-        assert_eq!(apps["org.example.Demo/x86_64/beta"].commit, "commit2");
+        assert_eq!(apps[0].2.name, "Demo App");
+        assert_eq!(apps[0].2.version, "1.0");
+        assert_eq!(apps[1].0, "system (games)");
+        assert_eq!(apps[1].2.commit, "commit2");
     }
 
     #[test]
