@@ -465,6 +465,19 @@ pub fn sha256(path: &Path) -> Result<String> {
 pub fn remove_exports(app: &Value) {
     if let Some(exports) = app.get("exports").and_then(Value::as_array) {
         for entry in exports {
+            if let Some(path) = entry.get("window_desktop").and_then(Value::as_str) {
+                let path = Path::new(path);
+                if fs::read_to_string(path).is_ok_and(|entry| {
+                    entry.lines().any(|line| {
+                        line == format!(
+                            "X-Packlift-Window-Owner={}",
+                            app["id"].as_str().unwrap_or_default()
+                        )
+                    })
+                }) {
+                    let _ = fs::remove_file(path);
+                }
+            }
             if let Some(path) = entry.get("desktop").and_then(Value::as_str) {
                 let _ = fs::remove_file(path);
             }

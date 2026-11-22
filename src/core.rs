@@ -60,6 +60,10 @@ pub struct Package {
     pub digest: String,
     #[serde(skip)]
     pub icon: Option<PathBuf>,
+    #[serde(skip)]
+    pub desktop_id: String,
+    #[serde(skip)]
+    pub startup_wm_class: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -45,7 +45,7 @@ impl Installer {
             registry,
         };
         if host_access_available() {
-            installer.refresh_windows_menu_entries();
+            installer.refresh_application_menu_entries();
         }
         Ok(installer)
     }
@@ -478,60 +478,7 @@ impl Installer {
             .filter_map(|line| line.strip_prefix("squashfs-root/"))
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let mut desktop_files = files
-            .iter()
-            .filter(|name| {
-                name.ends_with(".desktop")
-                    && (!name.contains('/') || name.starts_with("usr/share/applications/"))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        desktop_files.sort_by_key(|name| (name.contains('/'), name.clone()));
-        let mut requested_icon = String::new();
-        for desktop in desktop_files.iter().take(8) {
-            let output = self.runner.capture(
-                &[
-                    "unsquashfs".into(),
-                    "-o".into(),
-                    offset.to_string(),
-                    "-no-wildcards".into(),
-                    "-cat".into(),
-                    source.clone(),
-                    desktop.clone(),
-                ],
-                true,
-            );
-            let Ok(output) = output else { continue };
-            let mut in_entry = false;
-            for line in output.lines() {
-                if line.starts_with('[') {
-                    in_entry = line == "[Desktop Entry]";
-                    continue;
-                }
-                if !in_entry {
-                    continue;
-                }
-                if let Some(value) = line.strip_prefix("Name=") {
-                    if !value.trim().is_empty() {
-                        package.name = value.trim().to_owned();
-                    }
-                } else if let Some(value) = line.strip_prefix("Icon=") {
-                    requested_icon = value.trim().to_owned();
-                } else if line == "Terminal=true" {
-                    package.terminal = true;
-                }
-            }
-            if !requested_icon.is_empty()
-                || package.name
-                    != package
-                        .path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Program")
-            {
-                break;
-            }
-        }
+        let requested_icon = self.read_appimage_desktop(package, offset, &source, &files);
         let icon_name = Path::new(&requested_icon)
             .file_name()
             .and_then(|name| name.to_str())
@@ -601,6 +548,97 @@ impl Installer {
             break;
         }
         Ok(())
+    }
+
+    fn inspect_appimage_desktop(&self, package: &mut Package) -> Result<()> {
+        let Some(offset) = appimage_offset(&package.path)? else {
+            return Ok(());
+        };
+        let source = package.path.display().to_string();
+        let listing = self.runner.capture(
+            &[
+                "unsquashfs".into(),
+                "-o".into(),
+                offset.to_string(),
+                "-ls".into(),
+                source.clone(),
+                "*.desktop".into(),
+            ],
+            true,
+        )?;
+        let files = listing
+            .lines()
+            .filter_map(|line| line.strip_prefix("squashfs-root/"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        self.read_appimage_desktop(package, offset, &source, &files);
+        Ok(())
+    }
+
+    fn read_appimage_desktop(
+        &self,
+        package: &mut Package,
+        offset: u64,
+        source: &str,
+        files: &[String],
+    ) -> String {
+        let mut desktop_files = files
+            .iter()
+            .filter(|name| {
+                name.ends_with(".desktop")
+                    && (!name.contains('/') || name.starts_with("usr/share/applications/"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        desktop_files.sort_by_key(|name| (name.contains('/'), name.clone()));
+        let mut requested_icon = String::new();
+        for desktop in desktop_files.iter().take(8) {
+            let output = self.runner.capture(
+                &[
+                    "unsquashfs".into(),
+                    "-o".into(),
+                    offset.to_string(),
+                    "-no-wildcards".into(),
+                    "-cat".into(),
+                    source.into(),
+                    desktop.clone(),
+                ],
+                true,
+            );
+            let Ok(output) = output else { continue };
+            let mut in_entry = false;
+            let mut has_metadata = false;
+            for line in output.lines() {
+                if line.starts_with('[') {
+                    in_entry = line == "[Desktop Entry]";
+                    continue;
+                }
+                if !in_entry {
+                    continue;
+                }
+                if let Some(value) = line.strip_prefix("Name=") {
+                    if !value.trim().is_empty() {
+                        package.name = value.trim().to_owned();
+                        has_metadata = true;
+                    }
+                } else if let Some(value) = line.strip_prefix("Icon=") {
+                    requested_icon = value.trim().to_owned();
+                } else if let Some(value) = line.strip_prefix("StartupWMClass=") {
+                    package.startup_wm_class = value.trim().to_owned();
+                } else if line == "Terminal=true" {
+                    package.terminal = true;
+                }
+            }
+            if has_metadata || !requested_icon.is_empty() || !package.startup_wm_class.is_empty() {
+                package.desktop_id = Path::new(desktop)
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                break;
+            }
+        }
+        requested_icon
     }
 
     fn inspect_pe_icon(&self, package: &mut Package) -> Result<()> {
@@ -1319,13 +1357,20 @@ fi"#
             let path = self
                 .applications
                 .join(format!("{APP_ID}.{identifier}.0.desktop"));
-            export_desktop(&path, &package.name, &argv, &icon, terminal, "Utility")?;
+            if package.kind != "appimage" {
+                export_desktop(&path, &package.name, &argv, &icon, terminal, "Utility")?;
+            }
             self.runner.write("Creating the application menu shortcut");
             Some(path)
         };
-        let app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
+        let mut app = json!({"id":identifier,"name":package.name,"version":package.version,"architecture":package.architecture,
             "method":"local","sandbox_only":sandbox_only,"source":package.path,"digest":package.digest,"directory":directory,
             "exports":[{"desktop":export,"name":package.name,"icon":icon,"argv":argv,"terminal":terminal}]});
+        if !sandbox_only && package.kind == "appimage" {
+            app["exports"][0]["window_id"] = json!(package.desktop_id);
+            app["exports"][0]["startup_wm_class"] = json!(package.startup_wm_class);
+            self.sync_app_menu_entry(&mut app)?;
+        }
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -1481,26 +1526,13 @@ fi"#
         let icon = selected_icon
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        let (menu_icon, menu_icon_file) = self.export_menu_icon(identifier, selected_icon)?;
-        let wm_class = target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        export_desktop_with_wm_class(
-            &export,
-            name,
-            &windows_desktop_command(&argv),
-            &menu_icon,
-            false,
-            "Utility",
-            Some(wm_class),
-        )?;
         let metadata_directory = self.data.join("windows").join(identifier);
         fs::create_dir_all(&metadata_directory)?;
-        let app = json!({"id":identifier,"name":name,"version":"","architecture":architecture,
+        let mut app = json!({"id":identifier,"name":name,"version":"","architecture":architecture,
             "method":"wine","source":package.path,"digest":package.digest,"directory":metadata_directory,
             "installer":package.path,"runtime":wine.runtime,"windows_directory":windows_directory,"exports":[{"desktop":export,"name":name,
-            "icon":icon,"menu_icon_file":menu_icon_file,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
+            "icon":icon,"argv":argv,"terminal":false,"wine_args":[target.to_string_lossy()]}]});
+        self.sync_app_menu_entry(&mut app)?;
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -1559,36 +1591,16 @@ fi"#
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "application-x-executable".into());
-        let (menu_icon, menu_icon_file) =
-            self.export_menu_icon(&identifier, package.icon.as_deref())?;
-        let wm_class = package
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        export_desktop_with_wm_class(
-            &export_path,
-            &package.name,
-            &windows_desktop_command(&argv),
-            &menu_icon,
-            false,
-            "Game",
-            Some(wm_class),
-        )?;
-        self.runner.write(&format!(
-            "Created game menu shortcut {} with icon {menu_icon}",
-            export_path.display()
-        ));
-        let app = json!({
+        let mut app = json!({
             "id": identifier, "name": package.name, "version": package.version,
             "architecture": package.architecture, "source": package.path,
             "digest": digest, "directory": identifier_path, "exports": [{
                 "desktop": export_path, "name": package.name, "icon": icon,
-                "menu_icon_file": menu_icon_file,
                 "argv": argv, "terminal": false, "wine_args": [package.path.to_string_lossy()]
             }], "method": "wine", "runtime": wine.runtime,
             "game_shortcut": true, "working_directory": app_dir
         });
+        self.sync_app_menu_entry(&mut app)?;
         self.registry.save(&app)?;
         Ok(app)
     }
@@ -1637,115 +1649,200 @@ fi"#
         Ok((path.clone(), Some(path)))
     }
 
-    fn refresh_windows_menu_entries(&self) {
+    fn refresh_application_menu_entries(&self) {
         let Ok(_operation) = operation(&self.data) else {
             return;
         };
         let Ok(apps) = self.registry.apps() else {
             return;
         };
-        for mut app in apps {
-            if app["method"].as_str() != Some("wine") {
+        for record in apps {
+            if record["method"] != "wine" && !is_host_appimage(&record) {
                 continue;
             }
-            let (Some(icon), Some(desktop), Some(name), Some(arguments), Some(executable)) = (
-                app["exports"][0]["icon"].as_str().map(str::to_owned),
-                app["exports"][0]["desktop"].as_str().map(str::to_owned),
-                app["exports"][0]["name"].as_str().map(str::to_owned),
-                app["exports"][0]["argv"].as_array().cloned(),
-                app["exports"][0]["wine_args"][0]
-                    .as_str()
-                    .map(str::to_owned),
-            ) else {
-                continue;
-            };
-            let Some(identifier) = app["id"].as_str().map(str::to_owned) else {
-                continue;
-            };
-            let Some(wm_class) = Path::new(&executable)
-                .file_name()
-                .and_then(|name| name.to_str())
-            else {
-                continue;
-            };
-            let current_icon_file = app["exports"][0]["menu_icon_file"]
-                .as_str()
-                .filter(|path| {
-                    let path = Path::new(path);
-                    path.is_absolute()
-                        && path.is_file()
-                        && matches!(
-                            path.extension().and_then(|ext| ext.to_str()),
-                            Some("png" | "svg" | "xpm")
-                        )
-                })
-                .map(str::to_owned);
-            let shortcut = fs::read_to_string(&desktop).unwrap_or_default();
-            let old_icon = shortcut.lines().find_map(|line| line.strip_prefix("Icon="));
-            let old_class = shortcut
-                .lines()
-                .find_map(|line| line.strip_prefix("StartupWMClass="));
-            let (menu_icon, menu_icon_file) = if let Some(path) = current_icon_file {
-                (path.clone(), Some(path))
-            } else if Path::new(&icon).is_file() {
-                match self.export_menu_icon(&identifier, Some(Path::new(&icon))) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        self.runner.write(&format!(
-                            "Could not restore the menu icon for {name}: {error}"
-                        ));
-                        continue;
-                    }
+            let mut updated = record.clone();
+            let result = self.sync_app_menu_entry(&mut updated).and_then(|()| {
+                if updated != record {
+                    self.registry.save(&updated)?;
                 }
-            } else {
-                ("application-x-executable".into(), None)
-            };
-            let argv = arguments
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let menu_command = windows_desktop_command(&argv);
-            let old_exec = shortcut.lines().find_map(|line| line.strip_prefix("Exec="));
-            if old_icon == Some(menu_icon.as_str())
-                && old_class == Some(wm_class)
-                && old_exec == Some(desktop_exec(&menu_command).as_str())
-            {
-                continue;
-            }
-            let terminal = app["exports"][0]["terminal"].as_bool().unwrap_or(false);
-            match export_desktop_with_wm_class(
-                Path::new(&desktop),
-                &name,
-                &menu_command,
-                &menu_icon,
-                terminal,
-                if app["game_shortcut"].as_bool().unwrap_or(false) {
-                    "Game"
-                } else {
-                    "Utility"
-                },
-                Some(wm_class),
-            ) {
-                Ok(()) => {
-                    if let Some(icon_file) = menu_icon_file {
-                        app["exports"][0]["menu_icon_file"] = json!(icon_file);
-                        app["exports"][0]["menu_icon"] = json!(menu_icon);
-                    }
-                    if let Err(error) = self.registry.save(&app) {
-                        self.runner.write(&format!(
-                            "Could not save the repaired shortcut for {name}: {error}"
-                        ));
-                    }
-                    self.runner.write(&format!(
-                        "Repaired Windows shortcut {desktop} with icon {menu_icon}"
-                    ));
-                }
-                Err(error) => self.runner.write(&format!(
-                    "Could not repair Windows shortcut {desktop}: {error}"
-                )),
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.runner.write(&format!(
+                    "Could not repair application shortcut for {}: {error}",
+                    record["name"]
+                ));
             }
         }
+    }
+
+    fn sync_app_menu_entry(&self, app: &mut Value) -> Result<()> {
+        let windows = app["method"] == "wine";
+        let Some(identifier) = app["id"].as_str().map(str::to_owned) else {
+            return Ok(());
+        };
+        let Some(entry) = app["exports"]
+            .as_array_mut()
+            .and_then(|entries| entries.first_mut())
+        else {
+            return Ok(());
+        };
+        let (Some(desktop), Some(name), Some(arguments)) = (
+            entry["desktop"].as_str().map(PathBuf::from),
+            entry["name"].as_str().map(str::to_owned),
+            entry["argv"].as_array(),
+        ) else {
+            return Ok(());
+        };
+        if desktop.parent() != Some(self.applications.as_path()) {
+            return Ok(());
+        }
+        let mut argv = arguments
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if windows {
+            argv = windows_desktop_command(&argv);
+            let window_id = entry["wine_args"][0]
+                .as_str()
+                .map(Path::new)
+                .map(wine_window_id)
+                .unwrap_or_default();
+            entry["window_id"] = json!(window_id);
+            entry["startup_wm_class"] = json!(window_id);
+        } else if entry["window_id"].is_null() {
+            let Some(directory) = app["directory"].as_str() else {
+                return Ok(());
+            };
+            let mut package = Package {
+                path: Path::new(directory).join("program.AppImage"),
+                ..Package::default()
+            };
+            // Recover window identity from the installed copy, even if the original download is gone.
+            self.inspect_appimage_desktop(&mut package)?;
+            app["exports"][0]["window_id"] = json!(package.desktop_id);
+            app["exports"][0]["startup_wm_class"] = json!(package.startup_wm_class);
+        }
+
+        let game = app["game_shortcut"].as_bool() == Some(true);
+        let entry = &mut app["exports"][0];
+        let source_icon = entry["icon"]
+            .as_str()
+            .unwrap_or("application-x-executable")
+            .to_owned();
+        let icon = if windows {
+            if let Some(path) = entry["menu_icon_file"]
+                .as_str()
+                .filter(|path| Path::new(path).is_file())
+            {
+                path.to_owned()
+            } else {
+                let (icon, file) =
+                    self.export_menu_icon(&identifier, Some(Path::new(&source_icon)))?;
+                entry["menu_icon_file"] = json!(file);
+                icon
+            }
+        } else {
+            source_icon
+        };
+        let window_id = entry["window_id"].as_str().unwrap_or_default();
+        let class = entry["startup_wm_class"]
+            .as_str()
+            .filter(|class| !class.is_empty())
+            .or_else(|| (!window_id.is_empty()).then_some(window_id));
+        let current = fs::read_to_string(&desktop).unwrap_or_default();
+        let property = |key| current.lines().find_map(|line| line.strip_prefix(key));
+        let exec = desktop_exec(&argv);
+        if property("Exec=") != Some(&exec)
+            || property("Icon=") != Some(&icon)
+            || property("StartupWMClass=") != class
+        {
+            export_desktop_with_wm_class(
+                &desktop,
+                &name,
+                &argv,
+                &icon,
+                entry["terminal"].as_bool() == Some(true),
+                if game { "Game" } else { "Utility" },
+                class,
+            )?;
+        }
+        if valid_window_id(window_id) {
+            let alias = self.applications.join(format!("{window_id}.desktop"));
+            if alias != desktop {
+                match self.sync_window_alias(&alias, &desktop, &identifier) {
+                    Ok(true) => entry["window_desktop"] = json!(alias),
+                    Ok(false) => {}
+                    Err(error) => self.runner.write(&format!(
+                        "Could not create window shortcut for {name}: {error}"
+                    )),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_window_alias(&self, alias: &Path, desktop: &Path, identifier: &str) -> Result<bool> {
+        let owner = format!("X-Packlift-Window-Owner={identifier}");
+        let existing = fs::read_to_string(alias).ok();
+        if fs::symlink_metadata(alias).is_ok() {
+            if !existing
+                .as_ref()
+                .is_some_and(|text| text.lines().any(|line| line == owner))
+            {
+                return Ok(false);
+            }
+        } else {
+            let name = alias
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let result = self.runner.run(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    HOST_DESKTOP_LOOKUP.into(),
+                    "packlift".into(),
+                    name,
+                ],
+                false,
+                true,
+                false,
+            )?;
+            if result.status.success() {
+                return Ok(false);
+            }
+        }
+        let primary = fs::read_to_string(desktop)?;
+        let mut content = primary
+            .lines()
+            .filter(|line| !line.starts_with("StartupWMClass="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        content.push_str(&format!("\nNoDisplay=true\n{owner}\n"));
+        if let Some(existing) = existing {
+            if existing != content {
+                let temporary = alias.with_extension("packlift-tmp");
+                fs::write(&temporary, content)?;
+                fs::rename(temporary, alias)?;
+            }
+        } else {
+            use std::io::Write;
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(alias);
+            match file {
+                Ok(mut file) => file.write_all(content.as_bytes())?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(false)
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(true)
     }
 
     pub fn install_windows(&self, package: &Package, runtime: &str) -> Result<Value> {
@@ -1842,26 +1939,15 @@ fi"#
                 PackliftError::Message("This shortcut has no Windows executable.".into())
             })?;
         let executable = Path::new(&arguments[0]);
-        let desktop = entry["desktop"]
-            .as_str()
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                PackliftError::Message("This program has no desktop shortcut.".into())
-            })?;
+        if entry["desktop"].as_str().is_none() {
+            return Err(PackliftError::Message(
+                "This program has no desktop shortcut.".into(),
+            ));
+        }
         let name = entry["name"]
             .as_str()
             .or_else(|| record["name"].as_str())
             .unwrap_or("Program");
-        let icon = entry["menu_icon_file"]
-            .as_str()
-            .filter(|path| Path::new(path).is_file())
-            .unwrap_or("application-x-executable");
-        let terminal = entry["terminal"].as_bool().unwrap_or(false);
-        let category = if record["game_shortcut"].as_bool() == Some(true) {
-            "Game"
-        } else {
-            "Utility"
-        };
         let cwd = record["working_directory"]
             .as_str()
             .map(Path::new)
@@ -1877,22 +1963,15 @@ fi"#
         );
         wine.proton_path = proton_path.map(Path::to_owned);
         let argv = wine.command("wine", &arguments, cwd);
-        let wm_class = executable.file_name().and_then(|name| name.to_str());
         let mut updated = record.clone();
         updated["runtime"] = json!(wine.runtime);
         updated["proton_path"] = json!(proton_path);
         updated["exports"][0]["argv"] = json!(argv);
-        self.registry.save(&updated)?;
-        if let Err(error) = export_desktop_with_wm_class(
-            &desktop,
-            name,
-            &windows_desktop_command(&argv),
-            icon,
-            terminal,
-            category,
-            wm_class,
-        ) {
-            self.registry.save(&record)?;
+        if let Err(error) = self
+            .sync_app_menu_entry(&mut updated)
+            .and_then(|()| self.registry.save(&updated))
+        {
+            let _ = self.sync_app_menu_entry(&mut record.clone());
             return Err(error);
         }
         self.runner
@@ -2435,6 +2514,39 @@ fn windows_desktop_command(argv: &[String]) -> Vec<String> {
     result.extend_from_slice(command);
     result
 }
+
+fn is_host_appimage(record: &Value) -> bool {
+    record["method"] == "local"
+        && record["sandbox_only"] != true
+        && (!record["exports"][0]["window_id"].is_null()
+            || record["directory"]
+                .as_str()
+                .is_some_and(|directory| Path::new(directory).join("program.AppImage").is_file()))
+}
+
+fn wine_window_id(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+fn valid_window_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 240
+        && !value.starts_with('.')
+        && !value.contains(['/', '\\'])
+        && !value.contains(char::is_control)
+}
+
+const HOST_DESKTOP_LOOKUP: &str = r#"
+set -f
+IFS=:
+for directory in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share} /var/lib/flatpak/exports/share "${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/exports/share"; do
+    test -e "$directory/applications/$1" && exit 0
+done
+exit 1
+"#;
 
 fn shared_windows_prefix(data: &Path) -> PathBuf {
     data.join("wine/prefix")
@@ -3837,6 +3949,59 @@ fn collect_exes(
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
+
+    #[test]
+    fn window_shortcuts_keep_the_menu_icon_and_follow_wine_and_appimage_identities() {
+        use super::{fs, json, remove_exports, Installer};
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!("packlift-window-id-{}", std::process::id()));
+        let applications = root.join("applications");
+        let installer = Installer::new(
+            Arc::new(|_| {}),
+            Some(root.join("data")),
+            Some(applications.clone()),
+        )
+        .unwrap();
+        for (method, window_id, class) in [
+            ("wine", "packliftdemogame.exe", "packliftdemogame.exe"),
+            ("local", "org.example.PackliftAppImage", "PackliftDemoApp"),
+        ] {
+            let desktop = applications.join(format!("{method}.desktop"));
+            let alias = applications.join(format!("{window_id}.desktop"));
+            let mut record = json!({"id":method,"method":method,"exports":[{
+                "desktop":desktop, "name":"Demo", "icon":"demo-icon", "argv":["/usr/bin/true"],
+                "window_id":window_id, "startup_wm_class":class, "wine_args":["PackliftDemoGame.exe"],
+            }]});
+            installer.sync_app_menu_entry(&mut record).unwrap();
+            assert!(fs::read_to_string(&desktop)
+                .unwrap()
+                .contains(&format!("StartupWMClass={class}\n")));
+            let shortcut = fs::read_to_string(&alias).unwrap();
+            assert!(shortcut.contains("NoDisplay=true\n"));
+            assert!(shortcut.contains(if method == "wine" {
+                "Icon=application-x-executable\n"
+            } else {
+                "Icon=demo-icon\n"
+            }));
+            assert_eq!(
+                record["exports"][0]["window_desktop"].as_str(),
+                alias.to_str()
+            );
+            if method == "wine" {
+                remove_exports(&record);
+                assert!(!alias.exists());
+            } else {
+                fs::write(&alias, "[Desktop Entry]\nName=Another installed app\n").unwrap();
+                installer.sync_app_menu_entry(&mut record).unwrap();
+                remove_exports(&record);
+                assert!(fs::read_to_string(&alias)
+                    .unwrap()
+                    .contains("Name=Another installed app"));
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn flatpak_list_preserves_the_user_app_ref_and_commit() {
