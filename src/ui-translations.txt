@@ -245,7 +245,6 @@ No screenshots are available from this repository.|Este repositório não dispon
 Screenshots could not be loaded.|Não foi possível carregar as capturas de tela.|No se pudieron cargar las capturas de pantalla.|Не удалось загрузить снимки экрана.|无法加载截图。
 Show repositories for|Mostrar repositórios de|Mostrar repositorios de|Показать репозитории для|显示下列范围的软件仓库
 View app|Ver app|Ver aplicación|Открыть страницу приложения|查看应用
-Where do you want to install {name}?|Onde você quer instalar {name}?|¿Dónde quieres instalar {name}?|Куда установить {name}?|要将 {name} 安装到哪里？
 No repository offers this app for the selected scope.|Nenhum repositório oferece este app no destino selecionado.|Ningún repositorio ofrece esta aplicación para el ámbito seleccionado.|Ни один репозиторий не предлагает приложение для этой области установки.|选定的安装范围内没有提供此应用的软件仓库。
 Packlift will add Flathub to the selected scope if needed.|O Packlift adicionará o Flathub ao destino escolhido, se necessário.|Packlift añadirá Flathub al ámbito seleccionado si es necesario.|При необходимости Packlift добавит Flathub в выбранную область установки.|如有需要，Packlift 会将 Flathub 添加到选定的安装范围。
 Library|Biblioteca|Biblioteca|Библиотека|应用库
@@ -291,3 +290,9 @@ Build repository|Repositório de build|Repositorio de compilación|Репози�
 Copy link|Copiar link|Copiar enlace|Копировать ссылку|复制链接
 Open link|Abrir link|Abrir enlace|Открыть ссылку|打开链接
 Link copied|Link copiado|Enlace copiado|Ссылка скопирована|链接已复制
+Package download size reported by the repository. Runtimes may require additional downloads.|Tamanho do pacote informado pelo repositório. Os runtimes podem exigir downloads adicionais.|Tamaño del paquete indicado por el repositorio. Los entornos de ejecución pueden requerir descargas adicionales.|Размер пакета по данным репозитория. Для сред выполнения могут потребоваться дополнительные загрузки.|软件仓库报告的软件包下载大小。运行时可能需要额外下载。
+Installations recorded by Flathub in the last month.|Instalações registradas pelo Flathub no último mês.|Instalaciones registradas por Flathub en el último mes.|Установки, зарегистрированные Flathub за последний месяц.|Flathub 在上一个月记录的安装次数。
+The license defines how you may use, modify, and share this app.|A licença define como você pode usar, modificar e compartilhar este app.|La licencia define cómo puedes usar, modificar y compartir esta aplicación.|Лицензия определяет, как можно использовать, изменять и распространять приложение.|许可证规定了如何使用、修改和分享此应用。
+This app adapts to smaller screens, such as phones.|Este app se adapta a telas menores, como as de celulares.|Esta aplicación se adapta a pantallas más pequeñas, como las de los teléfonos.|Приложение адаптируется к небольшим экранам, например экранам телефонов.|此应用可适配手机等较小的屏幕。
+This app is designed primarily for desktop screens.|Este app foi projetado principalmente para telas de computador.|Esta aplicación se diseñó principalmente para pantallas de escritorio.|Приложение предназначено прежде всего для экранов компьютеров.|此应用主要为桌面屏幕设计。
+Minimum recommended age based on the app’s content rating.|Idade mínima recomendada de acordo com a classificação do conteúdo do app.|Edad mínima recomendada según la clasificación del contenido de la aplicación.|Рекомендуемый минимальный возраст на основе рейтинга содержимого приложения.|根据应用内容分级给出的最低建议年龄。

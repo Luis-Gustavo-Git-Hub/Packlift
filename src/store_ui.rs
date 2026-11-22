@@ -321,6 +321,9 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     install.update_property(&[gtk::accessible::Property::Label(tr("Install"))]);
     identity.append(&install);
     hero.append(&identity);
+    let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    install_options.set_visible(false);
+    hero.append(&install_options);
 
     let facts = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -333,6 +336,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     hero.append(&facts);
     let permissions = adw::ExpanderRow::new();
     permissions.set_title(tr("Permissions"));
+    permissions.add_prefix(&gtk::Image::from_icon_name("security-high-symbolic"));
     permissions.set_visible(false);
     let permissions_group = gtk::ListBox::new();
     permissions_group.set_selection_mode(gtk::SelectionMode::None);
@@ -341,10 +345,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     permissions_group.set_visible(false);
     hero.append(&permissions_group);
     body.append(&hero);
-
-    let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    install_options.set_visible(false);
-    body.append(&install_options);
 
     let gallery = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let gallery_status = home_label(tr("Loading screenshots…"), "dim-label");
@@ -458,7 +458,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         let records = installed.borrow().clone();
         if !records.is_empty() {
             if let Some(options) = install_options.upgrade() {
-                choose_uninstall_destination(&dialog, &options, button, records, &package.name);
+                choose_uninstall_destination(&dialog, &options, button, records);
             }
             return;
         }
@@ -476,7 +476,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         );
         let source = selected.clone();
         let candidate = package.clone();
-        let package_name = candidate.name.clone();
         let button = button.downgrade();
         let dialog = dialog.downgrade();
         let preferred = source.destination;
@@ -507,14 +506,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                     return;
                 };
                 if dialog.content().as_ref() == Some(&page) {
-                    choose_install_destination(
-                        &dialog,
-                        &options,
-                        &button,
-                        preferred,
-                        choices,
-                        &package_name,
-                    );
+                    choose_install_destination(&dialog, &options, &button, preferred, choices);
                 }
             },
         );
@@ -536,13 +528,25 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                 };
                 if let Some(size) = result.download_size {
                     indicators.insert(
-                        &store_fact(tr("Download size"), &glib::format_size(size)),
+                        &store_fact(
+                            "folder-download-symbolic",
+                            tr("Download size"),
+                            &glib::format_size(size),
+                            tr("Package download size reported by the repository. Runtimes may require additional downloads."),
+                            None,
+                        ),
                         0,
                     );
                     indicators.set_visible(true);
                 }
                 if let Some(monthly) = result.installs_last_month {
-                    indicators.append(&store_fact(tr("Installs last month"), &monthly.to_string()));
+                    indicators.append(&store_fact(
+                        "view-list-ordered-symbolic",
+                        tr("Installs last month"),
+                        &monthly.to_string(),
+                        tr("Installations recorded by Flathub in the last month."),
+                        None,
+                    ));
                     indicators.set_visible(true);
                 }
                 if let Some(groups) = result.permissions {
@@ -575,24 +579,46 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                         Some(false) => tr("Proprietary software"),
                         None => &details.license,
                     };
-                    let license = store_fact(tr("License"), value);
-                    license.set_tooltip_text(Some(&details.license));
+                    let license = store_fact(
+                        "text-x-generic-symbolic",
+                        tr("License"),
+                        value,
+                        tr("The license defines how you may use, modify, and share this app."),
+                        Some(&details.license),
+                    );
                     facts.append(&license);
                     facts.set_visible(true);
                 }
                 if let Some(adaptive) = details.adaptive {
                     facts.append(&store_fact(
+                        if adaptive {
+                            "phone-symbolic"
+                        } else {
+                            "computer-symbolic"
+                        },
                         tr("Device support"),
                         if adaptive {
                             tr("Adaptive")
                         } else {
                             tr("Desktop")
                         },
+                        if adaptive {
+                            tr("This app adapts to smaller screens, such as phones.")
+                        } else {
+                            tr("This app is designed primarily for desktop screens.")
+                        },
+                        None,
                     ));
                     facts.set_visible(true);
                 }
                 if let Some(age) = details.age {
-                    facts.append(&store_fact(tr("Age rating"), &format!("{age}+")));
+                    facts.append(&store_fact(
+                        "avatar-default-symbolic",
+                        tr("Age rating"),
+                        &format!("{age}+"),
+                        tr("Minimum recommended age based on the app’s content rating."),
+                        None,
+                    ));
                     facts.set_visible(true);
                 }
                 if !details.description.is_empty() {
@@ -780,12 +806,51 @@ fn load_detail_sources(remote: &Remote, app: &CatalogApp, section: gtk::Box, row
     );
 }
 
-fn store_fact(label: &str, value: &str) -> gtk::Box {
-    let fact = gtk::Box::new(gtk::Orientation::Vertical, 3);
-    fact.add_css_class("packlift-store-fact");
-    fact.append(&home_label(label, "dim-label"));
-    fact.append(&home_label(value, "heading"));
-    fact
+fn store_fact(
+    icon: &str,
+    label: &str,
+    value: &str,
+    description: &str,
+    detail: Option<&str>,
+) -> gtk::FlowBoxChild {
+    let button = gtk::MenuButton::new();
+    button.add_css_class("packlift-store-fact");
+    button.update_property(&[gtk::accessible::Property::Label(&format!(
+        "{label} · {value}"
+    ))]);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name(icon);
+    icon.add_css_class("dim-label");
+    content.append(&icon);
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    labels.append(&home_label(label, "dim-label"));
+    labels.append(&home_label(value, "heading"));
+    content.append(&labels);
+    button.set_child(Some(&content));
+
+    let popover = gtk::Popover::new();
+    let explanation = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    explanation.set_margin_top(4);
+    explanation.set_margin_bottom(4);
+    explanation.set_margin_start(4);
+    explanation.set_margin_end(4);
+    let title = home_label(label, "heading");
+    explanation.append(&title);
+    if let Some(detail) = detail {
+        let detail = home_label(detail, "monospace");
+        detail.set_selectable(true);
+        detail.set_max_width_chars(34);
+        explanation.append(&detail);
+    }
+    let description = home_label(description, "");
+    description.set_max_width_chars(34);
+    explanation.append(&description);
+    popover.set_child(Some(&explanation));
+    button.set_popover(Some(&popover));
+    let child = gtk::FlowBoxChild::new();
+    child.set_focusable(false);
+    child.set_child(Some(&button));
+    child
 }
 
 fn app_card(
@@ -1084,27 +1149,31 @@ fn choose_install_destination(
     open_options: &gtk::Button,
     preferred: Destination,
     (user, system): (Vec<(Remote, CatalogApp)>, Vec<(Remote, CatalogApp)>),
-    name: &str,
 ) {
-    let heading = tr("Where do you want to install {name}?").replace("{name}", name);
     let scope = gtk::DropDown::from_strings(&[tr("For my account"), tr("For the system")]);
     scope.set_selected((preferred == Destination::System) as u32);
     let repository = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
+    let controls = inline_store_options();
+    let fields = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(2)
+        .column_spacing(12)
+        .row_spacing(8)
+        .homogeneous(true)
+        .build();
+    fields.append(&labeled_control(tr("Install scope"), &scope));
+    fields.append(&labeled_control(tr("Repository"), &repository));
+    controls.append(&fields);
     let info = home_label("", "dim-label");
-    let controls = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    controls.add_css_class("packlift-store-install");
-    controls.append(&home_label(&heading, "title-2"));
-    controls.append(&labeled_control(tr("Install scope"), &scope));
-    controls.append(&labeled_control(tr("Repository"), &repository));
     controls.append(&info);
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    let cancel = text_button(tr("Cancel"));
-    let install = text_button(tr("Install"));
-    install.add_css_class("suggested-action");
-    actions.append(&cancel);
-    actions.append(&install);
-    controls.append(&actions);
+    let dismiss = dismiss_store_options(container, &controls, open_options);
+    let install = store_options_actions(
+        &controls,
+        dismiss.clone(),
+        tr("Install"),
+        "suggested-action",
+    );
 
     let choices = Rc::new([user, system]);
     let refresh = {
@@ -1149,9 +1218,6 @@ fn choose_install_destination(
     update(&repository);
     repository.connect_selected_notify(update);
 
-    let dismiss = dismiss_store_options(container, &controls, open_options);
-    let close = dismiss.clone();
-    cancel.connect_clicked(move |_| close());
     let target = window.downgrade();
     let weak_scope = scope.downgrade();
     let repository = repository.downgrade();
@@ -1206,6 +1272,43 @@ fn choose_install_destination(
     scope.grab_focus();
 }
 
+fn inline_store_options() -> gtk::Box {
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    controls.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    controls
+}
+
+fn store_options_actions(
+    controls: &gtk::Box,
+    dismiss: Rc<impl Fn() + 'static>,
+    action: &str,
+    style: &str,
+) -> gtk::Button {
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let cancel = text_button(tr("Cancel"));
+    cancel.add_css_class("flat");
+    let close = dismiss.clone();
+    cancel.connect_clicked(move |_| close());
+    actions.append(&cancel);
+    let confirm = text_button(action);
+    confirm.add_css_class(style);
+    confirm.add_css_class("pill");
+    actions.append(&confirm);
+    controls.append(&actions);
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            dismiss();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    controls.add_controller(keys);
+    confirm
+}
+
 fn dismiss_store_options(
     container: &gtk::Box,
     controls: &gtk::Box,
@@ -1233,14 +1336,8 @@ fn choose_uninstall_destination(
     container: &gtk::Box,
     open_options: &gtk::Button,
     records: Vec<Value>,
-    name: &str,
 ) {
-    let controls = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    controls.add_css_class("packlift-store-install");
-    controls.append(&home_label(
-        &format!("{} · {name}", tr("Uninstall")),
-        "title-2",
-    ));
+    let controls = inline_store_options();
     let labels = records
         .iter()
         .map(|record| {
@@ -1256,18 +1353,13 @@ fn choose_uninstall_destination(
     let (delete_option, delete_data) = crate::flatpak_delete_data_option();
     controls.append(&delete_option);
 
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    let cancel = text_button(tr("Cancel"));
-    let uninstall = text_button(tr("Uninstall"));
-    uninstall.add_css_class("destructive-action");
-    actions.append(&cancel);
-    actions.append(&uninstall);
-    controls.append(&actions);
-
     let dismiss = dismiss_store_options(container, &controls, open_options);
-    let close = dismiss.clone();
-    cancel.connect_clicked(move |_| close());
+    let uninstall = store_options_actions(
+        &controls,
+        dismiss.clone(),
+        tr("Uninstall"),
+        "destructive-action",
+    );
     let parent = window.downgrade();
     let choice = scope.downgrade();
     let delete_data = delete_data.downgrade();
@@ -1304,8 +1396,110 @@ fn choose_uninstall_destination(
     scope.grab_focus();
 }
 
+struct ScreenshotGallery {
+    shots: Vec<Screenshot>,
+    cache: ScreenshotCache,
+    selected: Cell<Option<usize>>,
+    strip: gtk::Adjustment,
+    stack: glib::WeakRef<gtk::Stack>,
+    preview: glib::WeakRef<gtk::Box>,
+    position: glib::WeakRef<gtk::Label>,
+    previous: glib::WeakRef<gtk::Button>,
+    next: glib::WeakRef<gtk::Button>,
+    close: glib::WeakRef<gtk::Button>,
+    thumbnails: Vec<glib::WeakRef<gtk::Button>>,
+}
+
+impl ScreenshotGallery {
+    fn update_controls(&self) {
+        let (Some(position), Some(previous), Some(next), Some(close)) = (
+            self.position.upgrade(),
+            self.previous.upgrade(),
+            self.next.upgrade(),
+            self.close.upgrade(),
+        ) else {
+            return;
+        };
+        let lower = self.strip.lower();
+        let upper = self.strip.upper() - self.strip.page_size();
+        let scrollable = upper - lower > 1.0;
+        let zoomed = self.selected.get();
+        let had_previous = previous.has_focus();
+        let had_next = next.has_focus();
+        let (can_go_back, can_go_forward) = match zoomed {
+            Some(index) => (index > 0, index + 1 < self.shots.len()),
+            None => (
+                self.strip.value() - lower > 1.0,
+                upper - self.strip.value() > 1.0,
+            ),
+        };
+        position.set_visible(zoomed.is_some());
+        if let Some(index) = zoomed {
+            position.set_text(&format!("{} / {}", index + 1, self.shots.len()));
+        }
+        previous.set_visible(if zoomed.is_some() {
+            self.shots.len() > 1
+        } else {
+            scrollable
+        });
+        next.set_visible(previous.is_visible());
+        previous.set_sensitive(can_go_back);
+        next.set_sensitive(can_go_forward);
+        close.set_visible(zoomed.is_some());
+        if had_previous && !can_go_back && can_go_forward {
+            next.grab_focus();
+        } else if had_next && !can_go_forward && can_go_back {
+            previous.grab_focus();
+        }
+    }
+
+    fn enlarge(&self, index: usize) {
+        let (Some(stack), Some(preview), Some(shot)) = (
+            self.stack.upgrade(),
+            self.preview.upgrade(),
+            self.shots.get(index),
+        ) else {
+            return;
+        };
+        if let Some(old) = preview.first_child() {
+            preview.remove(&old);
+        }
+        preview.append(&screenshot_frame(shot, None, &self.cache));
+        self.selected.set(Some(index));
+        stack.set_visible_child_name("preview");
+        self.update_controls();
+    }
+
+    fn collapse(&self) {
+        let (Some(stack), Some(index)) = (self.stack.upgrade(), self.selected.take()) else {
+            return;
+        };
+        stack.set_visible_child_name("strip");
+        self.update_controls();
+        if let Some(button) = self.thumbnails.get(index).and_then(glib::WeakRef::upgrade) {
+            button.grab_focus();
+        }
+    }
+
+    fn step(&self, forward: bool) {
+        if let Some(index) = self.selected.get() {
+            let next = if forward {
+                index.checked_add(1)
+            } else {
+                index.checked_sub(1)
+            };
+            if let Some(next) = next.filter(|index| *index < self.shots.len()) {
+                self.enlarge(next);
+            }
+        } else {
+            let distance = self.strip.page_size() * 0.8;
+            let value = self.strip.value() + if forward { distance } else { -distance };
+            self.strip.set_value(value);
+        }
+    }
+}
+
 fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
-    const PER_VIEW: usize = 2;
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let heading = home_label(tr("Screenshots"), "title-3");
     heading.set_hexpand(true);
@@ -1326,137 +1520,81 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     }
     gallery.append(&header);
 
-    let frames = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-    frames.set_homogeneous(true);
-    gallery.append(&frames);
-    let offset = Rc::new(Cell::new(0usize));
-    let expanded = Rc::new(Cell::new(false));
-    let count = shots.len();
+    let previews = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let viewport = gtk::Viewport::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    viewport.set_scroll_to_focus(true);
+    viewport.set_child(Some(&previews));
+    let strip = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .overlay_scrolling(false)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .child(&viewport)
+        .build();
+    let enlarged = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let stack = gtk::Stack::new();
+    stack.set_hhomogeneous(false);
+    stack.set_vhomogeneous(false);
+    stack.add_named(&strip, Some("strip"));
+    stack.add_named(&enlarged, Some("preview"));
+    gallery.append(&stack);
+
     let cache = Rc::new(RefCell::new(HashMap::new()));
-    let render = Rc::new({
-        let (frames, position, previous, next, close) = (
-            frames.downgrade(),
-            position.downgrade(),
-            previous.downgrade(),
-            next.downgrade(),
-            close.downgrade(),
-        );
-        let offset = offset.clone();
-        let expanded = expanded.clone();
-        move |focus_preview: Option<usize>| {
-            let (Some(frames), Some(position), Some(previous), Some(next), Some(close)) = (
-                frames.upgrade(),
-                position.upgrade(),
-                previous.upgrade(),
-                next.upgrade(),
-                close.upgrade(),
-            ) else {
-                return;
-            };
-            let start = offset.get();
-            let enlarged = expanded.get();
-            let end = (start + if enlarged { 1 } else { PER_VIEW }).min(count);
-            let range = if start + 1 == end {
-                end.to_string()
-            } else {
-                format!("{}–{end}", start + 1)
-            };
-            position.set_text(&format!("{range} / {count}"));
-            previous.set_visible(enlarged || count > PER_VIEW);
-            next.set_visible(enlarged || count > PER_VIEW);
-            close.set_visible(enlarged);
-            previous.set_sensitive(start > 0);
-            next.set_sensitive(end < count);
-            while let Some(child) = frames.first_child() {
-                frames.remove(&child);
+    let thumbnails = shots
+        .iter()
+        .map(|shot| {
+            let button = gtk::Button::new();
+            previews.append(&screenshot_frame(shot, Some(&button), &cache));
+            button
+        })
+        .collect::<Vec<_>>();
+    let view = Rc::new(ScreenshotGallery {
+        shots,
+        cache,
+        selected: Cell::new(None),
+        strip: strip.hadjustment(),
+        stack: stack.downgrade(),
+        preview: enlarged.downgrade(),
+        position: position.downgrade(),
+        previous: previous.downgrade(),
+        next: next.downgrade(),
+        close: close.downgrade(),
+        thumbnails: thumbnails.iter().map(ObjectExt::downgrade).collect(),
+    });
+    for (index, button) in thumbnails.iter().enumerate() {
+        let view = view.clone();
+        button.connect_clicked(move |_| {
+            view.enlarge(index);
+            if let Some(close) = view.close.upgrade() {
+                close.grab_focus();
             }
-            for (index, shot) in shots.iter().enumerate().take(end).skip(start) {
-                let (frame, button) = screenshot_frame(shot, enlarged, index, &cache);
-                frames.append(&frame);
-                if focus_preview == Some(index) {
-                    button.grab_focus();
-                }
-            }
+        });
+    }
+    {
+        let view = view.clone();
+        close.connect_clicked(move |_| view.collapse());
+    }
+    for (button, forward) in [(&previous, false), (&next, true)] {
+        let view = view.clone();
+        button.connect_clicked(move |_| view.step(forward));
+    }
+    let state = Rc::downgrade(&view);
+    view.strip.connect_changed(move |_| {
+        if let Some(view) = state.upgrade() {
+            view.update_controls();
         }
     });
-
-    let actions = gio::SimpleActionGroup::new();
-    let enlarge = gio::SimpleAction::new("enlarge", Some(&u32::static_variant_type()));
-    let show = render.clone();
-    let start = offset.clone();
-    let zoom = expanded.clone();
-    let close_button = close.downgrade();
-    enlarge.connect_activate(move |_, parameter| {
-        let Some(index) = parameter.and_then(|value| value.get::<u32>()) else {
-            return;
-        };
-        if index as usize >= count {
-            return;
-        }
-        start.set(index as usize);
-        zoom.set(true);
-        show(None);
-        if let Some(button) = close_button.upgrade() {
-            button.grab_focus();
+    let state = Rc::downgrade(&view);
+    view.strip.connect_value_changed(move |_| {
+        if let Some(view) = state.upgrade() {
+            view.update_controls();
         }
     });
-    actions.add_action(&enlarge);
-    gallery.insert_action_group("gallery", Some(&actions));
-
-    let collapse = Rc::new({
-        let show = render.clone();
-        let offset = offset.clone();
-        let expanded = expanded.clone();
-        move || {
-            let selected = offset.get();
-            expanded.set(false);
-            offset.set(selected / PER_VIEW * PER_VIEW);
-            show(Some(selected));
-        }
-    });
-    let collapse_button = collapse.clone();
-    close.connect_clicked(move |_| collapse_button());
-    let step = Rc::new({
-        let offset = offset.clone();
-        let expanded = expanded.clone();
-        let (previous, next, close) = (previous.downgrade(), next.downgrade(), close.downgrade());
-        let show = render.clone();
-        move |forward| {
-            let old = offset.get();
-            let increment = if expanded.get() { 1 } else { PER_VIEW };
-            let new = if forward {
-                old.checked_add(increment).filter(|index| *index < count)
-            } else {
-                old.checked_sub(increment)
-            };
-            let Some(new) = new else {
-                return;
-            };
-            let focused = [previous.upgrade(), next.upgrade()]
-                .into_iter()
-                .flatten()
-                .find(|button| button.has_focus());
-            offset.set(new);
-            show(None);
-            if focused.is_some_and(|button| !button.is_sensitive()) {
-                if let Some(button) = [next.upgrade(), previous.upgrade(), close.upgrade()]
-                    .into_iter()
-                    .flatten()
-                    .find(|button| button.is_sensitive() && button.is_visible())
-                {
-                    button.grab_focus();
-                }
-            }
-        }
-    });
-    let step_back = step.clone();
-    previous.connect_clicked(move |_| step_back(false));
-    let step_forward = step.clone();
-    next.connect_clicked(move |_| step_forward(true));
+    view.update_controls();
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         use gtk::gdk::ModifierType;
-        if !expanded.get()
+        if view.selected.get().is_none()
             || modifiers.intersects(
                 ModifierType::ALT_MASK | ModifierType::CONTROL_MASK | ModifierType::SUPER_MASK,
             )
@@ -1464,30 +1602,30 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
             return glib::Propagation::Proceed;
         }
         match key {
-            gtk::gdk::Key::Escape => collapse(),
-            gtk::gdk::Key::Left => step(false),
-            gtk::gdk::Key::Right => step(true),
+            gtk::gdk::Key::Escape => view.collapse(),
+            gtk::gdk::Key::Left => view.step(false),
+            gtk::gdk::Key::Right => view.step(true),
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
     });
     gallery.add_controller(keys);
-    render(None);
 }
 
 type ScreenshotCache = Rc<RefCell<HashMap<String, gtk::gdk::Texture>>>;
 
 fn screenshot_frame(
     shot: &Screenshot,
-    enlarged: bool,
-    index: usize,
+    thumbnail: Option<&gtk::Button>,
     cache: &ScreenshotCache,
-) -> (gtk::Box, gtk::Button) {
+) -> gtk::Box {
+    const THUMBNAIL_HEIGHT: i32 = 260;
+    let enlarged = thumbnail.is_none();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Contain)
         .can_shrink(true)
-        .height_request(if enlarged { 458 } else { 306 })
+        .height_request(if enlarged { 458 } else { 0 })
         .build();
     picture.add_css_class("packlift-store-shot");
     let name = if shot.caption.is_empty() {
@@ -1496,12 +1634,15 @@ fn screenshot_frame(
         &shot.caption
     };
     picture.set_alternative_text(Some(name));
-    let button = gtk::Button::new();
-    if enlarged {
-        frame.append(&picture);
-    } else {
+    if let Some(button) = thumbnail {
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&picture));
+        let canvas = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let width = (shot.aspect_ratio.unwrap_or(1.6) * f64::from(THUMBNAIL_HEIGHT))
+            .round()
+            .clamp(118.0, 540.0) as i32;
+        canvas.set_size_request(width, THUMBNAIL_HEIGHT);
+        overlay.set_child(Some(&canvas));
+        overlay.add_overlay(&picture);
         let zoom = gtk::Image::from_icon_name("view-fullscreen-symbolic");
         zoom.set_halign(gtk::Align::End);
         zoom.set_valign(gtk::Align::Start);
@@ -1516,13 +1657,19 @@ fn screenshot_frame(
             gtk::accessible::Property::Label(name),
             gtk::accessible::Property::Description(tr("Enlarge screenshot")),
         ]);
-        button.set_action_name(Some("gallery.enlarge"));
-        button.set_action_target_value(Some(&(index as u32).to_variant()));
-        frame.append(&button);
+        frame.append(button);
+    } else {
+        frame.append(&picture);
     }
     let caption = gtk::Label::new(Some(tr("Loading screenshots…")));
     caption.add_css_class("dim-label");
-    caption.set_wrap(true);
+    if enlarged {
+        caption.set_wrap(true);
+    } else {
+        caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        caption.set_max_width_chars(22);
+        caption.set_tooltip_text((!shot.caption.is_empty()).then_some(shot.caption.as_str()));
+    }
     frame.append(&caption);
     let url = if enlarged { &shot.large_url } else { &shot.url };
     let text = shot.caption.clone();
@@ -1583,7 +1730,7 @@ fn screenshot_frame(
             },
         );
     }
-    (frame, button)
+    frame
 }
 
 fn labeled_control(label: &str, control: &gtk::DropDown) -> gtk::Box {

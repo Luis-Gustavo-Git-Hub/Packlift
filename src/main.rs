@@ -67,12 +67,12 @@ fn main() -> glib::ExitCode {
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.18), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
                  .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.12), transparent); border: 1px solid alpha(@borders, 0.5); }
-                 .packlift-store-fact { padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
+                 .packlift-store-fact > button { padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
+                 .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-store-shot { border-radius: 10px; }
                  button.packlift-store-shot-button { padding: 0; border-radius: 10px; }
                  .packlift-store-zoom { margin: 8px; padding: 6px; border-radius: 8px; background: @card_bg_color; }
                  .packlift-store-release { padding: 16px; border-radius: 12px; background: @card_bg_color; }
-                 .packlift-store-install { padding: 16px; border-radius: 12px; background: @card_bg_color; }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  button.packlift-store-card:hover { background: alpha(@accent_bg_color, 0.13); }",
             );

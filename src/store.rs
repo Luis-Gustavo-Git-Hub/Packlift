@@ -95,21 +95,26 @@ pub struct Screenshot {
     pub url: String,
     pub large_url: String,
     pub caption: String,
+    pub aspect_ratio: Option<f64>,
 }
 
 impl Screenshot {
-    fn from_sizes(sizes: impl Iterator<Item = (u64, String)>, caption: String) -> Option<Self> {
+    fn from_sizes(
+        sizes: impl Iterator<Item = (u64, u64, String)>,
+        caption: String,
+    ) -> Option<Self> {
         let sizes: Vec<_> = sizes.collect();
-        let nearest = |width| {
+        let nearest = |target| {
             sizes
                 .iter()
-                .min_by_key(|(candidate, _)| candidate.abs_diff(width))
-                .map(|(_, url)| url.clone())
+                .min_by_key(|(width, _, _)| width.abs_diff(target))
         };
+        let (width, height, url) = nearest(752)?;
         Some(Self {
-            url: nearest(752)?,
-            large_url: nearest(1440)?,
+            url: url.clone(),
+            large_url: nearest(1440)?.2.clone(),
             caption,
+            aspect_ratio: (*width > 0 && *height > 0).then(|| *width as f64 / *height as f64),
         })
     }
 }
@@ -610,11 +615,13 @@ pub fn app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
             let sizes = shot["sizes"].as_array()?;
             let sizes = sizes.iter().filter_map(|size| {
                 let url = size["src"].as_str().filter(|url| flathub_media(url))?;
-                let width = size["width"]
-                    .as_u64()
-                    .or_else(|| size["width"].as_str()?.parse().ok())
-                    .unwrap_or(0);
-                Some((width, url.to_owned()))
+                let dimension = |key: &str| {
+                    size[key]
+                        .as_u64()
+                        .or_else(|| size[key].as_str()?.parse().ok())
+                        .unwrap_or(0)
+                };
+                Some((dimension("width"), dimension("height"), url.to_owned()))
             });
             Screenshot::from_sizes(sizes, shot["caption"].as_str().unwrap_or("").into())
         })
@@ -897,11 +904,13 @@ fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
                     } else {
                         return None;
                     };
-                    let width = image
-                        .attribute("width")
-                        .and_then(|width| width.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    Some((width, url))
+                    let dimension = |key| {
+                        image
+                            .attribute(key)
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .unwrap_or(0)
+                    };
+                    Some((dimension("width"), dimension("height"), url))
                 });
             let caption = shot
                 .children()
@@ -1205,7 +1214,7 @@ mod tests {
             <releases><release version="2.0" type="development"/><release version="1.0">
                <description><p>First release</p></description>
             </release></releases>
-            <screenshots><screenshot><caption>App window</caption><image width="752">stable.png</image>
+            <screenshots><screenshot><caption>App window</caption><image width="752" height="376">stable.png</image>
                 <image width="1280">https://example.net/big.png</image></screenshot></screenshots>
           </component></components>"#;
         let details = details_from_appstream(xml, &app).unwrap();
@@ -1219,6 +1228,7 @@ mod tests {
         assert_eq!(shots.len(), 1);
         assert_eq!(shots[0].url, "https://example.org/media/stable.png");
         assert_eq!(shots[0].large_url, "https://example.net/big.png");
+        assert_eq!(shots[0].aspect_ratio, Some(2.0));
         assert_eq!(shots[0].caption, "App window");
     }
 }
