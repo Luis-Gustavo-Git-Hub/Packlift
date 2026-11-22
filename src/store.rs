@@ -70,6 +70,20 @@ pub struct StorePage {
     pub has_next: bool,
 }
 
+#[derive(Default)]
+pub struct AppDetails {
+    pub developer: String,
+    pub license: String,
+    pub description: String,
+    pub release: Option<Release>,
+    pub screenshots: Vec<Screenshot>,
+}
+
+pub struct Release {
+    pub version: String,
+    pub notes: String,
+}
+
 pub struct Screenshot {
     pub url: String,
     pub caption: String,
@@ -108,54 +122,103 @@ pub fn catalog_remotes(runner: &Runner) -> Result<Vec<Remote>> {
     Ok(remotes)
 }
 
-pub fn search_catalog(
-    runner: &Runner,
-    remotes: &[Remote],
-    query: &str,
-    page: usize,
-) -> Result<StorePage> {
-    let results = thread::scope(|workers| {
-        let handles: Vec<_> = remotes
-            .iter()
-            .map(|remote| workers.spawn(move || search(runner, remote, query, page)))
-            .collect();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-            })
-            .collect::<Vec<_>>()
-    });
+pub struct CatalogSearch {
+    query: String,
+    remotes: Vec<Remote>,
+    remote_page: usize,
+    apps: Vec<(Remote, CatalogApp)>,
+    seen: HashSet<String>,
+}
 
-    let mut apps = Vec::new();
-    let mut has_next = false;
-    let mut seen = HashSet::new();
-    let mut first_error = None;
-    let mut loaded = false;
-    for (remote, result) in remotes.iter().zip(results) {
-        match result {
-            Ok(results) => {
-                loaded = true;
-                has_next |= results.has_next;
-                apps.extend(
-                    results.apps.into_iter().filter_map(|app| {
-                        seen.insert(app.id.clone()).then(|| (remote.clone(), app))
-                    }),
-                );
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+impl CatalogSearch {
+    pub fn new(remotes: Vec<Remote>, query: String) -> Self {
+        Self {
+            query,
+            remotes,
+            remote_page: 1,
+            apps: Vec::new(),
+            seen: HashSet::new(),
         }
     }
-    if !loaded {
-        if let Some(error) = first_error {
-            return Err(error);
-        }
+
+    pub fn is_explore(&self) -> bool {
+        self.query.is_empty()
     }
-    Ok(StorePage { apps, has_next })
+
+    pub fn page(&mut self, runner: &Runner, page: usize) -> Result<StorePage> {
+        self.fill_page(page, |remotes, query, remote_page| {
+            thread::scope(|workers| {
+                let handles: Vec<_> = remotes
+                    .iter()
+                    .map(|remote| workers.spawn(move || search(runner, remote, query, remote_page)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                    })
+                    .collect()
+            })
+        })
+    }
+
+    fn fill_page(
+        &mut self,
+        page: usize,
+        mut fetch: impl FnMut(&[Remote], &str, usize) -> Vec<Result<CatalogPage>>,
+    ) -> Result<StorePage> {
+        let page = page.max(1);
+        let featured = usize::from(self.is_explore());
+        let start = (page - 1) * PAGE_SIZE + if page > 1 { featured } else { 0 };
+        let end = page * PAGE_SIZE + featured;
+        while self.apps.len() <= end && !self.remotes.is_empty() {
+            let results = fetch(&self.remotes, &self.query, self.remote_page);
+            let mut remaining = Vec::new();
+            let mut first_error = None;
+            let mut loaded = false;
+            for (remote, result) in self.remotes.iter().zip(results) {
+                match result {
+                    Ok(results) => {
+                        loaded = true;
+                        if results.has_next {
+                            remaining.push(remote.clone());
+                        }
+                        self.apps.extend(results.apps.into_iter().filter_map(|app| {
+                            self.seen
+                                .insert(app.id.clone())
+                                .then(|| (remote.clone(), app))
+                        }));
+                    }
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            if !loaded {
+                if let Some(error) = first_error {
+                    // A buffered page is still usable when the lookahead fails.
+                    if self.apps.len() <= start {
+                        return Err(error);
+                    }
+                    break;
+                }
+            }
+            self.remotes = remaining;
+            self.remote_page += 1;
+        }
+        Ok(StorePage {
+            apps: self
+                .apps
+                .iter()
+                .skip(start)
+                .take(end - start)
+                .cloned()
+                .collect(),
+            has_next: self.apps.len() > end || !self.remotes.is_empty(),
+        })
+    }
 }
 
 pub fn install_choices(
@@ -390,19 +453,19 @@ fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogP
     })
 }
 
-pub fn screenshots(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<Vec<Screenshot>> {
+pub fn app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<AppDetails> {
     if !valid_app_id(&app.id) {
-        return Ok(Vec::new());
+        return Ok(AppDetails::default());
     }
     if !remote.flathub {
-        return local_screenshots(runner, remote, app);
+        return local_app_details(runner, remote, app);
     }
     let metadata: Value = serde_json::from_slice(&fetch(
         runner,
         &format!("{FLATHUB_API}/appstream/{}", app.id),
         None,
     )?)?;
-    Ok(metadata["screenshots"]
+    let screenshots = metadata["screenshots"]
         .as_array()
         .into_iter()
         .flatten()
@@ -413,8 +476,8 @@ pub fn screenshots(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
                 .filter_map(|size| {
                     let url = size["src"].as_str().filter(|url| flathub_media(url))?;
                     let width = size["width"]
-                        .as_str()
-                        .and_then(|width| width.parse::<u32>().ok())
+                        .as_u64()
+                        .or_else(|| size["width"].as_str()?.parse().ok())
                         .unwrap_or(0);
                     Some((width.abs_diff(752), url))
                 })
@@ -426,7 +489,91 @@ pub fn screenshots(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
             })
         })
         .take(8)
-        .collect())
+        .collect();
+    let release = metadata["releases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|release| release["type"].as_str() != Some("development"))
+        .find_map(|release| {
+            let version = release["version"].as_str()?.trim();
+            (!version.is_empty()).then(|| Release {
+                version: version.into(),
+                notes: appstream_fragment(release["description"].as_str().unwrap_or_default()),
+            })
+        });
+    Ok(AppDetails {
+        developer: metadata["developer_name"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .into(),
+        license: metadata["project_license"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .into(),
+        description: appstream_fragment(metadata["description"].as_str().unwrap_or_default()),
+        release,
+        screenshots,
+    })
+}
+
+fn appstream_fragment(markup: &str) -> String {
+    let wrapped = format!("<description>{markup}</description>");
+    roxmltree::Document::parse(&wrapped)
+        .map(|document| appstream_text(document.root_element()))
+        .unwrap_or_default()
+}
+
+fn appstream_text(description: roxmltree::Node<'_, '_>) -> String {
+    let mut blocks = Vec::new();
+    let normalize = |node: roxmltree::Node<'_, '_>| {
+        node.descendants()
+            .filter(roxmltree::Node::is_text)
+            .filter_map(|text| text.text())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for section in description.children().filter(roxmltree::Node::is_element) {
+        if section
+            .attribute(("http://www.w3.org/XML/1998/namespace", "lang"))
+            .is_some()
+        {
+            continue;
+        }
+        match section.tag_name().name() {
+            "p" => blocks.push(normalize(section)),
+            "ul" | "ol" => {
+                let items = section
+                    .children()
+                    .filter(|item| item.has_tag_name("li"))
+                    .map(normalize)
+                    .filter(|item| !item.is_empty())
+                    .enumerate()
+                    .map(|(index, item)| {
+                        if section.has_tag_name("ol") {
+                            format!("{}. {item}", index + 1)
+                        } else {
+                            format!("• {item}")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                blocks.push(items.join("\n"));
+            }
+            _ => {}
+        }
+    }
+    if blocks.is_empty() && !description.children().any(|node| node.is_element()) {
+        return normalize(description);
+    }
+    blocks
+        .into_iter()
+        .filter(|block| !block.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub fn screenshot_bytes(runner: &Runner, url: &str) -> Result<Vec<u8>> {
@@ -473,17 +620,13 @@ fn appstream_root(runner: &Runner, remote: &Remote) -> Result<Option<PathBuf>> {
     Ok(installation.map(|path| path.join("appstream").join(&remote.name)))
 }
 
-fn local_screenshots(
-    runner: &Runner,
-    remote: &Remote,
-    app: &CatalogApp,
-) -> Result<Vec<Screenshot>> {
+fn local_app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<AppDetails> {
     let arch = app.reference.split('/').nth(2).unwrap_or_default();
     if !valid_path_component(arch) {
-        return Ok(Vec::new());
+        return Ok(AppDetails::default());
     }
     let Some(root) = appstream_root(runner, remote)? else {
-        return Ok(Vec::new());
+        return Ok(AppDetails::default());
     };
     let path = root.join(arch).join("active/appstream.xml.gz");
     const COMPRESSED_LIMIT: u64 = 8 * 1024 * 1024;
@@ -497,7 +640,7 @@ fn local_screenshots(
         false,
         COMPRESSED_LIMIT,
     ) else {
-        return Ok(Vec::new());
+        return Ok(AppDetails::default());
     };
     let mut xml = String::new();
     flate2::read::GzDecoder::new(bytes.as_slice())
@@ -508,7 +651,7 @@ fn local_screenshots(
             "The AppStream catalog is too large.".into(),
         ));
     }
-    screenshots_from_appstream(&xml, app)
+    details_from_appstream(&xml, app)
 }
 
 fn system_installation_path(runner: &Runner) -> Result<Option<PathBuf>> {
@@ -525,7 +668,7 @@ fn system_installation_path(runner: &Runner) -> Result<Option<PathBuf>> {
     }))
 }
 
-fn screenshots_from_appstream(xml: &str, app: &CatalogApp) -> Result<Vec<Screenshot>> {
+fn details_from_appstream(xml: &str, app: &CatalogApp) -> Result<AppDetails> {
     let document = roxmltree::Document::parse(xml)
         .map_err(|error| PackliftError::Message(format!("Invalid AppStream metadata: {error}")))?;
     let base = document
@@ -553,9 +696,12 @@ fn screenshots_from_appstream(xml: &str, app: &CatalogApp) -> Result<Vec<Screens
                 })
             }
         });
-    Ok(component
-        .into_iter()
-        .flat_map(|component| component.descendants())
+    let Some(component) = component else {
+        return Ok(AppDetails::default());
+    };
+    let field = |name| component.children().find(|node| node.has_tag_name(name));
+    let screenshots = component
+        .descendants()
         .filter(|node| node.has_tag_name("screenshot"))
         .filter_map(|shot| {
             let url = shot
@@ -595,7 +741,42 @@ fn screenshots_from_appstream(xml: &str, app: &CatalogApp) -> Result<Vec<Screens
             Some(Screenshot { url, caption })
         })
         .take(8)
-        .collect())
+        .collect();
+    let developer = field("developer")
+        .and_then(|node| {
+            node.children()
+                .find(|child| child.has_tag_name("name"))
+                .and_then(|child| child.text())
+        })
+        .or_else(|| field("developer_name").and_then(|node| node.text()));
+    let release = field("releases")
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| {
+            node.has_tag_name("release") && node.attribute("type") != Some("development")
+        })
+        .find_map(|node| {
+            let version = node.attribute("version")?.trim();
+            (!version.is_empty()).then(|| Release {
+                version: version.into(),
+                notes: node
+                    .children()
+                    .find(|child| child.has_tag_name("description"))
+                    .map(appstream_text)
+                    .unwrap_or_default(),
+            })
+        });
+    Ok(AppDetails {
+        developer: developer.unwrap_or_default().trim().into(),
+        license: field("project_license")
+            .and_then(|node| node.text())
+            .unwrap_or_default()
+            .trim()
+            .into(),
+        description: field("description").map(appstream_text).unwrap_or_default(),
+        release,
+        screenshots,
+    })
 }
 
 pub fn install(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<()> {
@@ -763,7 +944,53 @@ mod tests {
     }
 
     #[test]
-    fn appstream_screenshots_match_the_selected_repo_branch() {
+    fn featured_app_does_not_leave_a_gap_in_the_grid() {
+        let mut catalog = CatalogSearch::new(
+            vec![
+                flathub_remote(Destination::User),
+                flathub_remote(Destination::System),
+            ],
+            String::new(),
+        );
+        let mut requests = Vec::new();
+        let mut fetch = |remotes: &[Remote], _: &str, remote_page| {
+            requests.push((remotes.len(), remote_page));
+            let rows = (0..PAGE_SIZE)
+                .map(|index| {
+                    let id = format!("org.example.App{}", (remote_page - 1) * PAGE_SIZE + index);
+                    format!("{id}/x86_64/stable\t{id}\n")
+                })
+                .collect::<String>();
+            remotes
+                .iter()
+                .map(|remote| {
+                    let mut result = search_remote_list(&rows, "", 1)?;
+                    result.has_next = remote.destination == Destination::User && remote_page < 2;
+                    Ok(result)
+                })
+                .collect()
+        };
+
+        let first = catalog.fill_page(1, &mut fetch).unwrap();
+        let second = catalog.fill_page(2, &mut fetch).unwrap();
+        let back = catalog.fill_page(1, &mut fetch).unwrap();
+        assert_eq!(first.apps.len(), PAGE_SIZE + 1);
+        assert!(first.has_next);
+        assert_eq!(second.apps.len(), PAGE_SIZE - 1);
+        assert!(!second.has_next);
+        assert_eq!(back.apps.len(), first.apps.len());
+        let ids = first
+            .apps
+            .iter()
+            .chain(&second.apps)
+            .map(|(_, app)| &app.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), PAGE_SIZE * 2);
+        assert_eq!(requests, [(2, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn appstream_details_match_the_selected_repo_branch() {
         let app = CatalogApp {
             id: "org.example.App".into(),
             name: "Example".into(),
@@ -775,10 +1002,22 @@ mod tests {
           <component><id>org.example.App</id><bundle type="flatpak">app/org.example.App/x86_64/beta</bundle>
             <screenshots><screenshot><image width="752">beta.png</image></screenshot></screenshots>
           </component><component><id>org.example.App</id><bundle type="flatpak">app/org.example.App/x86_64/stable</bundle>
+            <developer><name>Example team</name></developer><project_license>MIT</project_license>
+            <description><p>A test &amp; example.</p><ul><li>First feature</li></ul></description>
+            <releases><release version="2.0" type="development"/><release version="1.0">
+               <description><p>First release</p></description>
+            </release></releases>
             <screenshots><screenshot><caption>App window</caption><image width="752">stable.png</image>
                 <image width="1280">https://example.net/big.png</image></screenshot></screenshots>
           </component></components>"#;
-        let shots = screenshots_from_appstream(xml, &app).unwrap();
+        let details = details_from_appstream(xml, &app).unwrap();
+        assert_eq!(details.developer, "Example team");
+        assert_eq!(details.license, "MIT");
+        assert_eq!(details.description, "A test & example.\n\n• First feature");
+        let release = details.release.unwrap();
+        assert_eq!(release.version, "1.0");
+        assert_eq!(release.notes, "First release");
+        let shots = details.screenshots;
         assert_eq!(shots.len(), 1);
         assert_eq!(shots[0].url, "https://example.org/media/stable.png");
         assert_eq!(shots[0].caption, "App window");

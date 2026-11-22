@@ -6,7 +6,7 @@ use std::{
 
 use adw::prelude::*;
 use packlift::{
-    store::{self, CatalogApp, Destination, Remote, Screenshot},
+    store::{self, CatalogApp, CatalogSearch, Destination, Remote, Screenshot},
     system::Runner,
 };
 use serde_json::json;
@@ -23,11 +23,12 @@ struct StoreView {
     feature: gtk::Box,
     list: gtk::FlowBox,
     status: gtk::Label,
+    scroll: gtk::ScrolledWindow,
     previous: gtk::Button,
     next: gtk::Button,
     page_label: gtk::Label,
     remotes: RefCell<Vec<Remote>>,
-    query: RefCell<String>,
+    catalog_search: RefCell<Option<CatalogSearch>>,
     page: Cell<usize>,
     busy: Cell<bool>,
 }
@@ -133,11 +134,12 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         feature,
         list,
         status,
+        scroll,
         previous,
         next,
         page_label,
         remotes: RefCell::new(Vec::new()),
-        query: RefCell::new(String::new()),
+        catalog_search: RefCell::new(None),
         page: Cell::new(1),
         busy: Cell::new(false),
     });
@@ -210,16 +212,16 @@ impl StoreView {
     }
 
     fn new_search(self: &Rc<Self>) {
-        *self.query.borrow_mut() = self.search.text().trim().to_owned();
+        let query = self.search.text().trim().to_owned();
+        *self.catalog_search.borrow_mut() =
+            Some(CatalogSearch::new(self.remotes.borrow().clone(), query));
         self.load_page(1);
     }
 
     fn load_page(self: &Rc<Self>, page: usize) {
-        let remotes = self.remotes.borrow().clone();
-        if remotes.is_empty() {
-            self.set_busy(false);
+        let Some(mut catalog_search) = self.catalog_search.borrow_mut().take() else {
             return;
-        }
+        };
         self.set_busy(true);
         self.list.remove_all();
         if let Some(child) = self.feature.first_child() {
@@ -227,18 +229,21 @@ impl StoreView {
         }
         self.page_label.set_text("");
         self.set_status(tr("Searching the store…"));
-        let query = self.query.borrow().clone();
-        let explore = query.is_empty() && page == 1;
+        let explore = catalog_search.is_explore() && page == 1;
         let view = self.clone();
         background(
             move || {
-                worker().and_then(|runner| store::search_catalog(&runner, &remotes, &query, page))
+                let result = worker().and_then(|runner| catalog_search.page(&runner, page));
+                (catalog_search, result)
             },
-            move |result| {
+            move |(catalog_search, result)| {
+                *view.catalog_search.borrow_mut() = Some(catalog_search);
                 view.set_busy(false);
                 match result {
                     Ok(results) => {
                         view.page.set(page);
+                        let adjustment = view.scroll.vadjustment();
+                        adjustment.set_value(adjustment.lower());
                         view.previous.set_sensitive(page > 1);
                         view.next.set_sensitive(results.has_next);
                         view.page_label
@@ -259,7 +264,11 @@ impl StoreView {
                             view.list.append(&app_card(&view.window, remote, app));
                         }
                     }
-                    Err(error) => view.set_status(&error.to_string()),
+                    Err(error) => {
+                        view.page.set(page);
+                        view.previous.set_sensitive(page > 1);
+                        view.set_status(&error.to_string());
+                    }
                 }
             },
         );
@@ -272,33 +281,58 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
     back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 24);
     body.set_margin_start(20);
     body.set_margin_end(20);
-    body.set_margin_top(14);
-    body.set_margin_bottom(16);
-    body.append(&home_label(&app.name, "title-2"));
-    if !app.summary.is_empty() {
-        body.append(&home_label(&app.summary, "dim-label"));
-    }
-    body.append(&home_label(
-        &format!("{} · {}", remote.label(), app.id),
-        "dim-label",
-    ));
+    body.set_margin_top(18);
+    body.set_margin_bottom(24);
+
+    let hero = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    hero.add_css_class("packlift-store-detail-hero");
+    let identity = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    let icon = catalog_icon(app, 80);
+    icon.set_valign(gtk::Align::Center);
+    identity.append(&icon);
+    let title = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    title.set_hexpand(true);
+    title.set_valign(gtk::Align::Center);
+    title.append(&home_label(&app.name, "title-1"));
+    let developer = home_label("", "dim-label");
+    developer.set_visible(false);
+    title.append(&developer);
+    identity.append(&title);
+    let install = gtk::Button::with_label(tr("Install"));
+    install.set_valign(gtk::Align::Center);
+    install.add_css_class("suggested-action");
+    install.add_css_class("pill");
+    install.set_width_request(104);
+    install.update_property(&[gtk::accessible::Property::Label(tr("Install"))]);
+    identity.append(&install);
+    hero.append(&identity);
+
+    let repository_caption = tr("Repository");
+    let facts = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .column_spacing(8)
+        .row_spacing(8)
+        .build();
+    facts.append(&store_fact(repository_caption, &remote.label()));
+    hero.append(&facts);
+    body.append(&hero);
+
     let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
     install_options.set_visible(false);
     body.append(&install_options);
 
-    let gallery = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let status = home_label(tr("Loading screenshots…"), "dim-label");
-    let picture = gtk::Picture::builder()
-        .content_fit(gtk::ContentFit::Contain)
-        .can_shrink(true)
-        .height_request(240)
-        .build();
-    picture.set_visible(false);
-    gallery.append(&picture);
-    gallery.append(&status);
+    let gallery = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    gallery.append(&home_label(tr("Screenshots"), "title-3"));
+    let gallery_status = home_label(tr("Loading screenshots…"), "dim-label");
+    gallery.append(&gallery_status);
+    let frames = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    frames.set_homogeneous(true);
+    gallery.append(&frames);
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     controls.set_halign(gtk::Align::Center);
     let previous = text_button(tr("Previous"));
@@ -309,22 +343,35 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     gallery.append(&controls);
     body.append(&gallery);
 
-    let layout = adw::Clamp::builder().maximum_size(840).child(&body).build();
+    let about = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    about.append(&home_label(tr("About this app"), "title-3"));
+    if !app.summary.is_empty() {
+        about.append(&home_label(&app.summary, "heading"));
+    }
+    let description = home_label("", "");
+    description.set_selectable(true);
+    description.set_visible(false);
+    about.append(&description);
+    let app_id = home_label(&app.id, "dim-label");
+    app_id.set_selectable(true);
+    about.append(&app_id);
+    body.append(&about);
+
+    let release = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    release.add_css_class("packlift-store-release");
+    release.set_visible(false);
+    body.append(&release);
+
+    let layout = adw::Clamp::builder()
+        .maximum_size(960)
+        .tightening_threshold(840)
+        .child(&body)
+        .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&layout)
         .build();
     toolbar.set_content(Some(&scroll));
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_halign(gtk::Align::End);
-    footer.set_margin_top(10);
-    footer.set_margin_bottom(10);
-    footer.set_margin_end(16);
-    let install = text_button(tr("Install"));
-    install.add_css_class("suggested-action");
-    footer.append(&install);
-    toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
-    toolbar.add_bottom_bar(&footer);
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
     window.set_content(Some(&toolbar));
@@ -341,7 +388,13 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         };
         let current_page = current_page.downgrade();
         button.set_sensitive(false);
-        button.set_label(tr("Loading repositories…"));
+        let spinner = gtk::Spinner::new();
+        spinner.start();
+        button.set_child(Some(&spinner));
+        button.announce(
+            tr("Loading repositories…"),
+            gtk::AccessibleAnnouncementPriority::Low,
+        );
         let source = selected.clone();
         let candidate = package.clone();
         let package_name = candidate.name.clone();
@@ -391,17 +444,50 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let source = remote.clone();
     let selected = app.clone();
     background(
-        move || worker().and_then(|runner| store::screenshots(&runner, &source, &selected)),
+        move || worker().and_then(|runner| store::app_details(&runner, &source, &selected)),
         move |result| match result {
-            Ok(shots) if !shots.is_empty() => {
-                bind_gallery(shots, picture, status, controls, previous, next)
+            Ok(details) => {
+                developer.set_text(&details.developer);
+                developer.set_visible(!details.developer.is_empty());
+                if !details.license.is_empty() {
+                    facts.append(&store_fact(tr("License"), &details.license));
+                }
+                if !details.description.is_empty() {
+                    description.set_text(&details.description);
+                    description.set_visible(true);
+                }
+                if let Some(release_info) = details.release {
+                    let version =
+                        tr("Version {version}").replace("{version}", &release_info.version);
+                    release.append(&home_label(&version, "title-3"));
+                    if !release_info.notes.is_empty() {
+                        let notes = home_label(&release_info.notes, "");
+                        notes.set_selectable(true);
+                        release.append(&notes);
+                    }
+                    release.set_visible(true);
+                }
+                if details.screenshots.is_empty() {
+                    gallery_status
+                        .set_text(tr("No screenshots are available from this repository."));
+                } else {
+                    gallery_status.set_visible(false);
+                    bind_gallery(details.screenshots, &frames, &controls, &previous, &next);
+                }
             }
-            Ok(_) => status.set_text(tr("No screenshots are available from this repository.")),
-            Err(_) => status.set_text(tr("Screenshots could not be loaded.")),
+            Err(_) => gallery_status.set_text(tr("Screenshots could not be loaded.")),
         },
     );
     install.grab_focus();
     window.present();
+}
+
+fn store_fact(label: &str, value: &str) -> gtk::Box {
+    let fact = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    fact.add_css_class("packlift-store-fact");
+    fact.append(&home_label(label, "dim-label"));
+    fact.append(&home_label(value, "heading"));
+    fact
 }
 
 fn app_card(
@@ -494,8 +580,9 @@ fn featured_app(
     self::background(
         move || {
             let runner = worker().ok()?;
-            let shot = store::screenshots(&runner, &origin, &selected)
+            let shot = store::app_details(&runner, &origin, &selected)
                 .ok()?
+                .screenshots
                 .into_iter()
                 .next()?;
             let bytes = store::screenshot_bytes(&runner, &shot.url).ok()?;
@@ -683,66 +770,101 @@ fn choose_install_destination(
 
 fn bind_gallery(
     shots: Vec<Screenshot>,
-    picture: gtk::Picture,
-    status: gtk::Label,
-    controls: gtk::Box,
-    previous: gtk::Button,
-    next: gtk::Button,
+    frames: &gtk::Box,
+    controls: &gtk::Box,
+    previous: &gtk::Button,
+    next: &gtk::Button,
 ) {
-    controls.set_visible(shots.len() > 1);
+    const PER_VIEW: usize = 2;
+    controls.set_visible(shots.len() > PER_VIEW);
     let index = Rc::new(Cell::new(0usize));
     let show = Rc::new({
-        let index = index.clone();
         let previous = previous.downgrade();
         let next = next.downgrade();
-        move || {
-            let i = index.get();
-            let Some(shot) = shots.get(i) else { return };
-            let (Some(previous), Some(next)) = (previous.upgrade(), next.upgrade()) else {
+        let frames = frames.downgrade();
+        move |start: usize| {
+            let (Some(frames), Some(previous), Some(next)) =
+                (frames.upgrade(), previous.upgrade(), next.upgrade())
+            else {
                 return;
             };
-            previous.set_sensitive(false);
-            next.set_sensitive(false);
-            picture.set_visible(false);
-            status.set_text(tr("Loading screenshots…"));
-            let caption = shot.caption.clone();
-            let url = shot.url.clone();
-            let picture = picture.clone();
-            let status = status.clone();
-            let has_next = i + 1 < shots.len();
-            background(
-                move || worker().and_then(|runner| store::screenshot_bytes(&runner, &url)),
-                move |result| {
-                    previous.set_sensitive(i > 0);
-                    next.set_sensitive(has_next);
-                    if let Ok(bytes) = result {
-                        if let Ok(texture) =
-                            gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
-                        {
-                            picture.set_paintable(Some(&texture));
-                            picture.set_alternative_text(Some(&caption));
-                            picture.set_visible(true);
-                            status.set_text(&caption);
-                            return;
-                        }
-                    }
-                    status.set_text(tr("Screenshots could not be loaded."));
-                },
-            );
+            while let Some(child) = frames.first_child() {
+                frames.remove(&child);
+            }
+            previous.set_sensitive(start > 0);
+            next.set_sensitive(start + PER_VIEW < shots.len());
+            for shot in shots.iter().skip(start).take(PER_VIEW) {
+                frames.append(&screenshot_frame(shot));
+            }
         }
     });
     let back = show.clone();
     let prior_index = index.clone();
-    previous.connect_clicked(move |_| {
-        prior_index.set(prior_index.get().saturating_sub(1));
-        back();
+    let forward_button = next.downgrade();
+    previous.connect_clicked(move |button| {
+        let start = prior_index.get().saturating_sub(PER_VIEW);
+        prior_index.set(start);
+        let focused = button.has_focus();
+        back(start);
+        if focused && !button.is_sensitive() {
+            if let Some(next) = forward_button.upgrade() {
+                next.grab_focus();
+            }
+        }
     });
     let forward = show.clone();
-    next.connect_clicked(move |_| {
-        index.set(index.get() + 1);
-        forward();
+    let back_button = previous.downgrade();
+    next.connect_clicked(move |button| {
+        let start = index.get() + PER_VIEW;
+        index.set(start);
+        let focused = button.has_focus();
+        forward(start);
+        if focused && !button.is_sensitive() {
+            if let Some(previous) = back_button.upgrade() {
+                previous.grab_focus();
+            }
+        }
     });
-    show();
+    show(0);
+}
+
+fn screenshot_frame(shot: &Screenshot) -> gtk::Box {
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    frame.add_css_class("packlift-store-shot");
+    let picture = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Contain)
+        .can_shrink(true)
+        .height_request(228)
+        .build();
+    if !shot.caption.is_empty() {
+        picture.set_alternative_text(Some(&shot.caption));
+    }
+    frame.append(&picture);
+    let caption = home_label(tr("Loading screenshots…"), "dim-label");
+    frame.append(&caption);
+    let url = shot.url.clone();
+    let text = shot.caption.clone();
+    let target = frame.downgrade();
+    background(
+        move || worker().and_then(|runner| store::screenshot_bytes(&runner, &url)),
+        move |result| {
+            if target.upgrade().is_none() {
+                return;
+            }
+            if let Ok(bytes) = result {
+                if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
+                {
+                    picture.set_paintable(Some(&texture));
+                    caption.set_text(&text);
+                    caption.set_visible(!text.is_empty());
+                    return;
+                }
+            }
+            picture.set_visible(false);
+            caption.set_text(tr("Screenshots could not be loaded."));
+        },
+    );
+    frame
 }
 
 fn labeled_control(label: &str, control: &gtk::DropDown) -> gtk::Box {

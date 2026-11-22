@@ -251,3 +251,6 @@ Packlift will add Flathub to the selected scope if needed.|O Packlift adicionar�
 Library|Biblioteca|Biblioteca|Библиотека|应用库
 Back|Voltar|Volver|Назад|返回
 Uninstalling the program|Desinstalando o programa|Desinstalando el programa|Удаление программы|正在卸载程序
+Screenshots|Capturas de tela|Capturas de pantalla|Снимки экрана|屏幕截图
+About this app|Sobre este app|Acerca de esta aplicación|О приложении|关于此应用
+License|Licença|Licencia|Лицензия|许可证
