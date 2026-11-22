@@ -608,7 +608,7 @@ fn library_row(
         ),
         (_, "flatpak") => (
             tr("Uninstall"),
-            tr("The app’s data will be kept when removing this installation ({scope}).")
+            tr("You are removing this installation ({scope}).")
                 .replace("{scope}", &flatpak_scope_label(record)),
         ),
         (_, "wine") => (
@@ -630,26 +630,60 @@ fn library_row(
         };
         let record = record.clone();
         let app = app.clone();
-        confirm_library_action(
+        let dialog = library_action_dialog(
             &window,
             &format!("{remove}: {name}?"),
             &detail,
             remove,
             true,
-            move |window| {
-                let record = record.clone();
-                run_job(
-                    &app,
-                    window,
-                    tr("Removing from your library"),
-                    move |logger| {
-                        installer_with_output(logger)?
-                            .uninstall(&record)
-                            .map(|_| None)
-                    },
-                );
-            },
         );
+        let delete_data = (record["method"] == "flatpak").then(|| {
+            let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            let check = gtk::CheckButton::new();
+            check.set_child(Some(&home_label(tr("Delete app data"), "heading")));
+            row.append(&check);
+            let note = home_label(
+                tr("This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app."),
+                "dim-label",
+            );
+            note.set_max_width_chars(46);
+            note.set_visible(false);
+            row.append(&note);
+            check.connect_toggled(move |check| note.set_visible(check.is_active()));
+            if let Ok(area) = dialog.message_area().downcast::<gtk::Box>() {
+                area.append(&row);
+            }
+            check
+        });
+        let parent = window.downgrade();
+        dialog.connect_response(move |dialog, response| {
+            dialog.close();
+            if response != gtk::ResponseType::Accept {
+                return;
+            }
+            let Some(window) = parent.upgrade() else {
+                return;
+            };
+            let record = record.clone();
+            let delete_data = delete_data
+                .as_ref()
+                .is_some_and(gtk::CheckButton::is_active);
+            run_job(
+                &app,
+                &window,
+                tr("Removing from your library"),
+                move |logger| {
+                    let manager = installer_with_output(logger)?;
+                    if delete_data {
+                        manager.uninstall_removing_data(&record)?;
+                    } else {
+                        manager.uninstall(&record)?;
+                    }
+                    Ok(None)
+                },
+            );
+        });
+        dialog.present();
     });
     row.add_suffix(&menu);
     row
@@ -673,6 +707,26 @@ fn confirm_library_action(
     destructive: bool,
     action: impl Fn(&adw::ApplicationWindow) + 'static,
 ) {
+    let dialog = library_action_dialog(window, title, description, label, destructive);
+    let parent = window.downgrade();
+    dialog.connect_response(move |dialog, response| {
+        dialog.close();
+        if response == gtk::ResponseType::Accept {
+            if let Some(window) = parent.upgrade() {
+                action(&window);
+            }
+        }
+    });
+    dialog.present();
+}
+
+fn library_action_dialog(
+    window: &adw::ApplicationWindow,
+    title: &str,
+    description: &str,
+    label: &str,
+    destructive: bool,
+) -> gtk::MessageDialog {
     let dialog = gtk::MessageDialog::builder()
         .transient_for(window)
         .modal(true)
@@ -685,16 +739,7 @@ fn confirm_library_action(
         accept.add_css_class("destructive-action");
     }
     dialog.set_default_response(gtk::ResponseType::Cancel);
-    let parent = window.downgrade();
-    dialog.connect_response(move |dialog, response| {
-        dialog.close();
-        if response == gtk::ResponseType::Accept {
-            if let Some(window) = parent.upgrade() {
-                action(&window);
-            }
-        }
-    });
-    dialog.present();
+    dialog
 }
 
 fn program_runtime_label(record: &Value) -> String {

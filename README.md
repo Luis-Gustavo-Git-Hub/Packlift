@@ -33,7 +33,7 @@ If an AppImage shortcut does not open a window, use **Open** in Packlift's insta
 
 With system access enabled, **Your library** also lists apps installed through Flatpak for your account or system-wide. Combine search with filters for user or system Flatpaks, Windows apps and game shortcuts, Wine, Proton, local Linux apps, native packages, or Toolbx apps.
 
-Open **Permissions…** from a Flatpak's three-dot menu to change network, display, audio and device access, filesystem and D-Bus rules, and environment variables. **Details** shows effective permissions and saved desktop portal grants. Use **Uninstall…** in the same menu to remove the selected installation while keeping its app data. System installations may require administrator authorization.
+Open **Permissions…** from a Flatpak's three-dot menu to change network, display, audio and device access, filesystem and D-Bus rules, and environment variables. **Details** shows effective permissions and saved desktop portal grants. Use **Uninstall…** in the same menu to remove the selected installation. App data is kept by default. Select **Delete app data** in the confirmation to permanently remove saved data and settings for your account, including data shared with other installations of the same app. System installations may require administrator authorization.
 
 Overrides apply to your user account, including when the app was installed system-wide. Restart the app after saving. **Restore defaults…** removes its user overrides, while **Reset portal permissions…** clears its saved desktop portal grants.
 

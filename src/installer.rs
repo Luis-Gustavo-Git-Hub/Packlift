@@ -2036,6 +2036,19 @@ fi"#
     }
 
     pub fn uninstall(&self, app: &Value) -> Result<()> {
+        self.uninstall_with_options(app, false)
+    }
+
+    pub fn uninstall_removing_data(&self, app: &Value) -> Result<()> {
+        if app["method"] != "flatpak" {
+            return Err(PackliftError::Message(
+                "Data removal is available for Flatpak applications.".into(),
+            ));
+        }
+        self.uninstall_with_options(app, true)
+    }
+
+    fn uninstall_with_options(&self, app: &Value, delete_data: bool) -> Result<()> {
         let _operation = operation(&self.data)?;
         let method = app["method"].as_str().unwrap_or("");
         if method == "native" || method == "toolbox" {
@@ -2088,19 +2101,21 @@ fi"#
             if self.installed_flatpaks(Some(&installation))?.iter().any(
                 |(installed_scope, reference, _)| installed_scope == scope && reference == target,
             ) {
-                self.runner.run(
-                    &[
-                        "flatpak".into(),
-                        "uninstall".into(),
-                        installation,
-                        "--assumeyes".into(),
-                        "--".into(),
-                        format!("app/{target}"),
-                    ],
-                    false,
-                    true,
-                    true,
-                )?;
+                let mut command = vec![
+                    "flatpak".into(),
+                    "uninstall".into(),
+                    installation,
+                    "--assumeyes".into(),
+                ];
+                if delete_data {
+                    command.push("--delete-data".into());
+                }
+                command.extend(["--".into(), format!("app/{target}")]);
+                self.runner.run(&command, false, true, true)?;
+            } else if delete_data {
+                return Err(PackliftError::Message(
+                    "The selected Flatpak installation was no longer found.".into(),
+                ));
             }
         } else if method == "local" {
             self.remove_managed_directory(app, "installed")?;

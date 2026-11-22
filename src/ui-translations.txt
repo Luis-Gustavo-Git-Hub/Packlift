@@ -226,7 +226,9 @@ Windows game shortcuts|Atalhos de jogos Windows|Accesos directos a juegos de Win
 Local Linux apps|Apps Linux locais|Aplicaciones locales de Linux|Локальные приложения Linux|本地 Linux 应用
 Native Linux packages|Pacotes nativos Linux|Paquetes nativos de Linux|Системные пакеты Linux|Linux 原生软件包
 Toolbx apps|Apps do Toolbx|Aplicaciones de Toolbx|Приложения Toolbx|Toolbx 应用
-The app’s data will be kept when removing this installation ({scope}).|Os dados do app serão mantidos ao remover esta instalação ({scope}).|Los datos de la aplicación se conservarán al eliminar esta instalación ({scope}).|При удалении этой установки ({scope}) данные приложения сохранятся.|卸载此安装（{scope}）时会保留应用数据。
+You are removing this installation ({scope}).|Você vai remover esta instalação ({scope}).|Vas a eliminar esta instalación ({scope}).|Вы удаляете эту установку ({scope}).|你将卸载此安装（{scope}）。
+Delete app data|Apagar dados do app|Borrar datos de la aplicación|Удалить данные приложения|删除应用数据
+This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app.|Isso apaga permanentemente os dados salvos e as configurações do app na sua conta, incluindo dados compartilhados com outras instalações do mesmo app.|Esto borra permanentemente los datos guardados y la configuración de esta aplicación en tu cuenta, incluidos los datos compartidos con otras instalaciones de la misma aplicación.|Это навсегда удалит сохранённые данные и настройки приложения в вашей учётной записи, включая данные, общие для других установок этого приложения.|这将永久删除当前账户中此应用的已保存数据和设置，包括与同一应用其他安装共享的数据。
 Store|Loja|Tienda|Магазин|商店
 Discover apps|Encontre aplicativos|Descubre aplicaciones|Найдите приложения|发现应用
 Repository|Repositório|Repositorio|Репозиторий|软件仓库
