@@ -116,6 +116,7 @@ Downloading dependencies|Baixando dependências|Descargando dependencias|Заг�
 Creating application shortcuts|Criando atalhos de aplicativos|Creando accesos directos de aplicaciones|Создание ярлыков приложений|正在创建应用快捷方式
 Installing the program|Instalando o programa|Instalando el programa|Установка программы|正在安装程序
 Working…|Em andamento…|En curso…|Выполняется…|正在处理…
+The operation ended unexpectedly.|A operação terminou inesperadamente.|La operación terminó inesperadamente.|Операция завершилась непредвиденно.|操作意外结束。
 Packlift could not complete the operation|O Packlift não conseguiu concluir a operação|Packlift no pudo completar la operación|Не удалось завершить операцию в Packlift|Packlift 无法完成操作
 Open log folder|Abrir pasta de logs|Abrir carpeta de registros|Открыть папку журнала|打开日志文件夹
 Could not read the Packlift log: {error}|Não foi possível ler o log do Packlift: {error}|No se pudo leer el registro de Packlift: {error}|Не удалось прочитать журнал Packlift: {error}|无法读取 Packlift 日志：{error}

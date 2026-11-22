@@ -35,6 +35,7 @@ struct StoreView {
     catalog_search: RefCell<Option<CatalogSearch>>,
     explore_search: RefCell<Option<CatalogSearch>>,
     banners: RefCell<Vec<FeaturedApp>>,
+    page_colors: RefCell<HashMap<String, usize>>,
     banner_requested: RefCell<BTreeSet<String>>,
     page: Cell<usize>,
     busy: Cell<bool>,
@@ -198,6 +199,7 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         catalog_search: RefCell::new(None),
         explore_search: RefCell::new(None),
         banners: RefCell::new(Vec::new()),
+        page_colors: RefCell::new(HashMap::new()),
         banner_requested: RefCell::new(BTreeSet::new()),
         page: Cell::new(1),
         busy: Cell::new(false),
@@ -414,6 +416,18 @@ impl StoreView {
                         } else {
                             ""
                         });
+                        let first_color = results
+                            .apps
+                            .first()
+                            .map_or(0, |(_, app)| app_color(&app.id));
+                        *view.page_colors.borrow_mut() = results
+                            .apps
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (_, app))| {
+                                (app.id.clone(), (first_color + 5 * index) % APP_COLORS.len())
+                            })
+                            .collect();
                         let featured_id = if explore {
                             let featured = view.render_banner(&results.apps);
                             view.prepare_banner(&results.apps);
@@ -423,7 +437,9 @@ impl StoreView {
                         };
                         for (remote, app) in results.apps {
                             if featured_id.as_deref() != Some(app.id.as_str()) {
-                                view.list.append(&app_card(&view.window, remote, app));
+                                let color = view.page_colors.borrow()[&app.id];
+                                view.list
+                                    .append(&app_card(&view.window, remote, app, color));
                             }
                         }
                     }
@@ -527,7 +543,9 @@ impl StoreView {
     }
 
     fn append_banner(&self, banner: &FeaturedApp) {
-        self.carousel.append(&featured_app(&self.window, banner));
+        let color = self.page_colors.borrow()[&banner.app.id];
+        self.carousel
+            .append(&featured_app(&self.window, banner, color));
         self.feature.set_visible(true);
     }
 
@@ -639,7 +657,7 @@ fn advance_banner(carousel: &adw::Carousel, step: i64) {
     }
 }
 
-fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) {
+fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, color: usize) {
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
@@ -653,7 +671,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
 
     let hero = gtk::Box::new(gtk::Orientation::Vertical, 16);
     hero.add_css_class("packlift-store-detail-hero");
-    tint_app_card(&hero, &app.id);
+    tint_app_card(&hero, color);
     let identity = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     identity.append(&catalog_icon_frame(app, 68, 80));
     let title = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -718,6 +736,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         .column_spacing(8)
         .row_spacing(8)
         .build();
+    facts.set_vexpand(false);
     facts.set_visible(false);
     hero.append(&facts);
     body.append(&hero);
@@ -943,19 +962,26 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                 },
                 move |apps| {
                     for (index, (remote, app)) in apps.into_iter().enumerate() {
+                        let palette = color / HUE_COUNT * HUE_COUNT;
+                        let suggestion_color = palette + (color + index + 1) % HUE_COUNT;
                         let child = gtk::FlowBoxChild::new();
                         child.set_focusable(false);
                         child.set_child(Some(&suggested_app_card(
                             &parent_for_cards,
                             remote.clone(),
                             &app,
+                            suggestion_color,
                         )));
                         similar.append(&child);
-                        rails[index % 2].append(&suggested_app_card(
-                            &parent_for_cards,
-                            remote,
-                            &app,
-                        ));
+                        let rail = &rails[index % 2];
+                        let tile =
+                            suggested_app_card(&parent_for_cards, remote, &app, suggestion_color);
+                        for property in ["width-request", "height-request"] {
+                            rail.bind_property("width-request", &tile, property)
+                                .sync_create()
+                                .build();
+                        }
+                        rail.append(&tile);
                     }
                     update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
                 },
@@ -1284,7 +1310,6 @@ fn fact_chip(icon: &str, label: &str, value: &str) -> (gtk::FlowBoxChild, gtk::P
     let button = gtk::MenuButton::new();
     button.add_css_class("packlift-store-fact");
     button.set_hexpand(true);
-    button.set_vexpand(true);
     let name = format!("{label} · {value}");
     button.set_tooltip_text(Some(&name));
     button.update_property(&[gtk::accessible::Property::Label(&name)]);
@@ -1324,6 +1349,7 @@ fn detail_suggestion_layout(
         rail.set_margin_top(18);
         rail.set_margin_start(12);
         rail.set_margin_end(12);
+        rail.set_margin_bottom(18);
         rail.set_visible(false);
 
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
@@ -1347,29 +1373,37 @@ fn detail_suggestion_layout(
     row.append(&rails[0]);
     row.append(scroll);
     row.append(&rails[1]);
-    let layout = adw::Clamp::builder()
-        .maximum_size(1560)
-        .tightening_threshold(1400)
-        .child(&row)
-        .build();
     let responsive = adw::BreakpointBin::builder()
         .width_request(360)
         .height_request(300)
-        .child(&layout)
+        .child(&row)
         .build();
-    let condition = adw::BreakpointCondition::new_and(
-        adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MinWidth,
-            1320.0,
-            adw::LengthUnit::Px,
-        ),
-        adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MinHeight,
-            540.0,
-            adw::LengthUnit::Px,
-        ),
-    );
-    responsive.add_breakpoint(adw::Breakpoint::new(condition));
+    for (width, height, size) in [
+        (1320.0, 540.0, 154),
+        (1440.0, 666.0, 200),
+        (1540.0, 792.0, 242),
+        (1680.0, 918.0, 284),
+        (1800.0, 972.0, 302),
+    ] {
+        let condition = adw::BreakpointCondition::new_and(
+            adw::BreakpointCondition::new_length(
+                adw::BreakpointConditionLengthType::MinWidth,
+                width,
+                adw::LengthUnit::Px,
+            ),
+            adw::BreakpointCondition::new_length(
+                adw::BreakpointConditionLengthType::MinHeight,
+                height,
+                adw::LengthUnit::Px,
+            ),
+        );
+        let breakpoint = adw::Breakpoint::new(condition);
+        breakpoint.add_setters(&[
+            (&rails[0], "width-request", size),
+            (&rails[1], "width-request", size),
+        ]);
+        responsive.add_breakpoint(breakpoint);
+    }
     let (alternate, sidebars) = (inline.clone(), rails.clone());
     responsive.connect_current_breakpoint_notify(move |responsive| {
         update_suggestion_visibility(responsive, &alternate, &sidebars);
@@ -1394,10 +1428,11 @@ fn suggested_app_card(
     window: &glib::WeakRef<adw::ApplicationWindow>,
     remote: Remote,
     app: &CatalogApp,
+    color: usize,
 ) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("packlift-store-suggestion");
-    tint_app_card(&button, &app.id);
+    tint_app_card(&button, color);
     button.set_size_request(154, 154);
     button.set_halign(gtk::Align::Center);
     button.set_valign(gtk::Align::Center);
@@ -1407,7 +1442,7 @@ fn suggested_app_card(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content.set_halign(gtk::Align::Center);
     content.set_valign(gtk::Align::Center);
-    let icon = catalog_icon_frame(app, 54, 68);
+    let icon = catalog_icon_frame(app, 58, 76);
     icon.set_halign(gtk::Align::Center);
     content.append(&icon);
     let title = home_label(&app.name, "heading");
@@ -1421,7 +1456,7 @@ fn suggested_app_card(
     let (window, app) = (window.clone(), app.clone());
     button.connect_clicked(move |_| {
         if let Some(window) = window.upgrade() {
-            show_app(&window, &remote, &app);
+            show_app(&window, &remote, &app, color);
         }
     });
     button
@@ -1431,10 +1466,11 @@ fn app_card(
     window: &glib::WeakRef<adw::ApplicationWindow>,
     remote: Remote,
     app: CatalogApp,
+    color: usize,
 ) -> gtk::Button {
     let button = gtk::Button::builder().hexpand(true).build();
     button.add_css_class("packlift-store-card");
-    tint_app_card(&button, &app.id);
+    tint_app_card(&button, color);
     button.set_widget_name(&app.id);
     button.set_size_request(190, 76);
     button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
@@ -1465,19 +1501,37 @@ fn app_card(
     let window = window.clone();
     button.connect_clicked(move |_| {
         if let Some(window) = window.upgrade() {
-            show_app(&window, &remote, &app);
+            show_app(&window, &remote, &app, color);
         }
     });
     button
 }
 
-fn tint_app_card(widget: &impl IsA<gtk::Widget>, app_id: &str) {
-    let colors = [
-        "blue", "teal", "green", "amber", "orange", "red", "pink", "purple",
-    ];
-    let color = CARD_COLORS.with(|random| random.hash_one(app_id) as usize % colors.len());
+const HUE_COUNT: usize = 8;
+const APP_COLORS: [&str; HUE_COUNT * 4] = [
+    "#195fc9", "#008978", "#268338", "#ae7900", "#be4d15", "#ba2e3e", "#b03383", "#7142c2",
+    "#1885bc", "#147a55", "#647b16", "#b88e14", "#b96622", "#ab294f", "#9b3875", "#5953bf",
+    "#2b50a3", "#198b87", "#318a58", "#a16518", "#c35435", "#a33037", "#aa4f90", "#8439a7",
+    "#476bb4", "#187d68", "#518338", "#a88026", "#a55032", "#c23f54", "#923e8d", "#6f53ac",
+];
+
+pub(super) fn app_color_styles() -> String {
+    APP_COLORS
+        .iter()
+        .enumerate()
+        .map(|(index, color)| {
+            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.64); }}\n")
+        })
+        .collect()
+}
+
+fn app_color(app_id: &str) -> usize {
+    CARD_COLORS.with(|random| random.hash_one(app_id) as usize % APP_COLORS.len())
+}
+
+fn tint_app_card(widget: &impl IsA<gtk::Widget>, color: usize) {
     widget.add_css_class("packlift-store-tint");
-    widget.add_css_class(colors[color]);
+    widget.add_css_class(&format!("color-{color}"));
 }
 
 fn catalog_icon_frame(app: &CatalogApp, icon_size: i32, frame_size: i32) -> gtk::Box {
@@ -1504,6 +1558,7 @@ struct FeaturedApp {
 fn featured_app(
     window: &glib::WeakRef<adw::ApplicationWindow>,
     featured: &FeaturedApp,
+    color: usize,
 ) -> gtk::Button {
     let FeaturedApp {
         remote,
@@ -1550,7 +1605,7 @@ fn featured_app(
     let parent = window.clone();
     let banner = gtk::Button::new();
     banner.add_css_class("packlift-store-feature");
-    tint_app_card(&banner, &app.id);
+    tint_app_card(&banner, color);
     banner.set_hexpand(true);
     banner.set_cursor_from_name(Some("pointer"));
     banner.set_child(Some(&hero));
@@ -1560,7 +1615,7 @@ fn featured_app(
     ]);
     banner.connect_clicked(move |_| {
         if let Some(window) = parent.upgrade() {
-            show_app(&window, &remote, &app);
+            show_app(&window, &remote, &app, color);
         }
     });
     banner

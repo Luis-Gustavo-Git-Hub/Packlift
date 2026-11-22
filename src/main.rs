@@ -57,14 +57,15 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|_| {
         if let Some(display) = gtk::gdk::Display::default() {
             let css = gtk::CssProvider::new();
-            css.load_from_data(
+            css.load_from_data(&[
                 "scrollbar.vertical { opacity: 0; }
                  .packlift-home-hero { padding: 20px; border-radius: 16px; background-color: alpha(@accent_bg_color, 0.12); border: 1px solid alpha(@accent_bg_color, 0.25); }
                  .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }
                  .packlift-package-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.17), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.22); }
                  .packlift-package-icon { padding: 9px; border-radius: 12px; background-color: alpha(@card_bg_color, 0.8); }
                  .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }
-                 .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; box-shadow: 0 4px 18px alpha(black, 0.24); }
+                 .packlift-progress-window { background-color: @window_bg_color; border-radius: 12px; }
+                 .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; }
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-feature:hover, .packlift-store-feature:focus-visible { border-color: alpha(@accent_bg_color, 0.65); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
@@ -85,17 +86,10 @@ fn main() -> glib::ExitCode {
                  .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.08); border: 1px solid alpha(@window_fg_color, 0.10); }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  button.packlift-store-suggestion { padding: 10px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); }
-                 .packlift-store-tint.blue { background-color: mix(@window_bg_color, #3584e4, 0.36); }
-                 .packlift-store-tint.teal { background-color: mix(@window_bg_color, #20a6a2, 0.36); }
-                 .packlift-store-tint.green { background-color: mix(@window_bg_color, #4b9e45, 0.36); }
-                 .packlift-store-tint.amber { background-color: mix(@window_bg_color, #b58a2b, 0.36); }
-                 .packlift-store-tint.orange { background-color: mix(@window_bg_color, #dc7438, 0.36); }
-                 .packlift-store-tint.red { background-color: mix(@window_bg_color, #ce4845, 0.36); }
-                 .packlift-store-tint.pink { background-color: mix(@window_bg_color, #bd5793, 0.36); }
-                 .packlift-store-tint.purple { background-color: mix(@window_bg_color, #8d65d6, 0.36); }
                  button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
                  button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",
-            );
+                &store_ui::app_color_styles(),
+            ].concat());
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
     });
@@ -1588,22 +1582,11 @@ fn run_job_with_progress<F>(
         return;
     }
     window.add_css_class("packlift-running-job");
-    let previous = inline
-        .is_none()
-        .then(|| PageReturn::capture(window))
-        .flatten();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
     if inline.is_some() {
         body.add_css_class("packlift-store-job");
     } else {
         body.add_css_class("packlift-progress");
-        body.set_halign(gtk::Align::Center);
-        body.set_valign(gtk::Align::Center);
-        body.set_size_request(280, -1);
-        body.set_margin_top(20);
-        body.set_margin_bottom(20);
-        body.set_margin_start(20);
-        body.set_margin_end(20);
     }
     let heading = gtk::Label::new(Some(title));
     heading.set_wrap(true);
@@ -1613,10 +1596,12 @@ fn run_job_with_progress<F>(
         heading.set_xalign(0.0);
     } else {
         heading.add_css_class("title-2");
+        heading.set_max_width_chars(28);
     }
     body.append(&heading);
     let stage = gtk::Label::new(Some(tr("Working…")));
     stage.set_wrap(true);
+    stage.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
     stage.set_hexpand(true);
@@ -1631,14 +1616,28 @@ fn run_job_with_progress<F>(
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
-    let inline = if let Some(slot) = inline {
+    let compact = if let Some(slot) = inline {
         slot.append(&body);
         slot.set_visible(true);
-        Some(slot.downgrade())
-    } else {
-        window.set_content(Some(&body));
         None
+    } else {
+        stage.set_max_width_chars(28);
+        let progress_window = gtk::ApplicationWindow::builder()
+            .application(app)
+            .title(title)
+            .default_width(300)
+            .decorated(false)
+            .deletable(false)
+            .resizable(false)
+            .child(&body)
+            .build();
+        progress_window.add_css_class("packlift-progress-window");
+        progress_window.connect_close_request(|_| glib::Propagation::Stop);
+        window.set_visible(false);
+        progress_window.present();
+        Some(progress_window)
     };
+    let inline = inline.map(ObjectExt::downgrade);
     stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
 
     enum JobEvent {
@@ -1659,15 +1658,22 @@ fn run_job_with_progress<F>(
     let app = app.clone();
     let weak_window = window.downgrade();
     glib::timeout_add_local(Duration::from_millis(120), move || loop {
-        match receiver.try_recv() {
-            Ok(JobEvent::Progress(label, fraction)) => {
+        let event = match receiver.try_recv() {
+            Ok(event) => event,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => JobEvent::Finished(Err(
+                PackliftError::Message(tr("The operation ended unexpectedly.").into()),
+            )),
+        };
+        match event {
+            JobEvent::Progress(label, fraction) => {
                 if stage.text().as_str() != label {
                     stage.set_text(label);
                     stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
                 }
                 progress.set_fraction(progress.fraction().max(fraction));
             }
-            Ok(JobEvent::Finished(result)) => {
+            JobEvent::Finished(result) => {
                 if let Ok(Some(record)) = &result {
                     if record["method"] == "flatpak" {
                         if record["flatpak_already_installed"].as_bool() != Some(true) {
@@ -1687,11 +1693,11 @@ fn run_job_with_progress<F>(
                     slot.remove(&body);
                     slot.set_visible(false);
                 }
+                if let Some(progress_window) = &compact {
+                    progress_window.destroy();
+                }
                 if let Some(window) = weak_window.upgrade() {
                     window.remove_css_class("packlift-running-job");
-                    if let Some(page) = &previous {
-                        page.restore(&window);
-                    }
                     match result {
                         Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
                             choose_installed_executable(&app, &window, *package, runtime);
@@ -1735,11 +1741,12 @@ fn run_job_with_progress<F>(
                             if inline.is_some() && window.widget_name() != "packlift-library" => {}
                         Ok(None) => render_home(&app, &window),
                     }
+                    if compact.is_some() {
+                        window.present();
+                    }
                 }
                 return glib::ControlFlow::Break;
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
         }
     });
 }
