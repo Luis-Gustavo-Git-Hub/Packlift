@@ -1,4 +1,4 @@
-use std::{io::Read, path::PathBuf};
+use std::{collections::HashSet, io::Read, path::PathBuf, thread};
 
 use serde_json::{json, Value};
 
@@ -65,6 +65,11 @@ pub struct CatalogPage {
     pub has_next: bool,
 }
 
+pub struct StorePage {
+    pub apps: Vec<(Remote, CatalogApp)>,
+    pub has_next: bool,
+}
+
 pub struct Screenshot {
     pub url: String,
     pub caption: String,
@@ -76,16 +81,81 @@ pub fn remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>>
     }
     let mut remotes = configured_remotes(runner, destination, false)?;
     if !remotes.iter().any(|remote| remote.flathub) {
-        remotes.push(Remote {
-            name: String::new(),
-            title: "Flathub".into(),
-            url: FLATHUB_REPO.into(),
-            destination,
-            flathub: true,
-        });
+        remotes.push(flathub_remote(destination));
     }
     remotes.sort_by_cached_key(|remote| (!remote.flathub, remote.title.to_lowercase()));
     Ok(remotes)
+}
+
+fn flathub_remote(destination: Destination) -> Remote {
+    Remote {
+        name: String::new(),
+        title: "Flathub".into(),
+        url: FLATHUB_REPO.into(),
+        destination,
+        flathub: true,
+    }
+}
+
+pub fn catalog_remotes(runner: &Runner) -> Result<Vec<Remote>> {
+    if !host_access_available() {
+        return Err(PackliftError::HostAccessRequired);
+    }
+    let mut remotes = remotes(runner, Destination::User)
+        .unwrap_or_else(|_| vec![flathub_remote(Destination::User)]);
+    let system = configured_remotes(runner, Destination::System, false).unwrap_or_default();
+    remotes.extend(system.into_iter().filter(|remote| !remote.flathub));
+    Ok(remotes)
+}
+
+pub fn search_catalog(
+    runner: &Runner,
+    remotes: &[Remote],
+    query: &str,
+    page: usize,
+) -> Result<StorePage> {
+    let results = thread::scope(|workers| {
+        let handles: Vec<_> = remotes
+            .iter()
+            .map(|remote| workers.spawn(move || search(runner, remote, query, page)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let mut apps = Vec::new();
+    let mut has_next = false;
+    let mut seen = HashSet::new();
+    let mut first_error = None;
+    let mut loaded = false;
+    for (remote, result) in remotes.iter().zip(results) {
+        match result {
+            Ok(results) => {
+                loaded = true;
+                has_next |= results.has_next;
+                apps.extend(
+                    results.apps.into_iter().filter_map(|app| {
+                        seen.insert(app.id.clone()).then(|| (remote.clone(), app))
+                    }),
+                );
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if !loaded {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    }
+    Ok(StorePage { apps, has_next })
 }
 
 pub fn install_choices(

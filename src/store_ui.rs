@@ -18,8 +18,6 @@ use crate::{
 
 struct StoreView {
     window: glib::WeakRef<adw::ApplicationWindow>,
-    destination: gtk::DropDown,
-    source: gtk::DropDown,
     search: gtk::SearchEntry,
     submit: gtk::Button,
     feature: gtk::Box,
@@ -71,13 +69,6 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
             body.set_margin_bottom(margin);
         }
     }
-    let choices = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let source = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
-    let destination = gtk::DropDown::from_strings(&[tr("For my account"), tr("For the system")]);
-    choices.append(&labeled_control(tr("Repository"), &source));
-    choices.append(&labeled_control(tr("Show repositories for"), &destination));
-    body.append(&choices);
-
     let search_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some(tr("Search the store")));
@@ -119,7 +110,12 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
     nav.append(&page_label);
     nav.append(&next);
     body.append(&nav);
-    toolbar.set_content(Some(&body));
+    let layout = adw::Clamp::builder()
+        .maximum_size(1180)
+        .tightening_threshold(1000)
+        .child(&body)
+        .build();
+    toolbar.set_content(Some(&layout));
     window.set_widget_name("packlift-store");
     window.set_title(Some(tr("Store")));
     window.set_content(Some(&toolbar));
@@ -132,8 +128,6 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
 
     let view = Rc::new(StoreView {
         window: window.downgrade(),
-        destination,
-        source,
         search,
         submit,
         feature,
@@ -146,18 +140,6 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         query: RefCell::new(String::new()),
         page: Cell::new(1),
         busy: Cell::new(false),
-    });
-    let weak = Rc::downgrade(&view);
-    view.destination.connect_selected_notify(move |_| {
-        if let Some(view) = weak.upgrade() {
-            view.load_remotes();
-        }
-    });
-    let weak = Rc::downgrade(&view);
-    view.source.connect_selected_notify(move |_| {
-        if let Some(view) = weak.upgrade().filter(|view| !view.busy.get()) {
-            view.new_search();
-        }
     });
     let weak = Rc::downgrade(&view);
     view.search.connect_activate(move |_| {
@@ -199,9 +181,6 @@ impl StoreView {
 
     fn set_busy(&self, busy: bool) {
         self.busy.set(busy);
-        self.destination.set_sensitive(!busy);
-        self.source
-            .set_sensitive(!busy && !self.remotes.borrow().is_empty());
         self.submit
             .set_sensitive(!busy && !self.remotes.borrow().is_empty());
         self.search.set_sensitive(!self.remotes.borrow().is_empty());
@@ -212,46 +191,17 @@ impl StoreView {
     }
 
     fn load_remotes(self: &Rc<Self>) {
-        let previous = self
-            .remotes
-            .borrow()
-            .get(self.source.selected() as usize)
-            .cloned();
         self.set_busy(true);
-        self.list.remove_all();
-        if let Some(child) = self.feature.first_child() {
-            self.feature.remove(&child);
-        }
-        self.page_label.set_text("");
         self.set_status(tr("Loading repositories…"));
-        let destination = if self.destination.selected() == 1 {
-            Destination::System
-        } else {
-            Destination::User
-        };
         let view = self.clone();
         background(
-            move || worker().and_then(|runner| store::remotes(&runner, destination)),
+            move || worker().and_then(|runner| store::catalog_remotes(&runner)),
             move |result| match result {
                 Ok(remotes) => {
-                    let selected = previous
-                        .as_ref()
-                        .and_then(|previous| {
-                            remotes.iter().position(|remote| {
-                                remote.url == previous.url || (remote.flathub && previous.flathub)
-                            })
-                        })
-                        .unwrap_or(0);
-                    let titles = remotes.iter().map(Remote::label).collect::<Vec<_>>();
-                    let labels = titles.iter().map(String::as_str).collect::<Vec<_>>();
-                    view.source.set_model(Some(&gtk::StringList::new(&labels)));
-                    view.source.set_selected(selected as u32);
                     *view.remotes.borrow_mut() = remotes;
                     view.new_search();
                 }
                 Err(error) => {
-                    view.source.set_model(None::<&gtk::StringList>);
-                    view.remotes.borrow_mut().clear();
                     view.set_status(&error.to_string());
                     view.set_busy(false);
                 }
@@ -265,15 +215,11 @@ impl StoreView {
     }
 
     fn load_page(self: &Rc<Self>, page: usize) {
-        let Some(remote) = self
-            .remotes
-            .borrow()
-            .get(self.source.selected() as usize)
-            .cloned()
-        else {
+        let remotes = self.remotes.borrow().clone();
+        if remotes.is_empty() {
             self.set_busy(false);
             return;
-        };
+        }
         self.set_busy(true);
         self.list.remove_all();
         if let Some(child) = self.feature.first_child() {
@@ -283,10 +229,11 @@ impl StoreView {
         self.set_status(tr("Searching the store…"));
         let query = self.query.borrow().clone();
         let explore = query.is_empty() && page == 1;
-        let chosen = remote.clone();
         let view = self.clone();
         background(
-            move || worker().and_then(|runner| store::search(&runner, &chosen, &query, page)),
+            move || {
+                worker().and_then(|runner| store::search_catalog(&runner, &remotes, &query, page))
+            },
             move |result| {
                 view.set_busy(false);
                 match result {
@@ -303,17 +250,13 @@ impl StoreView {
                         });
                         let mut apps = results.apps.into_iter();
                         if explore {
-                            if let Some(app) = apps.next() {
-                                view.feature.append(&featured_app(
-                                    &view.window,
-                                    remote.clone(),
-                                    app,
-                                ));
+                            if let Some((remote, app)) = apps.next() {
+                                view.feature
+                                    .append(&featured_app(&view.window, remote, app));
                             }
                         }
-                        for app in apps {
-                            view.list
-                                .append(&app_card(&view.window, remote.clone(), app));
+                        for (remote, app) in apps {
+                            view.list.append(&app_card(&view.window, remote, app));
                         }
                     }
                     Err(error) => view.set_status(&error.to_string()),
@@ -342,6 +285,10 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         &format!("{} · {}", remote.label(), app.id),
         "dim-label",
     ));
+    let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    install_options.set_visible(false);
+    body.append(&install_options);
+
     let gallery = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let status = home_label(tr("Loading screenshots…"), "dim-label");
     let picture = gtk::Picture::builder()
@@ -362,9 +309,10 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     gallery.append(&controls);
     body.append(&gallery);
 
+    let layout = adw::Clamp::builder().maximum_size(840).child(&body).build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&body)
+        .child(&layout)
         .build();
     toolbar.set_content(Some(&scroll));
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -383,6 +331,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let selected = remote.clone();
     let package = app.clone();
     let dialog = window.downgrade();
+    let install_options = install_options.downgrade();
     install.connect_clicked(move |button| {
         let Some(dialog) = dialog.upgrade() else {
             return;
@@ -399,6 +348,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         let button = button.downgrade();
         let dialog = dialog.downgrade();
         let preferred = source.destination;
+        let options = install_options.clone();
         background(
             move || {
                 let Ok(runner) = worker() else {
@@ -414,15 +364,25 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                 })
             },
             move |choices| {
-                if let Some(button) = button.upgrade() {
-                    button.set_sensitive(true);
-                    button.set_label(tr("Install"));
-                }
-                if let Some(dialog) = dialog
-                    .upgrade()
-                    .filter(|window| window.content().as_ref() == current_page.upgrade().as_ref())
-                {
-                    choose_install_destination(&dialog, preferred, choices, &package_name);
+                let Some(button) = button.upgrade() else {
+                    return;
+                };
+                button.set_sensitive(true);
+                button.set_label(tr("Install"));
+                let (Some(dialog), Some(options), Some(page)) =
+                    (dialog.upgrade(), options.upgrade(), current_page.upgrade())
+                else {
+                    return;
+                };
+                if dialog.content().as_ref() == Some(&page) {
+                    choose_install_destination(
+                        &dialog,
+                        &options,
+                        &button,
+                        preferred,
+                        choices,
+                        &package_name,
+                    );
                 }
             },
         );
@@ -491,20 +451,23 @@ fn featured_app(
     remote: Remote,
     app: CatalogApp,
 ) -> gtk::Box {
-    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 18);
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 24);
     hero.add_css_class("packlift-store-feature");
-    let intro = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let intro = gtk::Box::new(gtk::Orientation::Vertical, 8);
     intro.set_hexpand(true);
+    intro.set_halign(gtk::Align::Center);
     intro.set_valign(gtk::Align::Center);
-    let icon = catalog_icon(&app, 48);
+    let icon = catalog_icon(&app, 56);
     icon.set_halign(gtk::Align::Start);
     intro.append(&icon);
-    let name = home_label(&app.name, "title-2");
+    let name = home_label(&app.name, "title-1");
     name.set_max_width_chars(24);
     intro.append(&name);
     let summary = home_label(&app.summary, "dim-label");
     summary.set_max_width_chars(30);
-    intro.append(&summary);
+    if !app.summary.is_empty() {
+        intro.append(&summary);
+    }
     let details = text_button(tr("View app"));
     details.set_halign(gtk::Align::Start);
     details.set_margin_top(4);
@@ -512,23 +475,22 @@ fn featured_app(
     intro.append(&details);
     hero.append(&intro);
 
-    let preview = gtk::Overlay::new();
-    preview.set_hexpand(true);
-    let background = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    background.set_size_request(182, 126);
-    preview.set_child(Some(&background));
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Contain)
         .can_shrink(true)
+        .height_request(208)
+        .hexpand(true)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
         .build();
-    preview.add_overlay(&picture);
-    preview.set_visible(false);
-    hero.append(&preview);
+    picture.add_css_class("packlift-store-preview");
+    picture.set_overflow(gtk::Overflow::Hidden);
+    picture.set_visible(false);
+    hero.append(&picture);
 
     let selected = app.clone();
     let origin = remote.clone();
     let image = picture.downgrade();
-    let preview = preview.downgrade();
     self::background(
         move || {
             let runner = worker().ok()?;
@@ -540,15 +502,23 @@ fn featured_app(
             Some((bytes, shot.caption))
         },
         move |result| {
-            let (Some((bytes, caption)), Some(picture), Some(preview)) =
-                (result, image.upgrade(), preview.upgrade())
-            else {
+            let (Some((bytes, caption)), Some(picture)) = (result, image.upgrade()) else {
                 return;
             };
-            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)) {
+            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+            if let Ok(preview) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+                &stream,
+                520,
+                244,
+                true,
+                gio::Cancellable::NONE,
+            ) {
+                let texture = gtk::gdk::Texture::for_pixbuf(&preview);
                 picture.set_paintable(Some(&texture));
-                picture.set_alternative_text(Some(&caption));
-                preview.set_visible(true);
+                if !caption.is_empty() {
+                    picture.set_alternative_text(Some(&caption));
+                }
+                picture.set_visible(true);
             }
         },
     );
@@ -602,26 +572,19 @@ fn catalog_icon(app: &CatalogApp, size: i32) -> gtk::Image {
 
 fn choose_install_destination(
     window: &adw::ApplicationWindow,
+    container: &gtk::Box,
+    open_options: &gtk::Button,
     preferred: Destination,
     (user, system): (Vec<(Remote, CatalogApp)>, Vec<(Remote, CatalogApp)>),
     name: &str,
 ) {
     let heading = tr("Where do you want to install {name}?").replace("{name}", name);
-    let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
-    let previous = back_to_previous(&toolbar, &header, window);
-    toolbar.add_top_bar(&header);
-
     let scope = gtk::DropDown::from_strings(&[tr("For my account"), tr("For the system")]);
     scope.set_selected((preferred == Destination::System) as u32);
     let repository = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
     let info = home_label("", "dim-label");
     let controls = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    controls.set_valign(gtk::Align::Start);
-    controls.set_margin_top(24);
-    controls.set_margin_start(24);
-    controls.set_margin_end(24);
+    controls.add_css_class("packlift-store-install");
     controls.append(&home_label(&heading, "title-2"));
     controls.append(&labeled_control(tr("Install scope"), &scope));
     controls.append(&labeled_control(tr("Repository"), &repository));
@@ -634,11 +597,6 @@ fn choose_install_destination(
     actions.append(&cancel);
     actions.append(&install);
     controls.append(&actions);
-    let clamp = adw::Clamp::builder()
-        .maximum_size(550)
-        .child(&controls)
-        .build();
-    toolbar.set_content(Some(&clamp));
 
     let choices = Rc::new([user, system]);
     let refresh = {
@@ -668,25 +626,38 @@ fn choose_install_destination(
             let selected =
                 choices[scope.selected().min(1) as usize].get(repository.selected() as usize);
             button.set_sensitive(selected.is_some());
-            info.set_text(match selected {
+            repository.set_sensitive(selected.is_some());
+            let message = match selected {
                 None => tr("No repository offers this app for the selected scope."),
                 Some((remote, _)) if remote.flathub && remote.name.is_empty() => {
                     tr("Packlift will add Flathub to the selected scope if needed.")
                 }
                 _ => "",
-            });
+            };
+            info.set_text(message);
+            info.set_visible(!message.is_empty());
         }
     };
     update(&repository);
     repository.connect_selected_notify(update);
 
-    let target = window.downgrade();
-    let cancel_page = previous.clone();
-    cancel.connect_clicked(move |_| {
-        if let (Some(window), Some(page)) = (target.upgrade(), cancel_page.as_ref()) {
-            page.restore(&window);
+    let dismiss = Rc::new({
+        let container = container.downgrade();
+        let controls = controls.downgrade();
+        let open_options = open_options.downgrade();
+        move || {
+            if let (Some(container), Some(controls)) = (container.upgrade(), controls.upgrade()) {
+                container.remove(&controls);
+                container.set_visible(false);
+            }
+            if let Some(button) = open_options.upgrade() {
+                button.set_visible(true);
+                button.grab_focus();
+            }
         }
     });
+    let close = dismiss.clone();
+    cancel.connect_clicked(move |_| close());
     let target = window.downgrade();
     let weak_scope = scope.downgrade();
     let repository = repository.downgrade();
@@ -696,9 +667,7 @@ fn choose_install_destination(
         let Some((source, candidate)) = choices[scope.selected().min(1) as usize]
             .get(repository.selected() as usize).cloned() else { return; };
         let Some(application) = window.application().and_downcast::<adw::Application>() else { return; };
-        if let Some(page) = &previous {
-            page.restore(&window);
-        }
+        dismiss();
         run_job(&application, &window, tr("Installing program"), move |log| {
             let runner = Runner::new(None, log)?;
             store::install(&runner, &source, &candidate)?;
@@ -706,7 +675,9 @@ fn choose_install_destination(
                 "exports":[{"icon":candidate.id,"argv":["flatpak","run",source.destination.flag(),"--",candidate.reference]}]})))
         });
     });
-    window.set_content(Some(&toolbar));
+    container.append(&controls);
+    container.set_visible(true);
+    open_options.set_visible(false);
     scope.grab_focus();
 }
 
