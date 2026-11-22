@@ -4,7 +4,7 @@ mod store_ui;
 
 use adw::prelude::*;
 use i18n::tr;
-use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
     core::{Package, PackliftError, Result},
@@ -16,18 +16,7 @@ use serde_json::Value;
 
 fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     let command = format!("flatpak override --user --talk-name=org.freedesktop.Flatpak {APP_ID}");
-    let dialog = gtk::Dialog::builder()
-        .title(tr("Allow access to your system"))
-        .transient_for(parent)
-        .modal(true)
-        .default_width(460)
-        .build();
-    dialog.add_button(tr("Close"), gtk::ResponseType::Close);
-    let copy = dialog.add_button(tr("Copy command"), gtk::ResponseType::Apply);
-    dialog.set_default_response(gtk::ResponseType::Apply);
-
-    let content = dialog.content_area();
-    content.set_spacing(12);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.set_margin_top(16);
     content.set_margin_bottom(16);
     content.set_margin_start(16);
@@ -46,21 +35,17 @@ fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
     command_label.set_xalign(0.0);
     command_label.set_selectable(true);
     content.append(&command_label);
-    dialog.connect_response(move |dialog, response| {
-        if response == gtk::ResponseType::Apply {
-            dialog.clipboard().set_text(&command);
-            if let Some(button) = copy.downcast_ref::<gtk::Button>() {
-                button.set_label(tr("Command copied"));
-                button.announce(
-                    tr("Command copied"),
-                    gtk::AccessibleAnnouncementPriority::Medium,
-                );
-            }
-        } else {
-            dialog.close();
-        }
+    let copy = text_button(tr("Copy command"));
+    copy.add_css_class("suggested-action");
+    copy.connect_clicked(move |button| {
+        button.clipboard().set_text(&command);
+        button.set_label(tr("Command copied"));
+        button.announce(
+            tr("Command copied"),
+            gtk::AccessibleAnnouncementPriority::Medium,
+        );
     });
-    dialog.present();
+    show_editor(parent, tr("Allow access to your system"), &content, &copy);
 }
 
 fn main() -> glib::ExitCode {
@@ -77,7 +62,11 @@ fn main() -> glib::ExitCode {
                  .packlift-home-icon { color: @accent_color; padding: 10px; border-radius: 12px; background-color: alpha(@accent_bg_color, 0.15); }
                  .packlift-package-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.17), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.22); }
                  .packlift-package-icon { padding: 9px; border-radius: 12px; background-color: alpha(@card_bg_color, 0.8); }
-                 .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }",
+                 .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }
+                 .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; box-shadow: 0 4px 18px alpha(black, 0.24); }
+                 .packlift-store-feature { padding: 14px 16px; border-radius: 16px; background-image: linear-gradient(140deg, alpha(@accent_bg_color, 0.26), alpha(@accent_bg_color, 0.07)); border: 1px solid alpha(@accent_bg_color, 0.24); }
+                 button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
+                 button.packlift-store-card:hover { background: alpha(@accent_bg_color, 0.13); }",
             );
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
@@ -103,6 +92,10 @@ fn installer_with_output(logger: LogHandler) -> Result<Installer> {
 }
 
 fn build_home(app: &adw::Application) {
+    if let Some(window) = app.active_window() {
+        window.present();
+        return;
+    }
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(720, 540);
@@ -111,6 +104,7 @@ fn build_home(app: &adw::Application) {
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
+    window.set_title(Some("Packlift"));
     window.set_widget_name("packlift-library");
     window.set_resizable(true);
     let host_access = host_access_available();
@@ -226,10 +220,13 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             .title(tr("Choose a package"))
             .build();
         let app = application.clone();
+        let parent = window.downgrade();
         dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
-                    open_package(&app, &path);
+                    if let Some(window) = parent.upgrade() {
+                        review_package(&app, &window, &path);
+                    }
                 }
             }
         });
@@ -277,6 +274,12 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             let search = gtk::SearchEntry::new();
             search.set_placeholder_text(Some(tr("Search programs and games")));
             search.set_hexpand(true);
+            let search_focus = search.downgrade();
+            page_shortcut(&toolbar, "<Control>f", move || {
+                if let Some(search) = search_focus.upgrade() {
+                    search.grab_focus();
+                }
+            });
             search.update_property(&[gtk::accessible::Property::Label(tr(
                 "Search programs and games",
             ))]);
@@ -363,6 +366,99 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         .build();
     toolbar.set_content(Some(&scroll));
     window.set_content(Some(&toolbar));
+    store.grab_focus();
+}
+
+#[derive(Clone)]
+struct PageReturn {
+    content: gtk::Widget,
+    title: Option<glib::GString>,
+    name: glib::GString,
+    focus: Option<gtk::Widget>,
+}
+
+impl PageReturn {
+    fn capture(window: &adw::ApplicationWindow) -> Option<Self> {
+        Some(Self {
+            content: window.content()?,
+            title: window.title(),
+            name: window.widget_name(),
+            focus: gtk::prelude::GtkWindowExt::focus(window),
+        })
+    }
+
+    fn restore(&self, window: &adw::ApplicationWindow) {
+        window.set_title(self.title.as_deref());
+        window.set_widget_name(&self.name);
+        window.set_content(Some(&self.content));
+        if let Some(focus) = &self.focus {
+            focus.grab_focus();
+        }
+    }
+}
+
+fn navigation_button(label: &str, icon: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .child(
+            &adw::ButtonContent::builder()
+                .icon_name(icon)
+                .label(label)
+                .build(),
+        )
+        .build()
+}
+
+fn page_shortcut(widget: &impl IsA<gtk::Widget>, accelerator: &str, activate: impl Fn() + 'static) {
+    let Some(trigger) = gtk::ShortcutTrigger::parse_string(accelerator) else {
+        return;
+    };
+    let controller = gtk::ShortcutController::new();
+    controller.set_scope(gtk::ShortcutScope::Managed);
+    controller.add_shortcut(gtk::Shortcut::new(
+        Some(trigger),
+        Some(gtk::CallbackAction::new(move |_, _| {
+            activate();
+            glib::Propagation::Stop
+        })),
+    ));
+    widget.add_controller(controller);
+}
+
+fn page_navigation(
+    toolbar: &adw::ToolbarView,
+    header: &adw::HeaderBar,
+    label: &str,
+    icon: &str,
+    back: impl Fn() + 'static,
+) {
+    let button = navigation_button(label, icon);
+    header.pack_start(&button);
+    let back = Rc::new(back);
+    let shortcut = back.clone();
+    page_shortcut(toolbar, "<Alt>Left", move || shortcut());
+    button.connect_clicked(move |_| back());
+}
+
+fn back_to_previous(
+    toolbar: &adw::ToolbarView,
+    header: &adw::HeaderBar,
+    window: &adw::ApplicationWindow,
+) -> Option<PageReturn> {
+    let previous = PageReturn::capture(window)?;
+    let page = previous.clone();
+    let window = window.downgrade();
+    page_navigation(
+        toolbar,
+        header,
+        tr("Back"),
+        "go-previous-symbolic",
+        move || {
+            if let Some(window) = window.upgrade() {
+                page.restore(&window);
+            }
+        },
+    );
+    Some(previous)
 }
 
 type LibraryFilter = (&'static str, fn(&Value) -> bool);
@@ -789,17 +885,8 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     choices.set_selected(selected as u32);
 
     let name = record["name"].as_str().unwrap_or(tr("Program"));
-    let dialog = gtk::Dialog::builder()
-        .title(tr("Runtime for {name}").replace("{name}", name))
-        .transient_for(window)
-        .modal(true)
-        .default_width(420)
-        .build();
-    dialog.add_button(tr("Cancel"), gtk::ResponseType::Cancel);
-    dialog
-        .add_button(tr("Apply"), gtk::ResponseType::Accept)
-        .add_css_class("suggested-action");
-    let body = dialog.content_area();
+    let title = tr("Runtime for {name}").replace("{name}", name);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_spacing(12);
     body.set_margin_top(16);
     body.set_margin_bottom(16);
@@ -827,11 +914,9 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
     }
     let app = app.clone();
     let parent = window.downgrade();
-    dialog.connect_response(move |dialog, response| {
-        dialog.close();
-        if response != gtk::ResponseType::Accept {
-            return;
-        }
+    let apply = text_button(tr("Apply"));
+    apply.add_css_class("suggested-action");
+    apply.connect_clicked(move |_| {
         let Some(window) = parent.upgrade() else {
             return;
         };
@@ -848,17 +933,30 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
                 .map(|_| None)
         });
     });
-    dialog.present();
+    show_editor(window, &title, &body, &apply);
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
-    let window = adw::ApplicationWindow::new(app);
-    window.set_title(Some(tr("Review package")));
-    window.set_default_size(470, -1);
+    let window = app
+        .active_window()
+        .and_downcast::<adw::ApplicationWindow>()
+        .filter(|window| {
+            window.widget_name() == "packlift-library" || window.widget_name() == "packlift-store"
+        })
+        .filter(|window| !window.has_css_class("packlift-running-job"))
+        .unwrap_or_else(|| {
+            let window = adw::ApplicationWindow::new(app);
+            window.set_default_size(470, -1);
+            window
+        });
+    review_package(app, &window, path);
+}
 
+fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path: &Path) {
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Review package"), "")));
+    let previous = back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
     toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
 
@@ -961,7 +1059,11 @@ fn open_package(app: &adw::Application, path: &Path) {
             let weak_window = window.downgrade();
             cancel.connect_clicked(move |_| {
                 if let Some(window) = weak_window.upgrade() {
-                    window.close();
+                    if let Some(page) = &previous {
+                        page.restore(&window);
+                    } else {
+                        window.close();
+                    }
                 }
             });
             actions.append(&cancel);
@@ -1136,6 +1238,8 @@ fn open_package(app: &adw::Application, path: &Path) {
     scroll.set_max_content_height(480);
     scroll.set_child(Some(&body));
     toolbar.set_content(Some(&scroll));
+    window.set_widget_name("packlift-package-review");
+    window.set_title(Some(tr("Review package")));
     window.set_content(Some(&toolbar));
     window.present();
 }
@@ -1233,14 +1337,14 @@ fn choose_windows_action(
     package: &Package,
     runtime: &str,
 ) {
-    let dialog = gtk::Window::builder()
-        .title(tr("Choose how to use this .exe"))
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .default_width(460)
-        .default_height(390)
-        .build();
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        tr("Choose how to use this .exe"),
+        "",
+    )));
+    let previous = back_to_previous(&toolbar, &header, parent);
+    toolbar.add_top_bar(&header);
 
     let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     body.set_margin_top(24);
@@ -1272,14 +1376,13 @@ fn choose_windows_action(
     let runtime_to_add = runtime.to_owned();
     let app_to_add = app.clone();
     let parent_to_add = parent.clone();
-    let dialog_to_add = dialog.clone();
+
     let add = choice_button(
         tr("Add an installed program or game"),
         tr("Creates a menu shortcut for this .exe. Use this if the game or app is already installed."),
         false,
     );
     add.connect_clicked(move |_| {
-        dialog_to_add.close();
         let package = package_to_add.clone();
         let runtime = runtime_to_add.clone();
         run_job(
@@ -1299,14 +1402,13 @@ fn choose_windows_action(
     let runtime_to_install = runtime.to_owned();
     let app_to_install = app.clone();
     let parent_to_install = parent.clone();
-    let dialog_to_install = dialog.clone();
+
     let install = choice_button(
         tr("Run this as an installer"),
         tr("Use this if the .exe contains setup and needs to install the program first."),
         true,
     );
     install.connect_clicked(move |_| {
-        dialog_to_install.close();
         let package = package_to_install.clone();
         let runtime = runtime_to_install.clone();
         run_job(
@@ -1324,11 +1426,16 @@ fn choose_windows_action(
 
     let cancel = text_button(tr("Cancel"));
     cancel.set_hexpand(true);
-    let dialog_to_close = dialog.clone();
-    cancel.connect_clicked(move |_| dialog_to_close.close());
+    let window = parent.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let (Some(window), Some(previous)) = (window.upgrade(), previous.as_ref()) {
+            previous.restore(&window);
+        }
+    });
     body.append(&cancel);
-    dialog.set_child(Some(&body));
-    dialog.present();
+    toolbar.set_content(Some(&body));
+    parent.set_content(Some(&toolbar));
+    add.grab_focus();
 }
 
 fn choice_button(title: &str, description: &str, suggested: bool) -> gtk::Button {
@@ -1362,14 +1469,26 @@ fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &s
 where
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
-    let from_library = window.widget_name() == "packlift-library";
-    if !from_library {
-        window.set_default_size(380, 220);
+    if window.has_css_class("packlift-running-job") {
+        return;
     }
-    window.set_resizable(true);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    body.set_margin_top(14);
-    body.set_margin_bottom(12);
+    window.add_css_class("packlift-running-job");
+    let previous = PageReturn::capture(window);
+    let content_sensitive = previous
+        .as_ref()
+        .is_some_and(|page| page.content.is_sensitive());
+    let overlay = gtk::Overlay::new();
+    if let Some(page) = &previous {
+        window.set_content(None::<&gtk::Widget>);
+        page.content.set_sensitive(false);
+        overlay.set_child(Some(&page.content));
+    }
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    body.add_css_class("packlift-progress");
+    body.set_halign(gtk::Align::Center);
+    body.set_valign(gtk::Align::End);
+    body.set_size_request(280, -1);
+    body.set_margin_bottom(22);
     body.set_margin_start(20);
     body.set_margin_end(20);
     let heading = gtk::Label::new(Some(title));
@@ -1377,11 +1496,17 @@ where
     heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     heading.add_css_class("title-2");
     body.append(&heading);
-    let stage = gtk::Label::new(Some(tr("Preparing the installation environment…")));
+    let stage = gtk::Label::new(Some(tr("Working…")));
     stage.set_wrap(true);
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
-    body.append(&stage);
+    stage.set_hexpand(true);
+    let status = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let spinner = gtk::Spinner::new();
+    spinner.start();
+    status.append(&spinner);
+    status.append(&stage);
+    body.append(&status);
     let progress = gtk::ProgressBar::new();
     progress.update_property(&[gtk::accessible::Property::Label(tr(
         "Installation progress",
@@ -1389,46 +1514,22 @@ where
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    body.append(&spinner);
-    let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let buffer = gtk::TextBuffer::new(None);
-    let text = gtk::TextView::with_buffer(&buffer);
-    text.set_editable(false);
-    text.set_cursor_visible(false);
-    text.set_monospace(true);
-    text.set_wrap_mode(gtk::WrapMode::WordChar);
-    let log_scroll = gtk::ScrolledWindow::builder()
-        .min_content_height(130)
-        .child(&text)
-        .build();
-    let copy = text_button(tr("Copy log"));
-    copy.set_halign(gtk::Align::End);
-    let copy_log = log.clone();
-    copy.connect_clicked(move |button| {
-        if let Some(display) = gtk::gdk::Display::default() {
-            display.clipboard().set_text(&copy_log.borrow().join("\n"));
-            button.set_label(tr("Log copied"));
-        }
-    });
-    let details = gtk::Expander::builder().label(tr("Show details")).build();
-    let detail_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    detail_box.append(&log_scroll);
-    detail_box.append(&copy);
-    details.set_child(Some(&detail_box));
-    body.append(&details);
-    window.set_content(Some(&body));
+    overlay.add_overlay(&body);
+    window.set_content(Some(&overlay));
+    stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
 
     enum JobEvent {
-        Log(String),
+        Progress(&'static str, f64),
         Finished(Result<Option<Value>>),
     }
     let (sender, receiver) = std::sync::mpsc::channel::<JobEvent>();
     thread::spawn(move || {
         let log_sender = sender.clone();
         let logger: LogHandler = Arc::new(move |line| {
-            let _ = log_sender.send(JobEvent::Log(line.to_owned()));
+            let (stage, fraction) = installation_stage(line);
+            if stage != tr("Working…") {
+                let _ = log_sender.send(JobEvent::Progress(stage, fraction));
+            }
         });
         let _ = sender.send(JobEvent::Finished(task(logger)));
     });
@@ -1436,19 +1537,22 @@ where
     let weak_window = window.downgrade();
     glib::timeout_add_local(Duration::from_millis(120), move || loop {
         match receiver.try_recv() {
-            Ok(JobEvent::Log(line)) => {
-                let (label, fraction) = installation_stage(&line);
-                if label != tr("Working…") && stage.text().as_str() != label {
+            Ok(JobEvent::Progress(label, fraction)) => {
+                if stage.text().as_str() != label {
                     stage.set_text(label);
                     stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
                 }
-                progress.set_fraction(fraction);
-                log.borrow_mut().push(line);
-                buffer.set_text(&log.borrow().join("\n"));
+                progress.set_fraction(progress.fraction().max(fraction));
             }
             Ok(JobEvent::Finished(result)) => {
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
+                    window.remove_css_class("packlift-running-job");
+                    overlay.set_child(None::<&gtk::Widget>);
+                    if let Some(page) = &previous {
+                        page.content.set_sensitive(content_sensitive);
+                        page.restore(&window);
+                    }
                     match result {
                         Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
                             choose_installed_executable(&app, &window, *package, runtime);
@@ -1461,12 +1565,7 @@ where
                             choose_installed_executable(&app, &window, *package, runtime);
                             show_error(&window, &reason);
                         }
-                        Err(error) => {
-                            if from_library {
-                                render_home(&app, &window);
-                            }
-                            show_error(&window, &error.to_string());
-                        }
+                        Err(error) => show_error(&window, &error.to_string()),
                         Ok(Some(record)) => {
                             for other in app
                                 .windows()
@@ -1482,7 +1581,7 @@ where
                                     render_home(&app, &other);
                                 }
                             }
-                            show_success(&window, &record);
+                            show_success(&app, &window, &record);
                         }
                         Ok(None) => render_home(&app, &window),
                     }
@@ -1501,13 +1600,13 @@ fn choose_installed_executable(
     package: Package,
     runtime: String,
 ) {
-    window.set_default_size(440, -1);
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
         tr("Choose the installed executable"),
         "",
     )));
+    back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(18);
@@ -1562,12 +1661,24 @@ fn choose_installed_executable(
     body.append(&actions);
     toolbar.set_content(Some(&body));
     window.set_content(Some(&toolbar));
+    choose.grab_focus();
 }
 
-fn show_success(window: &adw::ApplicationWindow, record: &Value) {
-    window.set_title(Some("Packlift"));
-    window.set_default_size(430, 320);
-    window.set_resizable(false);
+fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
+    let previous = (window.widget_name() == "packlift-store-details")
+        .then(|| PageReturn::capture(window))
+        .flatten();
+    let app = app.clone();
+    let target = window.downgrade();
+    let finish = Rc::new(move || {
+        if let Some(window) = target.upgrade() {
+            if let Some(page) = &previous {
+                page.restore(&window);
+            } else {
+                render_home(&app, &window);
+            }
+        }
+    });
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(22);
     body.set_margin_bottom(22);
@@ -1611,12 +1722,8 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     actions.set_halign(gtk::Align::Center);
     actions.set_margin_top(4);
     let close = text_button(tr("Close"));
-    let weak_window = window.downgrade();
-    close.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
-            window.close();
-        }
-    });
+    let close_page = finish.clone();
+    close.connect_clicked(move |_| close_page());
     actions.append(&close);
     if record["method"].as_str() == Some("wine") {
         actions.append(&prefix_folder_button(
@@ -1633,8 +1740,8 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
             if let Some(window) = weak_window.upgrade() {
                 show_error(&window, &error.to_string());
             }
-        } else if let Some(window) = weak_window.upgrade() {
-            window.close();
+        } else {
+            finish();
         }
     });
     if runnable {
@@ -1642,6 +1749,7 @@ fn show_success(window: &adw::ApplicationWindow, record: &Value) {
     }
     body.append(&actions);
     window.set_content(Some(&body));
+    close.grab_focus();
 }
 
 fn prefix_folder_button(window: &adw::ApplicationWindow, runtime: &str) -> gtk::Button {
@@ -1697,7 +1805,9 @@ fn record_image(record: &Value, size: i32) -> gtk::Image {
 
 fn installation_stage(line: &str) -> (&'static str, f64) {
     let line = line.to_ascii_lowercase();
-    if line.contains("analyzing") {
+    if line.contains("uninstall") || line.contains("removing ") {
+        (tr("Uninstalling the program"), 0.72)
+    } else if line.contains("analyzing") {
         (tr("Analyzing the package"), 0.12)
     } else if line.contains("compatibility") {
         (tr("Checking compatibility"), 0.25)
@@ -1733,47 +1843,56 @@ fn human_size(bytes: u64) -> String {
 }
 
 fn show_error(window: &adw::ApplicationWindow, message: &str) {
-    let dialog = gtk::MessageDialog::builder()
-        .transient_for(window)
-        .modal(true)
-        .message_type(gtk::MessageType::Error)
-        .buttons(gtk::ButtonsType::Close)
-        .text(tr("Packlift could not complete the operation"))
-        .secondary_text(message)
-        .build();
-    dialog.add_button(tr("Open log folder"), gtk::ResponseType::Help);
-    dialog.add_button(tr("Copy log"), gtk::ResponseType::Apply);
-    dialog.connect_response(|dialog, response| {
-        if response == gtk::ResponseType::Help {
-            let folder = gio::File::for_path(packlift_data_dir());
-            let _ =
-                gio::AppInfo::launch_default_for_uri(&folder.uri(), None::<&gio::AppLaunchContext>);
-            return;
-        }
-        if response == gtk::ResponseType::Apply {
-            let path = packlift_data_dir().join("flatapk.log");
-            let contents = std::fs::read_to_string(path).unwrap_or_else(|error| {
-                tr("Could not read the Packlift log: {error}")
-                    .replace("{error}", &error.to_string())
-            });
-            if let Some(display) = gtk::gdk::Display::default() {
-                display.clipboard().set_text(&contents);
-                dialog.set_secondary_text(Some(tr("Log copied to clipboard.")));
-                return;
-            }
-        }
-        dialog.close();
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new("Packlift", "")));
+    back_to_previous(&toolbar, &header, window);
+    toolbar.add_top_bar(&header);
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    body.set_valign(gtk::Align::Start);
+    body.set_margin_top(24);
+    body.set_margin_start(20);
+    body.set_margin_end(20);
+    body.set_margin_bottom(20);
+    let title = tr("Packlift could not complete the operation");
+    body.append(&home_label(title, "title-2"));
+    let detail = home_label(message, "dim-label");
+    detail.set_selectable(true);
+    body.append(&detail);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let copy = text_button(tr("Copy log"));
+    let directory = text_button(tr("Open log folder"));
+    directory.connect_clicked(|_| {
+        let folder = gio::File::for_path(packlift_data_dir());
+        let _ = gio::AppInfo::launch_default_for_uri(&folder.uri(), None::<&gio::AppLaunchContext>);
     });
-    dialog.present();
+    copy.connect_clicked(|button| {
+        let path = packlift_data_dir().join("flatapk.log");
+        let contents = std::fs::read_to_string(path).unwrap_or_else(|error| {
+            tr("Could not read the Packlift log: {error}").replace("{error}", &error.to_string())
+        });
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&contents);
+            button.set_label(tr("Log copied to clipboard."));
+        }
+    });
+    actions.append(&copy);
+    actions.append(&directory);
+    body.append(&actions);
+    let clamp = adw::Clamp::builder().maximum_size(640).child(&body).build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&clamp)
+        .build();
+    toolbar.set_content(Some(&scroll));
+    window.set_widget_name("packlift-error");
+    window.set_content(Some(&toolbar));
+    detail.announce(title, gtk::AccessibleAnnouncementPriority::Medium);
+    copy.grab_focus();
 }
 
 fn settings_dialog(window: &adw::ApplicationWindow) {
-    let dialog = gtk::Dialog::new();
-    dialog.set_title(Some(tr("Packlift settings")));
-    dialog.set_transient_for(Some(window));
-    dialog.set_modal(true);
-    dialog.add_button(tr("Cancel"), gtk::ResponseType::Cancel);
-    dialog.add_button(tr("Save"), gtk::ResponseType::Accept);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.set_margin_top(12);
     content.set_margin_bottom(12);
@@ -1838,42 +1957,57 @@ fn settings_dialog(window: &adw::ApplicationWindow) {
         }
     });
     content.append(&logs);
-    dialog.content_area().append(&content);
-    let choices = choices.clone();
+    let save = text_button(tr("Save"));
+    save.add_css_class("suggested-action");
     let weak_window = window.downgrade();
-    dialog.connect_response(move |dialog, response| {
-        dialog.close();
-        if response == gtk::ResponseType::Accept {
-            let runtime = if choices.selected() == 1 {
-                "proton"
-            } else {
-                "wine"
-            }
-            .to_owned();
-            let weak_window = weak_window.clone();
-            let task = move |logger| {
-                installer_with_output(logger)
-                    .and_then(|manager| manager.save_preferences(&runtime))
-                    .map(|_| None)
-            };
-            if let Some(window) = weak_window.upgrade() {
-                if let Some(app) = window.application().and_downcast::<adw::Application>() {
-                    run_job(&app, &window, tr("Saving settings"), task);
-                }
+    save.connect_clicked(move |_| {
+        let runtime = if choices.selected() == 1 {
+            "proton"
+        } else {
+            "wine"
+        };
+        if let Some(window) = weak_window.upgrade() {
+            if let Some(app) = window.application().and_downcast::<adw::Application>() {
+                run_job(&app, &window, tr("Saving settings"), move |logger| {
+                    installer_with_output(logger)?.save_preferences(runtime)?;
+                    Ok(None)
+                });
             }
         }
     });
-    dialog.present();
+    show_editor(window, tr("Packlift settings"), &content, &save);
+}
+
+fn show_editor(
+    window: &adw::ApplicationWindow,
+    title: &str,
+    body: &gtk::Box,
+    action: &gtk::Button,
+) {
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
+    back_to_previous(&toolbar, &header, window);
+    toolbar.add_top_bar(&header);
+    action.set_halign(gtk::Align::End);
+    body.append(action);
+    body.set_valign(gtk::Align::Start);
+    let clamp = adw::Clamp::builder().maximum_size(620).child(body).build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&clamp)
+        .build();
+    toolbar.set_content(Some(&scroll));
+    window.set_content(Some(&toolbar));
+    body.child_focus(gtk::DirectionType::TabForward);
 }
 
 fn show_app_logs(parent: &adw::ApplicationWindow) {
-    let window = gtk::Window::builder()
-        .title(tr("Packlift logs"))
-        .transient_for(parent)
-        .modal(true)
-        .default_width(760)
-        .default_height(520)
-        .build();
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(tr("Packlift logs"), "")));
+    back_to_previous(&toolbar, &header, parent);
+    toolbar.add_top_bar(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
     body.set_margin_top(12);
     body.set_margin_bottom(12);
@@ -1907,15 +2041,8 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
         }
     });
     actions.append(&copy);
-    let close = text_button(tr("Close"));
-    let weak_window = window.downgrade();
-    close.connect_clicked(move |_| {
-        if let Some(window) = weak_window.upgrade() {
-            window.close();
-        }
-    });
-    actions.append(&close);
     body.append(&actions);
-    window.set_child(Some(&body));
-    window.present();
+    toolbar.set_content(Some(&body));
+    parent.set_content(Some(&toolbar));
+    copy.grab_focus();
 }

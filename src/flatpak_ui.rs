@@ -48,13 +48,7 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     let (manager, permissions) = manager;
     let runner = Rc::new(manager.runner);
 
-    let window = adw::Window::builder()
-        .title(tr("Flatpak permissions"))
-        .transient_for(parent)
-        .modal(true)
-        .default_width(610)
-        .default_height(640)
-        .build();
+    let window = parent;
 
     let stack = adw::ViewStack::new();
     let navigation = adw::ViewSwitcher::builder()
@@ -72,10 +66,10 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
         tr("Flatpak permissions"),
     );
     header.set_title_widget(Some(&title));
+    crate::back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
     toolbar.add_top_bar(&nav_box);
     toolbar.set_content(Some(&stack));
-    window.set_content(Some(&toolbar));
 
     let access_page = adw::PreferencesPage::new();
     let identity = adw::PreferencesGroup::builder()
@@ -395,7 +389,7 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
             dialog.present();
         });
     }
-    window.present();
+    window.set_content(Some(&toolbar));
 }
 
 fn rule_group(group: &adw::PreferencesGroup, title: &str) -> adw::ExpanderRow {

@@ -35,12 +35,29 @@ pub struct Remote {
     pub flathub: bool,
 }
 
+impl Remote {
+    pub fn label(&self) -> String {
+        if self.name.is_empty() || self.name.eq_ignore_ascii_case(&self.title) {
+            self.title.clone()
+        } else {
+            format!("{} · {}", self.name, self.title)
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum CatalogIcon {
+    Flathub(String),
+    AppStream(PathBuf),
+}
+
 #[derive(Clone)]
 pub struct CatalogApp {
     pub id: String,
     pub name: String,
     pub summary: String,
     pub reference: String,
+    pub icon: Option<CatalogIcon>,
 }
 
 pub struct CatalogPage {
@@ -69,6 +86,78 @@ pub fn remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>>
     }
     remotes.sort_by_cached_key(|remote| (!remote.flathub, remote.title.to_lowercase()));
     Ok(remotes)
+}
+
+pub fn install_choices(
+    runner: &Runner,
+    source: &Remote,
+    app: &CatalogApp,
+    destination: Destination,
+) -> Vec<(Remote, CatalogApp)> {
+    let mut remotes = remotes(runner, destination).unwrap_or_default();
+    if source.destination == destination
+        && !remotes
+            .iter()
+            .any(|remote| remote.name == source.name && remote.url == source.url)
+    {
+        remotes.insert(0, source.clone());
+    }
+    remotes.sort_by_key(|remote| !(remote.url == source.url && remote.name == source.name));
+    remotes
+        .into_iter()
+        .filter_map(|remote| {
+            let same_source = remote.destination == source.destination
+                && remote.name == source.name
+                && remote.url == source.url;
+            let reference = if same_source && !remote.flathub {
+                app.reference.clone()
+            } else if remote.flathub && remote.name.is_empty() {
+                if !source.flathub {
+                    let metadata =
+                        fetch(runner, &format!("{FLATHUB_API}/appstream/{}", app.id), None).ok()?;
+                    let metadata: Value = serde_json::from_slice(&metadata).ok()?;
+                    if metadata["id"] != app.id {
+                        return None;
+                    }
+                }
+                app.id.clone()
+            } else {
+                let output = runner
+                    .capture(
+                        &[
+                            "flatpak".into(),
+                            "remote-info".into(),
+                            destination.flag().into(),
+                            "--app".into(),
+                            "--show-ref".into(),
+                            "--".into(),
+                            remote.name.clone(),
+                            app.id.clone(),
+                        ],
+                        false,
+                    )
+                    .ok()?;
+                let reference = output.trim();
+                let mut parts = reference.split('/');
+                if parts.next() != Some("app")
+                    || parts.next() != Some(app.id.as_str())
+                    || !parts.next().is_some_and(valid_path_component)
+                    || !parts.next().is_some_and(valid_path_component)
+                    || parts.next().is_some()
+                {
+                    return None;
+                }
+                reference.into()
+            };
+            Some((
+                remote,
+                CatalogApp {
+                    reference,
+                    ..app.clone()
+                },
+            ))
+        })
+        .collect()
 }
 
 fn configured_remotes(
@@ -156,6 +245,10 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
                     name: name.into(),
                     summary: hit["summary"].as_str().unwrap_or_default().into(),
                     reference: id.into(),
+                    icon: hit["icon"]
+                        .as_str()
+                        .filter(|url| flathub_media(url))
+                        .map(|url| CatalogIcon::Flathub(url.into())),
                 })
             })
             .collect();
@@ -176,7 +269,15 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
         ],
         false,
     )?;
-    search_remote_list(&output, query, page)
+    let mut results = search_remote_list(&output, query, page)?;
+    if let Ok(Some(root)) = appstream_root(runner, remote) {
+        for app in &mut results.apps {
+            if let Some(arch) = app.reference.split('/').nth(2) {
+                app.icon = Some(CatalogIcon::AppStream(root.join(arch).join("active/icons")));
+            }
+        }
+    }
+    Ok(results)
 }
 
 fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogPage> {
@@ -206,6 +307,7 @@ fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogP
                     name: name.into(),
                     summary: summary.into(),
                     reference: format!("app/{reference}"),
+                    icon: None,
                 })
         })
         .collect();
@@ -264,29 +366,56 @@ pub fn screenshot_bytes(runner: &Runner, url: &str) -> Result<Vec<u8>> {
     fetch(runner, url, None)
 }
 
+pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Option<Vec<u8>> {
+    if !valid_app_id(id) {
+        return None;
+    }
+    match icon {
+        CatalogIcon::Flathub(url) if flathub_media(url) => fetch(runner, url, None).ok(),
+        CatalogIcon::Flathub(_) => None,
+        CatalogIcon::AppStream(directory) => ["64x64", "128x128"].iter().find_map(|size| {
+            let path = directory.join(size).join(format!("{id}.png"));
+            runner
+                .capture_bytes_limited(
+                    &[
+                        "cat".into(),
+                        "--".into(),
+                        path.to_string_lossy().into_owned(),
+                    ],
+                    false,
+                    256 * 1024,
+                )
+                .ok()
+        }),
+    }
+}
+
+fn appstream_root(runner: &Runner, remote: &Remote) -> Result<Option<PathBuf>> {
+    if !valid_path_component(&remote.name) {
+        return Ok(None);
+    }
+    let installation = match remote.destination {
+        Destination::User => std::env::var_os("FLATPAK_USER_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(crate::system::data_home().join("flatpak"))),
+        Destination::System => system_installation_path(runner)?,
+    };
+    Ok(installation.map(|path| path.join("appstream").join(&remote.name)))
+}
+
 fn local_screenshots(
     runner: &Runner,
     remote: &Remote,
     app: &CatalogApp,
 ) -> Result<Vec<Screenshot>> {
     let arch = app.reference.split('/').nth(2).unwrap_or_default();
-    if !valid_path_component(arch) || !valid_path_component(&remote.name) {
+    if !valid_path_component(arch) {
         return Ok(Vec::new());
     }
-    let installation = match remote.destination {
-        Destination::User => std::env::var_os("FLATPAK_USER_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| crate::system::data_home().join("flatpak")),
-        Destination::System => match system_installation_path(runner)? {
-            Some(path) => path,
-            None => return Ok(Vec::new()),
-        },
+    let Some(root) = appstream_root(runner, remote)? else {
+        return Ok(Vec::new());
     };
-    let path = installation
-        .join("appstream")
-        .join(&remote.name)
-        .join(arch)
-        .join("active/appstream.xml.gz");
+    let path = root.join(arch).join("active/appstream.xml.gz");
     const COMPRESSED_LIMIT: u64 = 8 * 1024 * 1024;
     const XML_LIMIT: u64 = 32 * 1024 * 1024;
     let Ok(bytes) = runner.capture_bytes_limited(
@@ -570,6 +699,7 @@ mod tests {
             name: "Example".into(),
             summary: String::new(),
             reference: "app/org.example.App/x86_64/stable".into(),
+            icon: None,
         };
         let xml = r#"<components media_baseurl="https://example.org/media/">
           <component><id>org.example.App</id><bundle type="flatpak">app/org.example.App/x86_64/beta</bundle>

@@ -27,7 +27,7 @@ flatpak run io.github.luis_gustavo_git_hub.Packlift
 
 Open a package from your file manager with **Open With Packlift**, use **Open package**, or launch Packlift without a file to manage installed programs. In Packlift settings, choose **Set as default for supported files** to open compatible files with a double-click. This updates the file associations for your Linux account. Opening a package still takes you to the review screen before installation or launch.
 
-If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **Show details** for its launch output.
+If an AppImage shortcut does not open a window, use **Open** in Packlift's installed-program list and check **View Packlift logs** in the main menu for its launch output.
 
 ### Flatpak permissions
 
@@ -39,7 +39,9 @@ Overrides apply to your user account, including when the app was installed syste
 
 ### Store
 
-Open **Store** to search Flathub and Flatpak repositories configured for the selected installation scope. App details show screenshots when the catalog provides them. Choose **For my account** or **For the system** before choosing a repository and installing an app. Packlift asks before adding the official Flathub repository to a scope where it is missing. System installs use the host's Flatpak authorization, and online catalog artwork uses curl or wget on the host.
+Open **Store** to explore and search Flathub or configured Flatpak repositories. The catalog shows app icons and screenshots when the source provides them. After clicking **Install**, choose **For my account** or **For the system**, then select a repository that offers the app for that scope. Packlift asks before adding the official Flathub repository to a scope where it is missing. System installs use the host's Flatpak authorization, and online catalog artwork uses curl or wget on the host.
+
+The **Library** button returns from the store in the same window. Use **Tab** and **Shift+Tab** to move between controls, **Enter** or **Space** to activate them, and the arrow keys to choose an item in a menu or selector. **Ctrl+F** focuses search in the library and store, and **Alt+Left** goes back from a nested page. Installation and removal progress appears over the current page.
 
 ### Updating from v0.1.0
 
