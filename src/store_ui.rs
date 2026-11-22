@@ -9,7 +9,7 @@ use packlift::{
     store::{self, CatalogApp, CatalogSearch, Destination, Remote, Screenshot},
     system::Runner,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     back_to_previous, home_label, i18n::tr, page_navigation, page_shortcut, render_home, run_job,
@@ -31,6 +31,7 @@ struct StoreView {
     catalog_search: RefCell<Option<CatalogSearch>>,
     page: Cell<usize>,
     busy: Cell<bool>,
+    pending_search: Cell<bool>,
 }
 
 pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
@@ -142,11 +143,16 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
         catalog_search: RefCell::new(None),
         page: Cell::new(1),
         busy: Cell::new(false),
+        pending_search: Cell::new(false),
     });
     let weak = Rc::downgrade(&view);
     view.search.connect_activate(move |_| {
-        if let Some(view) = weak.upgrade().filter(|view| !view.busy.get()) {
-            view.new_search();
+        if let Some(view) = weak.upgrade() {
+            if view.busy.get() {
+                view.pending_search.set(true);
+            } else {
+                view.new_search();
+            }
         }
     });
     let weak = Rc::downgrade(&view);
@@ -173,6 +179,7 @@ pub(super) fn show(app: &adw::Application, parent: &adw::ApplicationWindow) {
     });
     view.load_remotes();
     window.present();
+    view.search.grab_focus();
 }
 
 impl StoreView {
@@ -185,7 +192,6 @@ impl StoreView {
         self.busy.set(busy);
         self.submit
             .set_sensitive(!busy && !self.remotes.borrow().is_empty());
-        self.search.set_sensitive(!self.remotes.borrow().is_empty());
         if busy {
             self.previous.set_sensitive(false);
             self.next.set_sensitive(false);
@@ -212,6 +218,7 @@ impl StoreView {
     }
 
     fn new_search(self: &Rc<Self>) {
+        self.pending_search.set(false);
         let query = self.search.text().trim().to_owned();
         *self.catalog_search.borrow_mut() =
             Some(CatalogSearch::new(self.remotes.borrow().clone(), query));
@@ -238,6 +245,10 @@ impl StoreView {
             },
             move |(catalog_search, result)| {
                 *view.catalog_search.borrow_mut() = Some(catalog_search);
+                if view.pending_search.get() {
+                    view.new_search();
+                    return;
+                }
                 view.set_busy(false);
                 match result {
                     Ok(results) => {
@@ -374,7 +385,55 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     toolbar.set_content(Some(&scroll));
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
-    window.set_content(Some(&toolbar));
+    let installed = Rc::new(RefCell::new(Vec::new()));
+    let installed_state = installed.clone();
+    let refresh_button = install.downgrade();
+    let app_id = app.id.clone();
+    toolbar.connect_map(move |_| {
+        let Some(button) = refresh_button.upgrade() else {
+            return;
+        };
+        button.set_sensitive(false);
+        let id = app_id.clone();
+        let state = installed_state.clone();
+        let refresh_button = refresh_button.clone();
+        background(
+            move || crate::installer()?.flatpak_app_installations(&id),
+            move |result| {
+                let Some(button) = refresh_button.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(records) => {
+                        let is_installed = !records.is_empty();
+                        *state.borrow_mut() = records;
+                        let label = if is_installed {
+                            tr("Uninstall")
+                        } else {
+                            tr("Install")
+                        };
+                        button.set_label(label);
+                        button.update_property(&[gtk::accessible::Property::Label(label)]);
+                        button.set_css_classes(&[
+                            "pill",
+                            if is_installed {
+                                "destructive-action"
+                            } else {
+                                "suggested-action"
+                            },
+                        ]);
+                        button.set_sensitive(true);
+                        if button.has_visible_focus()
+                            || button.root().is_some_and(|root| root.focus().is_none())
+                        {
+                            button.grab_focus();
+                        }
+                    }
+                    Err(error) => button.set_tooltip_text(Some(&error.to_string())),
+                }
+            },
+        );
+    });
     let selected = remote.clone();
     let package = app.clone();
     let dialog = window.downgrade();
@@ -383,6 +442,13 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         let Some(dialog) = dialog.upgrade() else {
             return;
         };
+        let records = installed.borrow().clone();
+        if !records.is_empty() {
+            if let Some(options) = install_options.upgrade() {
+                choose_uninstall_destination(&dialog, &options, button, records, &package.name);
+            }
+            return;
+        }
         let Some(current_page) = dialog.content() else {
             return;
         };
@@ -478,6 +544,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
             Err(_) => gallery_status.set_text(tr("Screenshots could not be loaded.")),
         },
     );
+    window.set_content(Some(&toolbar));
     install.grab_focus();
     window.present();
 }
@@ -728,7 +795,69 @@ fn choose_install_destination(
     update(&repository);
     repository.connect_selected_notify(update);
 
-    let dismiss = Rc::new({
+    let dismiss = dismiss_store_options(container, &controls, open_options);
+    let close = dismiss.clone();
+    cancel.connect_clicked(move |_| close());
+    let target = window.downgrade();
+    let weak_scope = scope.downgrade();
+    let repository = repository.downgrade();
+    install.connect_clicked(move |_| {
+        let (Some(window), Some(repository), Some(scope)) =
+            (target.upgrade(), repository.upgrade(), weak_scope.upgrade())
+        else {
+            return;
+        };
+        let Some((source, candidate)) = choices[scope.selected().min(1) as usize]
+            .get(repository.selected() as usize)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(application) = window.application().and_downcast::<adw::Application>() else {
+            return;
+        };
+        dismiss();
+        run_job(
+            &application,
+            &window,
+            tr("Installing program"),
+            move |log| {
+                let runner = Runner::new(None, log)?;
+                store::install(&runner, &source, &candidate)?;
+                let scope = match source.destination {
+                    Destination::User => "user",
+                    Destination::System => "system",
+                };
+                let installed = crate::installer()
+                    .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
+                    .unwrap_or_default();
+                let expected = candidate.reference.trim_start_matches("app/");
+                let mut matches = installed.into_iter().filter(|record| {
+                    record["flatpak_scope"].as_str() == Some(scope)
+                        && (expected == candidate.id || record["target"].as_str() == Some(expected))
+                });
+                let record = match (matches.next(), matches.next()) {
+                    (Some(record), None) => record,
+                    _ => json!({
+                        "name": candidate.name, "method": "flatpak", "flatpak_app_id": candidate.id,
+                    }),
+                };
+                Ok(Some(record))
+            },
+        );
+    });
+    container.append(&controls);
+    container.set_visible(true);
+    open_options.set_visible(false);
+    scope.grab_focus();
+}
+
+fn dismiss_store_options(
+    container: &gtk::Box,
+    controls: &gtk::Box,
+    open_options: &gtk::Button,
+) -> Rc<impl Fn()> {
+    Rc::new({
         let container = container.downgrade();
         let controls = controls.downgrade();
         let open_options = open_options.downgrade();
@@ -742,25 +871,78 @@ fn choose_install_destination(
                 button.grab_focus();
             }
         }
-    });
+    })
+}
+
+fn choose_uninstall_destination(
+    window: &adw::ApplicationWindow,
+    container: &gtk::Box,
+    open_options: &gtk::Button,
+    records: Vec<Value>,
+    name: &str,
+) {
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    controls.add_css_class("packlift-store-install");
+    controls.append(&home_label(
+        &format!("{} · {name}", tr("Uninstall")),
+        "title-2",
+    ));
+    let labels = records
+        .iter()
+        .map(|record| {
+            let reference = record["target"].as_str().unwrap_or_default();
+            let details = reference.split_once('/').map_or("", |(_, details)| details);
+            format!("{} · {details}", crate::flatpak_scope_label(record))
+        })
+        .collect::<Vec<_>>();
+    let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
+    let scope = gtk::DropDown::from_strings(&labels);
+    controls.append(&labeled_control(tr("Install scope"), &scope));
+
+    let (delete_option, delete_data) = crate::flatpak_delete_data_option();
+    controls.append(&delete_option);
+
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let cancel = text_button(tr("Cancel"));
+    let uninstall = text_button(tr("Uninstall"));
+    uninstall.add_css_class("destructive-action");
+    actions.append(&cancel);
+    actions.append(&uninstall);
+    controls.append(&actions);
+
+    let dismiss = dismiss_store_options(container, &controls, open_options);
     let close = dismiss.clone();
     cancel.connect_clicked(move |_| close());
-    let target = window.downgrade();
-    let weak_scope = scope.downgrade();
-    let repository = repository.downgrade();
-    install.connect_clicked(move |_| {
-        let (Some(window), Some(repository), Some(scope)) =
-            (target.upgrade(), repository.upgrade(), weak_scope.upgrade()) else { return; };
-        let Some((source, candidate)) = choices[scope.selected().min(1) as usize]
-            .get(repository.selected() as usize).cloned() else { return; };
-        let Some(application) = window.application().and_downcast::<adw::Application>() else { return; };
+    let parent = window.downgrade();
+    let choice = scope.downgrade();
+    let delete_data = delete_data.downgrade();
+    uninstall.connect_clicked(move |_| {
+        let (Some(window), Some(scope)) = (parent.upgrade(), choice.upgrade()) else {
+            return;
+        };
+        let Some(record) = records.get(scope.selected() as usize).cloned() else {
+            return;
+        };
+        let Some(application) = window.application().and_downcast::<adw::Application>() else {
+            return;
+        };
+        let delete_data = delete_data.upgrade().is_some_and(|check| check.is_active());
         dismiss();
-        run_job(&application, &window, tr("Installing program"), move |log| {
-            let runner = Runner::new(None, log)?;
-            store::install(&runner, &source, &candidate)?;
-            Ok(Some(json!({"name":candidate.name,"method":"flatpak",
-                "exports":[{"icon":candidate.id,"argv":["flatpak","run",source.destination.flag(),"--",candidate.reference]}]})))
-        });
+        run_job(
+            &application,
+            &window,
+            tr("Removing from your library"),
+            move |log| {
+                let manager = crate::installer_with_output(log)?;
+                if delete_data {
+                    manager.uninstall_removing_data(&record)?;
+                } else {
+                    manager.uninstall(&record)?;
+                }
+                Ok(None)
+            },
+        );
     });
     container.append(&controls);
     container.set_visible(true);

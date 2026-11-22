@@ -742,10 +742,10 @@ impl Installer {
                 "id": short_hash(&format!("flatpak:{reference}"))?,
                 "name": if app.name.is_empty() { id } else { &app.name },
                 "version": app.version, "architecture": arch, "method": "flatpak",
-                "target": reference, "source": package.path, "digest": package.digest,
+                "flatpak_app_id": id, "flatpak_scope": "user", "target": reference, "source": package.path, "digest": package.digest,
                 "exports": [{
                     "icon": id,
-                    "argv": ["flatpak", "run", "--user", "--arch", arch, "--branch", branch, "--", id],
+                    "argv": flatpak_launch_command("--user", id, arch, branch),
                 }],
             });
             self.registry.save(&record)?;
@@ -786,18 +786,32 @@ impl Installer {
         if !host_access_available() || !self.runner.available("flatpak") {
             return Ok(records);
         }
-        let Ok(installed) = self
+        if let Ok(flatpaks) = self.flatpak_records(&records) {
+            records.retain(|record| record["method"] != "flatpak");
+            records.extend(flatpaks);
+        }
+        Ok(records)
+    }
+
+    pub fn flatpak_app_installations(&self, id: &str) -> Result<Vec<Value>> {
+        Ok(self
+            .flatpak_records(&self.registry.apps()?)?
+            .into_iter()
+            .filter(|record| record["flatpak_app_id"].as_str() == Some(id))
+            .collect())
+    }
+
+    fn flatpak_records(&self, records: &[Value]) -> Result<Vec<Value>> {
+        let installed = self
             .installed_flatpaks(None)
-            .or_else(|_| self.installed_flatpaks(Some("--user")))
-        else {
-            return Ok(records);
-        };
+            .or_else(|_| self.installed_flatpaks(Some("--user")))?;
+
         let managed: BTreeSet<String> = records
             .iter()
             .filter(|record| record["method"] == "flatpak")
             .filter_map(|record| record["target"].as_str().map(str::to_owned))
             .collect();
-        records.retain(|record| record["method"] != "flatpak");
+        let mut records = Vec::new();
         for (scope, reference, app) in installed {
             let Some(flag) = crate::flatpak::installation_flag(&scope) else {
                 continue;
@@ -815,11 +829,11 @@ impl Installer {
                 "id": short_hash(&key)?,
                 "name": if app.name.is_empty() { id } else { &app.name },
                 "version": app.version, "architecture": arch,
-                "method": "flatpak", "target": reference, "flatpak_scope": scope,
+                "method": "flatpak", "flatpak_app_id": id, "target": reference, "flatpak_scope": scope,
                 "external_flatpak": external,
                 "exports": [{
                     "icon": id,
-                    "argv": ["flatpak", "run", flag, "--arch", arch, "--branch", branch, "--", id],
+                    "argv": flatpak_launch_command(&flag, id, arch, branch),
                 }],
             }));
         }
@@ -1996,10 +2010,12 @@ fi"#
             .collect();
         if app["sandbox_only"].as_bool() == Some(true) {
             self.runner.start_in_sandbox(&command)
-        } else if host_access_available() {
-            self.runner.start(&command)
-        } else {
+        } else if !host_access_available() {
             Err(PackliftError::HostAccessRequired)
+        } else if app["method"] == "flatpak" {
+            self.runner.start_detached(&command)
+        } else {
+            self.runner.start(&command)
         }
     }
 
@@ -2370,6 +2386,18 @@ fn flatpak_ref_parts(reference: &str) -> Option<(&str, &str, &str)> {
     let mut next = || parts.next().filter(|part| valid_flatpak_component(part));
     let reference = (next()?, next()?, next()?);
     parts.next().is_none().then_some(reference)
+}
+
+fn flatpak_launch_command(scope: &str, id: &str, arch: &str, branch: &str) -> [String; 7] {
+    [
+        "flatpak".into(),
+        "run".into(),
+        scope.into(),
+        format!("--arch={arch}"),
+        format!("--branch={branch}"),
+        "--".into(),
+        id.into(),
+    ]
 }
 
 fn valid_flatpak_ref(reference: &str) -> bool {
@@ -4001,6 +4029,24 @@ mod tests {
             }
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn flatpak_run_passes_architecture_and_branch_as_option_values() {
+        let argv =
+            super::flatpak_launch_command("--user", "org.mozilla.firefox", "x86_64", "stable");
+        assert_eq!(
+            argv,
+            [
+                "flatpak",
+                "run",
+                "--user",
+                "--arch=x86_64",
+                "--branch=stable",
+                "--",
+                "org.mozilla.firefox"
+            ]
+        );
     }
 
     #[test]

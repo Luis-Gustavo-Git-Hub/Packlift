@@ -51,7 +51,7 @@ fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
     app.connect_startup(|_| {
@@ -77,6 +77,49 @@ fn main() -> glib::ExitCode {
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
     });
+    let open_flatpak = gio::SimpleAction::new(
+        "open-installed-flatpak",
+        Some(&<(String, String)>::static_variant_type()),
+    );
+    let application = app.downgrade();
+    open_flatpak.connect_activate(move |_, parameter| {
+        let Some((scope, target)) = parameter.and_then(|value| value.get::<(String, String)>())
+        else {
+            return;
+        };
+        let Some(app) = application.upgrade() else {
+            return;
+        };
+        let hold = app.hold();
+        glib::MainContext::default().spawn_local(async move {
+            let _hold = hold;
+            let result = gio::spawn_blocking(move || {
+                let manager = installer()?;
+                let id = target.split('/').next().unwrap_or_default();
+                let record = manager
+                    .flatpak_app_installations(id)?
+                    .into_iter()
+                    .find(|record| {
+                        record["flatpak_scope"].as_str() == Some(&scope)
+                            && record["target"].as_str() == Some(&target)
+                    })
+                    .ok_or_else(|| {
+                        PackliftError::Message(
+                            tr("The selected Flatpak installation was no longer found.").into(),
+                        )
+                    })?;
+                manager.launch(&record)
+            })
+            .await;
+            if let Ok(Err(error)) = result {
+                build_home(&app);
+                if let Some(window) = app.active_window().and_downcast::<adw::ApplicationWindow>() {
+                    show_error(&window, &error.to_string());
+                }
+            }
+        });
+    });
+    app.add_action(&open_flatpak);
     app.connect_activate(build_home);
     app.connect_open(|app, files, _hint| {
         for file in files {
@@ -740,18 +783,7 @@ fn library_row(
             true,
         );
         let delete_data = (record["method"] == "flatpak").then(|| {
-            let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
-            let check = gtk::CheckButton::new();
-            check.set_child(Some(&home_label(tr("Delete app data"), "heading")));
-            row.append(&check);
-            let note = home_label(
-                tr("This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app."),
-                "dim-label",
-            );
-            note.set_max_width_chars(46);
-            note.set_visible(false);
-            row.append(&note);
-            check.connect_toggled(move |check| note.set_visible(check.is_active()));
+            let (row, check) = flatpak_delete_data_option();
             if let Ok(area) = dialog.message_area().downcast::<gtk::Box>() {
                 area.append(&row);
             }
@@ -789,6 +821,22 @@ fn library_row(
     });
     row.add_suffix(&menu);
     row
+}
+
+fn flatpak_delete_data_option() -> (gtk::Box, gtk::CheckButton) {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let check = gtk::CheckButton::new();
+    check.set_child(Some(&home_label(tr("Delete app data"), "heading")));
+    row.append(&check);
+    let note = home_label(
+        tr("This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app."),
+        "dim-label",
+    );
+    note.set_max_width_chars(46);
+    note.set_visible(false);
+    row.append(&note);
+    check.connect_toggled(move |check| note.set_visible(check.is_active()));
+    (row, check)
 }
 
 fn flatpak_scope_label(record: &Value) -> String {
@@ -1551,6 +1599,18 @@ where
                 progress.set_fraction(progress.fraction().max(fraction));
             }
             Ok(JobEvent::Finished(result)) => {
+                if let Ok(Some(record)) = &result {
+                    if record["method"] == "flatpak" {
+                        notify_flatpak_installed(&app, record);
+                        if record["flatpak_app_id"].as_str() == Some(APP_ID) {
+                            for window in app.windows() {
+                                window.destroy();
+                            }
+                            app.quit();
+                            return glib::ControlFlow::Break;
+                        }
+                    }
+                }
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
                 if let Some(window) = weak_window.upgrade() {
                     window.remove_css_class("packlift-running-job");
@@ -1587,8 +1647,15 @@ where
                                     render_home(&app, &other);
                                 }
                             }
-                            show_success(&app, &window, &record);
+                            if record["method"] == "flatpak" {
+                                if window.widget_name() != "packlift-store-details" {
+                                    render_home(&app, &window);
+                                }
+                            } else {
+                                show_success(&app, &window, &record);
+                            }
                         }
+                        Ok(None) if window.widget_name() == "packlift-store-details" => {}
                         Ok(None) => render_home(&app, &window),
                     }
                 }
@@ -1670,19 +1737,27 @@ fn choose_installed_executable(
     choose.grab_focus();
 }
 
+fn notify_flatpak_installed(app: &adw::Application, record: &Value) {
+    let notification = gio::Notification::new(tr("Installation complete"));
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
+    notification.set_body(Some(&tr("{name} was installed.").replace("{name}", name)));
+    if let (Some(target), Some(scope)) =
+        (record["target"].as_str(), record["flatpak_scope"].as_str())
+    {
+        let action = "app.open-installed-flatpak";
+        let parameter = (scope, target).to_variant();
+        notification.add_button_with_target_value(tr("Open"), action, Some(&parameter));
+        notification.set_default_action_and_target_value(action, Some(&parameter));
+    }
+    app.send_notification(None, &notification);
+}
+
 fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
-    let previous = (window.widget_name() == "packlift-store-details")
-        .then(|| PageReturn::capture(window))
-        .flatten();
     let app = app.clone();
     let target = window.downgrade();
     let finish = Rc::new(move || {
         if let Some(window) = target.upgrade() {
-            if let Some(page) = &previous {
-                page.restore(&window);
-            } else {
-                render_home(&app, &window);
-            }
+            render_home(&app, &window);
         }
     });
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1713,8 +1788,6 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     let runnable = record["exports"][0]["argv"].is_array();
     let message = if runnable {
         tr("{name} is ready to use.").replace("{name}", name)
-    } else if record["method"] == "flatpak" {
-        tr("{name} was installed for your account.").replace("{name}", name)
     } else {
         tr("{name} is installed. This package has no application launcher.").replace("{name}", name)
     };

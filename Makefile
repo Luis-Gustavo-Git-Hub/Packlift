@@ -11,8 +11,11 @@ test:
 	cargo test --locked --no-default-features --lib
 
 install: build
-	install -Dm755 target/release/packlift "$(DESTDIR)$(PREFIX)/bin/flatapk"
+	install -Dm755 target/release/packlift "$(DESTDIR)$(PREFIX)/bin/packlift"
+	ln -sfn packlift "$(DESTDIR)$(PREFIX)/bin/flatapk"
 	install -Dm644 data/$(APP_ID).desktop "$(SHARE)/applications/$(APP_ID).desktop"
+	install -Dm644 data/$(APP_ID).service "$(SHARE)/dbus-1/services/$(APP_ID).service"
+	sed -i 's|Exec=/app/bin/packlift|Exec=$(PREFIX)/bin/packlift|' "$(SHARE)/dbus-1/services/$(APP_ID).service"
 	install -Dm644 data/$(APP_ID).metainfo.xml "$(SHARE)/metainfo/$(APP_ID).metainfo.xml"
 	install -Dm644 data/$(APP_ID).xml "$(SHARE)/mime/packages/$(APP_ID).xml"
 	install -Dm644 data/$(APP_ID).png "$(SHARE)/icons/hicolor/256x256/apps/$(APP_ID).png"

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=io.github.luis_gustavo_git_hub.Packlift
+Exec=/app/bin/packlift --gapplication-service

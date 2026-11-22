@@ -116,15 +116,19 @@ impl Runner {
     }
 
     pub fn start(&self, args: &[String]) -> Result<()> {
-        self.start_with_scope(args, false)
+        self.start_with_scope(args, false, true)
     }
 
     pub fn start_in_sandbox(&self, args: &[String]) -> Result<()> {
-        self.start_with_scope(args, true)
+        self.start_with_scope(args, true, true)
     }
 
-    fn start_with_scope(&self, args: &[String], local: bool) -> Result<()> {
-        let command = self.command(args, local, true);
+    pub fn start_detached(&self, args: &[String]) -> Result<()> {
+        self.start_with_scope(args, false, false)
+    }
+
+    fn start_with_scope(&self, args: &[String], local: bool, watch_bus: bool) -> Result<()> {
+        let command = self.command(args, local, watch_bus);
         let shell = command
             .iter()
             .map(|value| shell_quote(value))

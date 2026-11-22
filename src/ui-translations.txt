@@ -254,3 +254,5 @@ Uninstalling the program|Desinstalando o programa|Desinstalando el programa|Уд
 Screenshots|Capturas de tela|Capturas de pantalla|Снимки экрана|屏幕截图
 About this app|Sobre este app|Acerca de esta aplicación|О приложении|关于此应用
 License|Licença|Licencia|Лицензия|许可证
+{name} was installed.|{name} foi instalado.|Se instaló {name}.|Приложение {name} установлено.|已安装 {name}。
+The selected Flatpak installation was no longer found.|A instalação Flatpak selecionada não foi encontrada.|No se encontró la instalación de Flatpak seleccionada.|Выбранная установка Flatpak не найдена.|找不到所选的 Flatpak 安装。

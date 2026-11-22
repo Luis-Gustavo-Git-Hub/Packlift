@@ -55,7 +55,7 @@ jobs:
           flatpak override --user --talk-name=org.freedesktop.Flatpak io.github.luis_gustavo_git_hub.Packlift
           dbus-run-session -- flatpak run --command=sh io.github.luis_gustavo_git_hub.Packlift -ec '
             flatpak-spawn --host --watch-bus uname -m
-            test -x /app/bin/flatapk
+            test -x /app/bin/packlift
             bsdtar --version
             msiinfo --version
             zstd --version
