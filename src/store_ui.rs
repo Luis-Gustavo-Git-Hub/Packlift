@@ -714,21 +714,12 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(1)
         .max_children_per_line(6)
+        .homogeneous(true)
         .column_spacing(8)
         .row_spacing(8)
         .build();
     facts.set_visible(false);
     hero.append(&facts);
-    let permissions = adw::ExpanderRow::new();
-    permissions.set_title(tr("Permissions"));
-    permissions.add_prefix(&gtk::Image::from_icon_name("security-high-symbolic"));
-    permissions.set_visible(false);
-    let permissions_group = gtk::ListBox::new();
-    permissions_group.set_selection_mode(gtk::SelectionMode::None);
-    permissions_group.add_css_class("boxed-list");
-    permissions_group.append(&permissions);
-    permissions_group.set_visible(false);
-    hero.append(&permissions_group);
     body.append(&hero);
 
     let gallery = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -767,7 +758,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     body.append(&links_section);
     let similar_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
     similar_section.set_visible(false);
-    similar_section.append(&home_label(tr("Similar apps"), "title-3"));
+    similar_section.append(&home_label(tr("Suggested apps"), "title-3"));
     let similar = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(1)
@@ -787,9 +778,11 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)
+        .hexpand(true)
         .child(&layout)
         .build();
-    toolbar.set_content(Some(&scroll));
+    let (suggestions_layout, rails) = detail_suggestion_layout(&scroll, &similar_section);
+    toolbar.set_content(Some(&suggestions_layout));
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
     let installed = Rc::new(RefCell::new(Vec::new()));
@@ -916,14 +909,8 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                     indicators.set_visible(true);
                 }
                 if let Some(groups) = result.permissions {
-                    if groups.is_empty() {
-                        permissions.set_subtitle(tr("No permissions listed by the repository"));
-                    }
-                    for (label, access) in groups {
-                        permissions.add_row(&detail_row(tr(label), &access));
-                    }
-                    permissions.set_visible(true);
-                    permissions_group.set_visible(true);
+                    indicators.append(&permissions_fact(groups));
+                    indicators.set_visible(true);
                 }
             },
         );
@@ -935,88 +922,112 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let parent = window.downgrade();
     background(
         move || worker().and_then(|runner| store::app_details(&runner, &source, &selected)),
-        move |result| match result {
-            Ok(details) => {
-                developer.set_text(&details.developer);
-                developer.set_visible(!details.developer.is_empty());
-                if !details.license.is_empty() {
-                    let value = match details.free_software {
-                        Some(true) => tr("Free software"),
-                        Some(false) => tr("Proprietary software"),
-                        None => &details.license,
-                    };
-                    let license = store_fact(
-                        "text-x-generic-symbolic",
-                        tr("License"),
-                        value,
-                        tr("The license defines how you may use, modify, and share this app."),
-                        Some(&details.license),
-                    );
-                    facts.append(&license);
-                    facts.set_visible(true);
+        move |result| {
+            let category = result
+                .as_ref()
+                .ok()
+                .and_then(|details| details.category.clone());
+            let (parent_for_cards, id) = (parent.clone(), id);
+            background(
+                move || {
+                    worker()
+                        .map(|runner| {
+                            store::suggested_apps(
+                                &runner,
+                                &catalog_source,
+                                &id,
+                                category.as_deref(),
+                            )
+                        })
+                        .unwrap_or_default()
+                },
+                move |apps| {
+                    for (index, (remote, app)) in apps.into_iter().enumerate() {
+                        let child = gtk::FlowBoxChild::new();
+                        child.set_focusable(false);
+                        child.set_child(Some(&suggested_app_card(
+                            &parent_for_cards,
+                            remote.clone(),
+                            &app,
+                        )));
+                        similar.append(&child);
+                        rails[index % 2].append(&suggested_app_card(
+                            &parent_for_cards,
+                            remote,
+                            &app,
+                        ));
+                    }
+                    update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
+                },
+            );
+            match result {
+                Ok(details) => {
+                    developer.set_text(&details.developer);
+                    developer.set_visible(!details.developer.is_empty());
+                    if !details.license.is_empty() {
+                        let value = match details.free_software {
+                            Some(true) => tr("Free software"),
+                            Some(false) => tr("Proprietary software"),
+                            None => &details.license,
+                        };
+                        let license = store_fact(
+                            "text-x-generic-symbolic",
+                            tr("License"),
+                            value,
+                            tr("The license defines how you may use, modify, and share this app."),
+                            Some(&details.license),
+                        );
+                        facts.append(&license);
+                        facts.set_visible(true);
+                    }
+                    if let Some(adaptive) = details.adaptive {
+                        facts.append(&store_fact(
+                            if adaptive {
+                                "phone-symbolic"
+                            } else {
+                                "computer-symbolic"
+                            },
+                            tr("Device support"),
+                            if adaptive {
+                                tr("Adaptive")
+                            } else {
+                                tr("Desktop")
+                            },
+                            if adaptive {
+                                tr("This app adapts to smaller screens, such as phones.")
+                            } else {
+                                tr("This app is designed primarily for desktop screens.")
+                            },
+                            None,
+                        ));
+                        facts.set_visible(true);
+                    }
+                    if let Some(age) = details.age {
+                        facts.append(&store_fact(
+                            "avatar-default-symbolic",
+                            tr("Age rating"),
+                            &format!("{age}+"),
+                            tr("Minimum recommended age based on the app’s content rating."),
+                            None,
+                        ));
+                        facts.set_visible(true);
+                    }
+                    if !details.description.is_empty() {
+                        description.set_text(&details.description);
+                        description.set_visible(true);
+                    }
+                    show_release_history(&releases, details.releases);
+                    show_detail_links(&links_section, &links, &parent, details.links);
+                    if details.screenshots.is_empty() {
+                        gallery_status
+                            .set_text(tr("No screenshots are available from this repository."));
+                    } else {
+                        gallery.remove(&gallery_status);
+                        bind_gallery(&gallery, details.screenshots);
+                    }
                 }
-                if let Some(adaptive) = details.adaptive {
-                    facts.append(&store_fact(
-                        if adaptive {
-                            "phone-symbolic"
-                        } else {
-                            "computer-symbolic"
-                        },
-                        tr("Device support"),
-                        if adaptive {
-                            tr("Adaptive")
-                        } else {
-                            tr("Desktop")
-                        },
-                        if adaptive {
-                            tr("This app adapts to smaller screens, such as phones.")
-                        } else {
-                            tr("This app is designed primarily for desktop screens.")
-                        },
-                        None,
-                    ));
-                    facts.set_visible(true);
-                }
-                if let Some(age) = details.age {
-                    facts.append(&store_fact(
-                        "avatar-default-symbolic",
-                        tr("Age rating"),
-                        &format!("{age}+"),
-                        tr("Minimum recommended age based on the app’s content rating."),
-                        None,
-                    ));
-                    facts.set_visible(true);
-                }
-                if !details.description.is_empty() {
-                    description.set_text(&details.description);
-                    description.set_visible(true);
-                }
-                show_release_history(&releases, details.releases);
-                show_detail_links(&links_section, &links, &parent, details.links);
-                if let Some(category) = details.category {
-                    background(
-                        move || {
-                            worker().and_then(|runner| store::similar_apps(&runner, &id, &category))
-                        },
-                        move |result| {
-                            if let Ok(apps) = result {
-                                similar_section.set_visible(!apps.is_empty());
-                                for app in apps {
-                                    similar.append(&app_card(&parent, catalog_source.clone(), app));
-                                }
-                            }
-                        },
-                    );
-                }
-                if details.screenshots.is_empty() {
-                    gallery_status
-                        .set_text(tr("No screenshots are available from this repository."));
-                } else {
-                    gallery.remove(&gallery_status);
-                    bind_gallery(&gallery, details.screenshots);
-                }
+                Err(_) => gallery_status.set_text(tr("Screenshots could not be loaded.")),
             }
-            Err(_) => gallery_status.set_text(tr("Screenshots could not be loaded.")),
         },
     );
     window.set_content(Some(&toolbar));
@@ -1209,22 +1220,7 @@ fn store_fact(
     description: &str,
     detail: Option<&str>,
 ) -> gtk::FlowBoxChild {
-    let button = gtk::MenuButton::new();
-    button.add_css_class("packlift-store-fact");
-    button.update_property(&[gtk::accessible::Property::Label(&format!(
-        "{label} · {value}"
-    ))]);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let icon = gtk::Image::from_icon_name(icon);
-    icon.add_css_class("dim-label");
-    content.append(&icon);
-    let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    labels.append(&home_label(label, "dim-label"));
-    labels.append(&home_label(value, "heading"));
-    content.append(&labels);
-    button.set_child(Some(&content));
-
-    let popover = gtk::Popover::new();
+    let (child, popover) = fact_chip(icon, label, value);
     let explanation = gtk::Box::new(gtk::Orientation::Vertical, 6);
     explanation.set_margin_top(4);
     explanation.set_margin_bottom(4);
@@ -1242,11 +1238,193 @@ fn store_fact(
     description.set_max_width_chars(34);
     explanation.append(&description);
     popover.set_child(Some(&explanation));
+    child
+}
+
+fn permissions_fact(groups: Vec<(&'static str, String)>) -> gtk::FlowBoxChild {
+    let (child, popover) = fact_chip("security-high-symbolic", tr("Permissions"), tr("Details"));
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.set_margin_top(4);
+    content.set_margin_bottom(4);
+    content.set_margin_start(4);
+    content.set_margin_end(4);
+    content.append(&home_label(tr("Permissions"), "heading"));
+    if groups.is_empty() {
+        let info = home_label(tr("No permissions listed by the repository"), "dim-label");
+        info.set_max_width_chars(32);
+        content.append(&info);
+    } else {
+        let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        for (label, access) in groups {
+            let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            row.append(&home_label(tr(label), "heading"));
+            let details = home_label(&access, "dim-label");
+            details.set_max_width_chars(36);
+            details.set_selectable(true);
+            row.append(&details);
+            rows.append(&row);
+        }
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .min_content_width(260)
+            .max_content_width(340)
+            .max_content_height(320)
+            .propagate_natural_width(true)
+            .propagate_natural_height(true)
+            .child(&rows)
+            .build();
+        content.append(&scroll);
+    }
+    popover.set_child(Some(&content));
+    child
+}
+
+fn fact_chip(icon: &str, label: &str, value: &str) -> (gtk::FlowBoxChild, gtk::Popover) {
+    let button = gtk::MenuButton::new();
+    button.add_css_class("packlift-store-fact");
+    button.set_hexpand(true);
+    button.set_vexpand(true);
+    let name = format!("{label} · {value}");
+    button.set_tooltip_text(Some(&name));
+    button.update_property(&[gtk::accessible::Property::Label(&name)]);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name(icon);
+    icon.add_css_class("dim-label");
+    content.append(&icon);
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    labels.set_hexpand(true);
+    labels.set_valign(gtk::Align::Center);
+    for (text, style, lines) in [(label, "dim-label", 2), (value, "heading", 1)] {
+        let text = home_label(text, style);
+        text.set_max_width_chars(14);
+        text.set_lines(lines);
+        text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        labels.append(&text);
+    }
+    content.append(&labels);
+    content.set_overflow(gtk::Overflow::Hidden);
+    button.set_child(Some(&content));
+    let popover = gtk::Popover::new();
     button.set_popover(Some(&popover));
     let child = gtk::FlowBoxChild::new();
     child.set_focusable(false);
     child.set_child(Some(&button));
-    child
+    (child, popover)
+}
+
+fn detail_suggestion_layout(
+    scroll: &gtk::ScrolledWindow,
+    inline: &gtk::Box,
+) -> (adw::BreakpointBin, [gtk::Box; 2]) {
+    let rails = std::array::from_fn(|_| {
+        let rail = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        rail.set_size_request(154, -1);
+        rail.set_valign(gtk::Align::Start);
+        rail.set_margin_top(18);
+        rail.set_margin_start(12);
+        rail.set_margin_end(12);
+        rail.set_visible(false);
+
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let adjustment = scroll.vadjustment().downgrade();
+        wheel.connect_scroll(move |wheel, _, dy| {
+            let Some(adjustment) = adjustment.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let distance = if wheel.unit() == gtk::gdk::ScrollUnit::Wheel {
+                dy * 56.0
+            } else {
+                dy
+            };
+            adjustment.set_value(adjustment.value() + distance);
+            glib::Propagation::Stop
+        });
+        rail.add_controller(wheel);
+        rail
+    });
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.append(&rails[0]);
+    row.append(scroll);
+    row.append(&rails[1]);
+    let layout = adw::Clamp::builder()
+        .maximum_size(1560)
+        .tightening_threshold(1400)
+        .child(&row)
+        .build();
+    let responsive = adw::BreakpointBin::builder()
+        .width_request(360)
+        .height_request(300)
+        .child(&layout)
+        .build();
+    let condition = adw::BreakpointCondition::new_and(
+        adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinWidth,
+            1320.0,
+            adw::LengthUnit::Px,
+        ),
+        adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinHeight,
+            540.0,
+            adw::LengthUnit::Px,
+        ),
+    );
+    responsive.add_breakpoint(adw::Breakpoint::new(condition));
+    let (alternate, sidebars) = (inline.clone(), rails.clone());
+    responsive.connect_current_breakpoint_notify(move |responsive| {
+        update_suggestion_visibility(responsive, &alternate, &sidebars);
+    });
+    (responsive, rails)
+}
+
+fn update_suggestion_visibility(
+    layout: &adw::BreakpointBin,
+    inline: &gtk::Box,
+    rails: &[gtk::Box; 2],
+) {
+    let available = rails[0].first_child().is_some();
+    let wide = layout.current_breakpoint().is_some();
+    inline.set_visible(available && !wide);
+    for rail in rails {
+        rail.set_visible(available && wide);
+    }
+}
+
+fn suggested_app_card(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    remote: Remote,
+    app: &CatalogApp,
+) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("packlift-store-suggestion");
+    tint_app_card(&button, &app.id);
+    button.set_size_request(154, 154);
+    button.set_halign(gtk::Align::Center);
+    button.set_valign(gtk::Align::Center);
+    button.set_cursor_from_name(Some("pointer"));
+    button.set_tooltip_text(Some(&app.name));
+    button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.set_halign(gtk::Align::Center);
+    content.set_valign(gtk::Align::Center);
+    let icon = catalog_icon_frame(app, 54, 68);
+    icon.set_halign(gtk::Align::Center);
+    content.append(&icon);
+    let title = home_label(&app.name, "heading");
+    title.set_justify(gtk::Justification::Center);
+    title.set_xalign(0.5);
+    title.set_lines(2);
+    title.set_max_width_chars(13);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    content.append(&title);
+    button.set_child(Some(&content));
+    let (window, app) = (window.clone(), app.clone());
+    button.connect_clicked(move |_| {
+        if let Some(window) = window.upgrade() {
+            show_app(&window, &remote, &app);
+        }
+    });
+    button
 }
 
 fn app_card(
@@ -1919,123 +2097,14 @@ fn choose_uninstall_destination(
     }
 }
 
-struct ScreenshotGallery {
-    shots: Vec<Screenshot>,
-    selected: Cell<Option<usize>>,
-    strip: gtk::Adjustment,
-    stack: glib::WeakRef<gtk::Stack>,
-    preview: glib::WeakRef<gtk::Box>,
-    position: glib::WeakRef<gtk::Label>,
-    previous: glib::WeakRef<gtk::Button>,
-    next: glib::WeakRef<gtk::Button>,
-    close: glib::WeakRef<gtk::Button>,
-    thumbnails: Vec<glib::WeakRef<gtk::Button>>,
-}
-
-impl ScreenshotGallery {
-    fn update_controls(&self) {
-        let (Some(position), Some(previous), Some(next), Some(close)) = (
-            self.position.upgrade(),
-            self.previous.upgrade(),
-            self.next.upgrade(),
-            self.close.upgrade(),
-        ) else {
-            return;
-        };
-        let lower = self.strip.lower();
-        let upper = self.strip.upper() - self.strip.page_size();
-        let scrollable = upper - lower > 1.0;
-        let zoomed = self.selected.get();
-        let had_previous = previous.has_focus();
-        let had_next = next.has_focus();
-        let (can_go_back, can_go_forward) = match zoomed {
-            Some(index) => (index > 0, index + 1 < self.shots.len()),
-            None => (
-                self.strip.value() - lower > 1.0,
-                upper - self.strip.value() > 1.0,
-            ),
-        };
-        position.set_visible(zoomed.is_some());
-        if let Some(index) = zoomed {
-            position.set_text(&format!("{} / {}", index + 1, self.shots.len()));
-        }
-        previous.set_visible(if zoomed.is_some() {
-            self.shots.len() > 1
-        } else {
-            scrollable
-        });
-        next.set_visible(previous.is_visible());
-        previous.set_sensitive(can_go_back);
-        next.set_sensitive(can_go_forward);
-        close.set_visible(zoomed.is_some());
-        if had_previous && !can_go_back && can_go_forward {
-            next.grab_focus();
-        } else if had_next && !can_go_forward && can_go_back {
-            previous.grab_focus();
-        }
-    }
-
-    fn enlarge(&self, index: usize) {
-        let (Some(stack), Some(preview), Some(shot)) = (
-            self.stack.upgrade(),
-            self.preview.upgrade(),
-            self.shots.get(index),
-        ) else {
-            return;
-        };
-        if let Some(old) = preview.first_child() {
-            preview.remove(&old);
-        }
-        preview.append(&screenshot_frame(shot, None, false));
-        self.selected.set(Some(index));
-        stack.set_visible_child_name("preview");
-        self.update_controls();
-    }
-
-    fn collapse(&self) {
-        let (Some(stack), Some(index)) = (self.stack.upgrade(), self.selected.take()) else {
-            return;
-        };
-        stack.set_visible_child_name("strip");
-        self.update_controls();
-        if let Some(button) = self.thumbnails.get(index).and_then(glib::WeakRef::upgrade) {
-            button.grab_focus();
-        }
-    }
-
-    fn step(&self, forward: bool) {
-        if let Some(index) = self.selected.get() {
-            let next = if forward {
-                index.checked_add(1)
-            } else {
-                index.checked_sub(1)
-            };
-            if let Some(next) = next.filter(|index| *index < self.shots.len()) {
-                self.enlarge(next);
-            }
-        } else {
-            let distance = self.strip.page_size() * 0.8;
-            let value = self.strip.value() + if forward { distance } else { -distance };
-            self.strip.set_value(value);
-        }
-    }
-}
-
 fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let heading = home_label(tr("Screenshots"), "title-3");
     heading.set_hexpand(true);
     header.append(&heading);
-    let position = home_label("", "dim-label");
-    header.append(&position);
     let previous = gtk::Button::from_icon_name("go-previous-symbolic");
     let next = gtk::Button::from_icon_name("go-next-symbolic");
-    let close = gtk::Button::from_icon_name("view-restore-symbolic");
-    for (button, name) in [
-        (&previous, tr("Previous")),
-        (&next, tr("Next")),
-        (&close, tr("Close preview")),
-    ] {
+    for (button, name) in [(&previous, tr("Previous")), (&next, tr("Next"))] {
         button.set_tooltip_text(Some(name));
         button.update_property(&[gtk::accessible::Property::Label(name)]);
         header.append(button);
@@ -2044,8 +2113,12 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
 
     let single = shots.len() == 1;
     let previews = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    for shot in &shots {
+        let frame = screenshot_frame(shot, single);
+        frame.set_hexpand(single);
+        previews.append(&frame);
+    }
     let viewport = gtk::Viewport::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    viewport.set_scroll_to_focus(true);
     if single {
         let layout = adw::Clamp::builder()
             .maximum_size(820)
@@ -2066,137 +2139,75 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
         .propagate_natural_height(true)
         .child(&viewport)
         .build();
-    let enlarged = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let stack = gtk::Stack::new();
-    stack.set_hhomogeneous(false);
-    stack.set_vhomogeneous(false);
-    stack.add_named(&strip, Some("strip"));
-    stack.add_named(&enlarged, Some("preview"));
-    gallery.append(&stack);
+    gallery.append(&strip);
 
-    let thumbnails = shots
-        .iter()
-        .map(|shot| {
-            let button = gtk::Button::new();
-            let frame = screenshot_frame(shot, Some(&button), single);
-            frame.set_hexpand(single);
-            previews.append(&frame);
-            button
-        })
-        .collect::<Vec<_>>();
-    let view = Rc::new(ScreenshotGallery {
-        shots,
-        selected: Cell::new(None),
-        strip: strip.hadjustment(),
-        stack: stack.downgrade(),
-        preview: enlarged.downgrade(),
-        position: position.downgrade(),
-        previous: previous.downgrade(),
-        next: next.downgrade(),
-        close: close.downgrade(),
-        thumbnails: thumbnails.iter().map(ObjectExt::downgrade).collect(),
-    });
-    for (index, button) in thumbnails.iter().enumerate() {
-        let view = view.clone();
+    let adjustment = strip.hadjustment();
+    for (button, direction) in [(&previous, -1.0), (&next, 1.0)] {
+        let scroll = adjustment.downgrade();
         button.connect_clicked(move |_| {
-            view.enlarge(index);
-            if let Some(close) = view.close.upgrade() {
-                close.grab_focus();
+            if let Some(scroll) = scroll.upgrade() {
+                scroll.set_value(scroll.value() + direction * scroll.page_size() * 0.8);
             }
         });
     }
-    {
-        let view = view.clone();
-        close.connect_clicked(move |_| view.collapse());
-    }
-    for (button, forward) in [(&previous, false), (&next, true)] {
-        let view = view.clone();
-        button.connect_clicked(move |_| view.step(forward));
-    }
-    let state = Rc::downgrade(&view);
-    view.strip.connect_changed(move |_| {
-        if let Some(view) = state.upgrade() {
-            view.update_controls();
+    let (previous, next) = (previous.downgrade(), next.downgrade());
+    let update = move |scroll: &gtk::Adjustment| {
+        let (Some(previous), Some(next)) = (previous.upgrade(), next.upgrade()) else {
+            return;
+        };
+        let lower = scroll.lower();
+        let upper = scroll.upper() - scroll.page_size();
+        let scrollable = upper - lower > 1.0;
+        let back = scroll.value() - lower > 1.0;
+        let forward = upper - scroll.value() > 1.0;
+        if previous.has_focus() && !back && forward {
+            next.set_sensitive(true);
+            next.grab_focus();
+        } else if next.has_focus() && !forward && back {
+            previous.set_sensitive(true);
+            previous.grab_focus();
         }
-    });
-    let state = Rc::downgrade(&view);
-    view.strip.connect_value_changed(move |_| {
-        if let Some(view) = state.upgrade() {
-            view.update_controls();
-        }
-    });
-    view.update_controls();
-    let keys = gtk::EventControllerKey::new();
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
-        use gtk::gdk::ModifierType;
-        if view.selected.get().is_none()
-            || modifiers.intersects(
-                ModifierType::ALT_MASK | ModifierType::CONTROL_MASK | ModifierType::SUPER_MASK,
-            )
-        {
-            return glib::Propagation::Proceed;
-        }
-        match key {
-            gtk::gdk::Key::Escape => view.collapse(),
-            gtk::gdk::Key::Left => view.step(false),
-            gtk::gdk::Key::Right => view.step(true),
-            _ => return glib::Propagation::Proceed,
-        }
-        glib::Propagation::Stop
-    });
-    gallery.add_controller(keys);
+        previous.set_visible(scrollable);
+        next.set_visible(scrollable);
+        previous.set_sensitive(back);
+        next.set_sensitive(forward);
+    };
+    update(&adjustment);
+    adjustment.connect_changed(update.clone());
+    adjustment.connect_value_changed(update);
 }
 
-fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>, single: bool) -> gtk::Box {
+fn screenshot_frame(shot: &Screenshot, single: bool) -> gtk::Box {
     const THUMBNAIL_HEIGHT: i32 = 260;
-    let enlarged = thumbnail.is_none();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Contain)
         .can_shrink(true)
-        .height_request(if enlarged { 458 } else { 0 })
         .build();
-    picture.add_css_class("packlift-store-shot");
     let name = if shot.caption.is_empty() {
         tr("Screenshots")
     } else {
         &shot.caption
     };
     picture.set_alternative_text(Some(name));
-    if let Some(button) = thumbnail {
-        let overlay = gtk::Overlay::new();
-        let canvas = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let overlay = gtk::Overlay::new();
+    overlay.add_css_class("packlift-store-shot");
+    overlay.set_overflow(gtk::Overflow::Hidden);
+    let canvas = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    if single {
+        canvas.set_height_request(392);
+    } else {
         let width = (shot.aspect_ratio.unwrap_or(1.6) * f64::from(THUMBNAIL_HEIGHT))
             .round()
             .clamp(118.0, 540.0) as i32;
-        if single {
-            canvas.set_height_request(392);
-        } else {
-            canvas.set_size_request(width, THUMBNAIL_HEIGHT);
-        }
-        overlay.set_child(Some(&canvas));
-        overlay.add_overlay(&picture);
-        let zoom = gtk::Image::from_icon_name("view-fullscreen-symbolic");
-        zoom.set_halign(gtk::Align::End);
-        zoom.set_valign(gtk::Align::Start);
-        zoom.set_can_target(false);
-        zoom.add_css_class("packlift-store-zoom");
-        overlay.add_overlay(&zoom);
-        button.set_child(Some(&overlay));
-        button.add_css_class("flat");
-        button.add_css_class("packlift-store-shot-button");
-        button.set_tooltip_text(Some(tr("Enlarge screenshot")));
-        button.update_property(&[
-            gtk::accessible::Property::Label(name),
-            gtk::accessible::Property::Description(tr("Enlarge screenshot")),
-        ]);
-        frame.append(button);
-    } else {
-        frame.append(&picture);
+        canvas.set_size_request(width, THUMBNAIL_HEIGHT);
     }
+    overlay.set_child(Some(&canvas));
+    overlay.add_overlay(&picture);
+    frame.append(&overlay);
     let caption = gtk::Label::new(Some(tr("Loading screenshots…")));
     caption.add_css_class("dim-label");
-    if enlarged || single {
+    if single {
         caption.set_wrap(true);
     } else {
         caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -2204,7 +2215,7 @@ fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>, single: 
         caption.set_tooltip_text((!shot.caption.is_empty()).then_some(shot.caption.as_str()));
     }
     frame.append(&caption);
-    let (url, fallback) = if (enlarged || single) && shot.large_url != shot.url {
+    let (url, fallback) = if single && shot.large_url != shot.url {
         (shot.large_url.clone(), Some(shot.url.clone()))
     } else {
         (shot.url.clone(), None)

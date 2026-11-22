@@ -257,8 +257,6 @@ About this app|Sobre este app|Acerca de esta aplicación|О приложении
 License|Licença|Licencia|Лицензия|许可证
 {name} was installed.|{name} foi instalado.|Se instaló {name}.|Приложение {name} установлено.|已安装 {name}。
 The selected Flatpak installation was no longer found.|A instalação Flatpak selecionada não foi encontrada.|No se encontró la instalación de Flatpak seleccionada.|Выбранная установка Flatpak не найдена.|找不到所选的 Flatpak 安装。
-Close preview|Fechar visualização|Cerrar vista previa|Закрыть просмотр|关闭预览
-Enlarge screenshot|Ampliar captura|Ampliar captura|Увеличить снимок|放大截图
 Permissions|Permissões|Permisos|Разрешения|权限
 Download size|Tamanho do download|Tamaño de descarga|Размер загрузки|下载大小
 Free software|Software livre|Software libre|Свободное ПО|自由软件
@@ -275,7 +273,7 @@ Devices|Dispositivos|Dispositivos|Устройства|设备
 Sockets|Sockets|Sockets|Сокеты|套接字
 Sources|Fontes|Fuentes|Источники|来源
 Links|Links|Enlaces|Ссылки|链接
-Similar apps|Apps similares|Aplicaciones similares|Похожие приложения|类似应用
+Suggested apps|Apps sugeridos|Aplicaciones sugeridas|Рекомендуемые приложения|推荐应用
 Version history|Histórico de versões|Historial de versiones|История версий|版本历史
 Flathub page|Página no Flathub|Página de Flathub|Страница на Flathub|Flathub 页面
 Project website|Site do projeto|Sitio del proyecto|Сайт проекта|项目网站

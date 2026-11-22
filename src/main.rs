@@ -77,25 +77,24 @@ fn main() -> glib::ExitCode {
                  .packlift-uninstall-data { padding: 8px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.06); }
                  .packlift-uninstall-data.deleting-data { background: alpha(@destructive_color, 0.10); }
                  .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; border: 1px solid alpha(@borders, 0.5); }
-                 .packlift-store-fact > button { padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
+                 .packlift-store-fact > button { min-height: 4.6em; padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
                  .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-store-shot { border-radius: 10px; }
-                 button.packlift-store-shot-button { padding: 0; border-radius: 10px; }
-                 .packlift-store-zoom { margin: 8px; padding: 6px; border-radius: 8px; background: @card_bg_color; }
                  .packlift-store-release { padding: 16px; border-radius: 12px; background: @card_bg_color; }
                  .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
                  .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.08); border: 1px solid alpha(@window_fg_color, 0.10); }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
-                 .packlift-store-tint.blue { background-image: linear-gradient(115deg, alpha(#3584e4, 0.26), alpha(#3584e4, 0.08)); }
-                 .packlift-store-tint.teal { background-image: linear-gradient(115deg, alpha(#20a6a2, 0.26), alpha(#20a6a2, 0.08)); }
-                 .packlift-store-tint.green { background-image: linear-gradient(115deg, alpha(#4b9e45, 0.26), alpha(#4b9e45, 0.08)); }
-                 .packlift-store-tint.amber { background-image: linear-gradient(115deg, alpha(#b58a2b, 0.26), alpha(#b58a2b, 0.08)); }
-                 .packlift-store-tint.orange { background-image: linear-gradient(115deg, alpha(#dc7438, 0.26), alpha(#dc7438, 0.08)); }
-                 .packlift-store-tint.red { background-image: linear-gradient(115deg, alpha(#ce4845, 0.26), alpha(#ce4845, 0.08)); }
-                 .packlift-store-tint.pink { background-image: linear-gradient(115deg, alpha(#bd5793, 0.26), alpha(#bd5793, 0.08)); }
-                 .packlift-store-tint.purple { background-image: linear-gradient(115deg, alpha(#8d65d6, 0.26), alpha(#8d65d6, 0.08)); }
-                 button.packlift-store-card:hover { border-color: alpha(@window_fg_color, 0.28); }
-                 button.packlift-store-card:focus-visible { border-color: @accent_color; }",
+                 button.packlift-store-suggestion { padding: 10px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); }
+                 .packlift-store-tint.blue { background-color: mix(@window_bg_color, #3584e4, 0.36); }
+                 .packlift-store-tint.teal { background-color: mix(@window_bg_color, #20a6a2, 0.36); }
+                 .packlift-store-tint.green { background-color: mix(@window_bg_color, #4b9e45, 0.36); }
+                 .packlift-store-tint.amber { background-color: mix(@window_bg_color, #b58a2b, 0.36); }
+                 .packlift-store-tint.orange { background-color: mix(@window_bg_color, #dc7438, 0.36); }
+                 .packlift-store-tint.red { background-color: mix(@window_bg_color, #ce4845, 0.36); }
+                 .packlift-store-tint.pink { background-color: mix(@window_bg_color, #bd5793, 0.36); }
+                 .packlift-store-tint.purple { background-color: mix(@window_bg_color, #8d65d6, 0.36); }
+                 button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
+                 button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",
             );
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }

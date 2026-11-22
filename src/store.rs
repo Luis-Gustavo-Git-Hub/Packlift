@@ -17,6 +17,7 @@ use crate::{
 const FLATHUB_REPO: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 const FLATHUB_API: &str = "https://flathub.org/api/v2";
 const PAGE_SIZE: usize = 24;
+const SUGGESTION_LIMIT: usize = 6;
 static DISCOVER_ORDER: OnceLock<RandomState> = OnceLock::new();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -487,6 +488,36 @@ fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
     })
 }
 
+pub fn suggested_apps(
+    runner: &Runner,
+    remote: &Remote,
+    id: &str,
+    category: Option<&str>,
+) -> Vec<(Remote, CatalogApp)> {
+    let mut apps: Vec<_> = category
+        .filter(|_| remote.flathub)
+        .and_then(|category| similar_apps(runner, id, category).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|app| (remote.clone(), app))
+        .collect();
+    if apps.len() < SUGGESTION_LIMIT {
+        if let Ok(remotes) = catalog_remotes(runner) {
+            let mut seen: HashSet<_> = apps.iter().map(|(_, app)| app.id.clone()).collect();
+            if let Ok(page) = CatalogSearch::new(remotes, String::new()).page(runner, 1) {
+                let remaining = SUGGESTION_LIMIT - apps.len();
+                apps.extend(
+                    page.apps
+                        .into_iter()
+                        .filter(|(_, app)| app.id != id && seen.insert(app.id.clone()))
+                        .take(remaining),
+                );
+            }
+        }
+    }
+    apps
+}
+
 pub fn similar_apps(runner: &Runner, id: &str, category: &str) -> Result<Vec<CatalogApp>> {
     let response = flathub_search(runner, category, 1)?;
     let mut seen = HashSet::new();
@@ -506,7 +537,7 @@ pub fn similar_apps(runner: &Runner, id: &str, category: &str) -> Result<Vec<Cat
         })
         .filter_map(flathub_catalog_app)
         .filter(|app| app.id != id && seen.insert(app.id.clone()))
-        .take(6)
+        .take(SUGGESTION_LIMIT)
         .collect())
 }
 
