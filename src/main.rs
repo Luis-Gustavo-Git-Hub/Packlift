@@ -65,13 +65,18 @@ fn main() -> glib::ExitCode {
                  .packlift-package-icon { padding: 9px; border-radius: 12px; background-color: alpha(@card_bg_color, 0.8); }
                  .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }
                  .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; box-shadow: 0 4px 18px alpha(black, 0.24); }
-                 .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.18), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.23); }
+                 .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-feature:hover, .packlift-store-feature:focus-visible { border-color: alpha(@accent_bg_color, 0.65); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
-                 .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.12), transparent); border: 1px solid alpha(@borders, 0.5); }
+                 .packlift-store-job, .packlift-store-uninstall { padding: 12px 14px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-store-uninstall { border: 1px solid alpha(@destructive_color, 0.32); }
+                 .packlift-uninstall-icon { padding: 8px; color: @destructive_color; background: alpha(@destructive_color, 0.13); border-radius: 10px; }
+                 .packlift-uninstall-data { padding: 8px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.06); }
+                 .packlift-uninstall-data.deleting-data { background: alpha(@destructive_color, 0.10); }
+                 .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; border: 1px solid alpha(@borders, 0.5); }
                  .packlift-store-fact > button { padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
                  .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-store-shot { border-radius: 10px; }
@@ -81,14 +86,14 @@ fn main() -> glib::ExitCode {
                  .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
                  .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.08); border: 1px solid alpha(@window_fg_color, 0.10); }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
-                 .packlift-store-card.blue { background-image: linear-gradient(115deg, alpha(#3584e4, 0.26), alpha(#3584e4, 0.08)); }
-                 .packlift-store-card.teal { background-image: linear-gradient(115deg, alpha(#20a6a2, 0.26), alpha(#20a6a2, 0.08)); }
-                 .packlift-store-card.green { background-image: linear-gradient(115deg, alpha(#4b9e45, 0.26), alpha(#4b9e45, 0.08)); }
-                 .packlift-store-card.amber { background-image: linear-gradient(115deg, alpha(#b58a2b, 0.26), alpha(#b58a2b, 0.08)); }
-                 .packlift-store-card.orange { background-image: linear-gradient(115deg, alpha(#dc7438, 0.26), alpha(#dc7438, 0.08)); }
-                 .packlift-store-card.red { background-image: linear-gradient(115deg, alpha(#ce4845, 0.26), alpha(#ce4845, 0.08)); }
-                 .packlift-store-card.pink { background-image: linear-gradient(115deg, alpha(#bd5793, 0.26), alpha(#bd5793, 0.08)); }
-                 .packlift-store-card.purple { background-image: linear-gradient(115deg, alpha(#8d65d6, 0.26), alpha(#8d65d6, 0.08)); }
+                 .packlift-store-tint.blue { background-image: linear-gradient(115deg, alpha(#3584e4, 0.26), alpha(#3584e4, 0.08)); }
+                 .packlift-store-tint.teal { background-image: linear-gradient(115deg, alpha(#20a6a2, 0.26), alpha(#20a6a2, 0.08)); }
+                 .packlift-store-tint.green { background-image: linear-gradient(115deg, alpha(#4b9e45, 0.26), alpha(#4b9e45, 0.08)); }
+                 .packlift-store-tint.amber { background-image: linear-gradient(115deg, alpha(#b58a2b, 0.26), alpha(#b58a2b, 0.08)); }
+                 .packlift-store-tint.orange { background-image: linear-gradient(115deg, alpha(#dc7438, 0.26), alpha(#dc7438, 0.08)); }
+                 .packlift-store-tint.red { background-image: linear-gradient(115deg, alpha(#ce4845, 0.26), alpha(#ce4845, 0.08)); }
+                 .packlift-store-tint.pink { background-image: linear-gradient(115deg, alpha(#bd5793, 0.26), alpha(#bd5793, 0.08)); }
+                 .packlift-store-tint.purple { background-image: linear-gradient(115deg, alpha(#8d65d6, 0.26), alpha(#8d65d6, 0.08)); }
                  button.packlift-store-card:hover { border-color: alpha(@window_fg_color, 0.28); }
                  button.packlift-store-card:focus-visible { border-color: @accent_color; }",
             );
@@ -1568,22 +1573,29 @@ fn run_job<F>(app: &adw::Application, window: &adw::ApplicationWindow, title: &s
 where
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
+    run_job_with_progress(app, window, title, None, task);
+}
+
+fn run_job_with_progress<F>(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    title: &str,
+    inline: Option<&gtk::Box>,
+    task: F,
+) where
+    F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
+{
     if window.has_css_class("packlift-running-job") {
         return;
     }
     window.add_css_class("packlift-running-job");
-    let previous = PageReturn::capture(window);
-    let store_toolbar = if window.widget_name() == "packlift-store-details" {
-        window.content().and_downcast::<adw::ToolbarView>()
-    } else {
-        None
-    };
+    let previous = inline
+        .is_none()
+        .then(|| PageReturn::capture(window))
+        .flatten();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    body.set_margin_start(20);
-    body.set_margin_end(20);
-    if store_toolbar.is_some() {
-        body.set_margin_top(8);
-        body.set_margin_bottom(10);
+    if inline.is_some() {
+        body.add_css_class("packlift-store-job");
     } else {
         body.add_css_class("packlift-progress");
         body.set_halign(gtk::Align::Center);
@@ -1591,11 +1603,13 @@ where
         body.set_size_request(280, -1);
         body.set_margin_top(20);
         body.set_margin_bottom(20);
+        body.set_margin_start(20);
+        body.set_margin_end(20);
     }
     let heading = gtk::Label::new(Some(title));
     heading.set_wrap(true);
     heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    if store_toolbar.is_some() {
+    if inline.is_some() {
         heading.add_css_class("heading");
         heading.set_xalign(0.0);
     } else {
@@ -1614,21 +1628,18 @@ where
     status.append(&stage);
     body.append(&status);
     let progress = gtk::ProgressBar::new();
-    progress.update_property(&[gtk::accessible::Property::Label(tr(
-        "Installation progress",
-    ))]);
+    progress.update_property(&[gtk::accessible::Property::Label(title)]);
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
-    let store_progress = store_toolbar.map(|toolbar| {
-        let footer = adw::Clamp::builder().maximum_size(560).child(&body).build();
-        toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
-        toolbar.add_bottom_bar(&footer);
-        (toolbar, footer)
-    });
-    if store_progress.is_none() {
+    let inline = if let Some(slot) = inline {
+        slot.append(&body);
+        slot.set_visible(true);
+        Some(slot.downgrade())
+    } else {
         window.set_content(Some(&body));
-    }
+        None
+    };
     stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
 
     enum JobEvent {
@@ -1673,19 +1684,13 @@ where
                     }
                 }
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
-                if let Some((toolbar, footer)) = &store_progress {
-                    toolbar.remove(footer);
+                if let Some(slot) = inline.as_ref().and_then(glib::WeakRef::upgrade) {
+                    slot.remove(&body);
+                    slot.set_visible(false);
                 }
                 if let Some(window) = weak_window.upgrade() {
                     window.remove_css_class("packlift-running-job");
-                    let left_store_page = store_progress.as_ref().is_some_and(|(toolbar, _)| {
-                        window.content().as_ref() != Some(toolbar.upcast_ref())
-                    });
-                    if let Some(page) = previous.as_ref().filter(|_| !left_store_page) {
-                        if store_progress.is_some() {
-                            // Remap the details to refresh its installed state after the job.
-                            window.set_content(None::<&gtk::Widget>);
-                        }
+                    if let Some(page) = &previous {
                         page.restore(&window);
                     }
                     match result {
@@ -1719,7 +1724,7 @@ where
                             if record["method"] == "flatpak" {
                                 let page = window.widget_name();
                                 if page == "packlift-library"
-                                    || (!left_store_page && page != "packlift-store-details")
+                                    || (inline.is_none() && page != "packlift-store-details")
                                 {
                                     render_home(&app, &window);
                                 }
@@ -1728,8 +1733,7 @@ where
                             }
                         }
                         Ok(None)
-                            if store_progress.is_some()
-                                && window.widget_name() != "packlift-library" => {}
+                            if inline.is_some() && window.widget_name() != "packlift-library" => {}
                         Ok(None) => render_home(&app, &window),
                     }
                 }

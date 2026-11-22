@@ -225,6 +225,9 @@ Local Linux apps|Apps Linux locais|Aplicaciones locales de Linux|Локальн�
 Native Linux packages|Pacotes nativos Linux|Paquetes nativos de Linux|Системные пакеты Linux|Linux 原生软件包
 Toolbx apps|Apps do Toolbx|Aplicaciones de Toolbx|Приложения Toolbx|Toolbx 应用
 You are removing this installation ({scope}).|Você vai remover esta instalação ({scope}).|Vas a eliminar esta instalación ({scope}).|Вы удаляете эту установку ({scope}).|你将卸载此安装（{scope}）。
+Uninstall {app}?|Desinstalar {app}?|¿Desinstalar {app}?|Удалить {app}?|卸载 {app}？
+Installation to remove|Instalação a remover|Instalación que se eliminará|Установка для удаления|要移除的安装
+Uninstall and delete data|Desinstalar e apagar dados|Desinstalar y borrar datos|Удалить приложение и данные|卸载并删除数据
 Delete app data|Apagar dados do app|Borrar datos de la aplicación|Удалить данные приложения|删除应用数据
 This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app.|Isso apaga permanentemente os dados salvos e as configurações do app na sua conta, incluindo dados compartilhados com outras instalações do mesmo app.|Esto borra permanentemente los datos guardados y la configuración de esta aplicación en tu cuenta, incluidos los datos compartidos con otras instalaciones de la misma aplicación.|Это навсегда удалит сохранённые данные и настройки приложения в вашей учётной записи, включая данные, общие для других установок этого приложения.|这将永久删除当前账户中此应用的已保存数据和设置，包括与同一应用其他安装共享的数据。
 Store|Loja|Tienda|Магазин|商店

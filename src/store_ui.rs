@@ -14,8 +14,8 @@ use packlift::{
 use serde_json::{json, Value};
 
 use crate::{
-    back_to_previous, home_label, i18n::tr, page_navigation, page_shortcut, render_home, run_job,
-    show_host_access_dialog, text_button,
+    back_to_previous, home_label, i18n::tr, page_navigation, page_shortcut, render_home,
+    run_job_with_progress, show_host_access_dialog, text_button,
 };
 
 struct StoreView {
@@ -653,14 +653,16 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
 
     let hero = gtk::Box::new(gtk::Orientation::Vertical, 16);
     hero.add_css_class("packlift-store-detail-hero");
+    tint_app_card(&hero, &app.id);
     let identity = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-    let icon = catalog_icon(app, 80);
-    icon.set_valign(gtk::Align::Center);
-    identity.append(&icon);
+    identity.append(&catalog_icon_frame(app, 68, 80));
     let title = gtk::Box::new(gtk::Orientation::Vertical, 4);
     title.set_hexpand(true);
     title.set_valign(gtk::Align::Center);
     title.append(&home_label(&app.name, "title-1"));
+    if !app.summary.is_empty() && app.summary != app.id {
+        title.append(&home_label(&app.summary, "dim-label"));
+    }
     let developer = home_label("", "dim-label");
     developer.set_visible(false);
     title.append(&developer);
@@ -696,6 +698,17 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
     install_options.set_visible(false);
     hero.append(&install_options);
+    let progress = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    progress.set_visible(false);
+    let progress_layout = adw::Clamp::builder()
+        .maximum_size(560)
+        .child(&progress)
+        .build();
+    progress
+        .bind_property("visible", &progress_layout, "visible")
+        .sync_create()
+        .build();
+    hero.append(&progress_layout);
 
     let facts = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -725,9 +738,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
 
     let about = gtk::Box::new(gtk::Orientation::Vertical, 8);
     about.append(&home_label(tr("About this app"), "title-3"));
-    if !app.summary.is_empty() {
-        about.append(&home_label(&app.summary, "heading"));
-    }
     let description = home_label("", "");
     description.set_selectable(true);
     description.set_visible(false);
@@ -787,10 +797,16 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
     let controls = install_controls.downgrade();
     let refresh_button = uninstall.downgrade();
     let app_id = app.id.clone();
-    toolbar.connect_map(move |_| {
+    let refresh_installation = move || {
         let id = app_id.clone();
         let state = installed_state.clone();
         let (controls, refresh_button) = (controls.clone(), refresh_button.clone());
+        let (Some(install_controls), Some(button)) = (controls.upgrade(), refresh_button.upgrade())
+        else {
+            return;
+        };
+        install_controls.set_sensitive(false);
+        button.set_sensitive(false);
         background(
             move || crate::installer()?.flatpak_app_installations(&id),
             move |result| {
@@ -803,27 +819,64 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp) 
                     *state.borrow_mut() = records;
                     controls.set_visible(!is_installed);
                     button.set_visible(is_installed);
-                    if is_installed && button.root().is_some_and(|root| root.focus().is_none()) {
-                        button.grab_focus();
-                    }
+                }
+                controls.set_sensitive(true);
+                button.set_sensitive(true);
+                if button.is_visible() && button.root().is_some_and(|root| root.focus().is_none()) {
+                    button.grab_focus();
                 }
             },
         );
+    };
+    let on_map = refresh_installation.clone();
+    let job = progress.downgrade();
+    toolbar.connect_map(move |_| {
+        if job.upgrade().is_some_and(|job| !job.is_visible()) {
+            on_map();
+        }
+    });
+    let (controls, action) = (install_controls.downgrade(), uninstall.downgrade());
+    progress.connect_visible_notify(move |progress| {
+        if progress.is_visible() {
+            if let (Some(controls), Some(action)) = (controls.upgrade(), action.upgrade()) {
+                controls.set_sensitive(false);
+                action.set_sensitive(false);
+            }
+        } else {
+            refresh_installation();
+        }
     });
     let dialog = window.downgrade();
     let options = install_options.downgrade();
+    let job = progress.downgrade();
+    let name = app.name.clone();
     uninstall.connect_clicked(move |button| {
-        if let (Some(window), Some(options)) = (dialog.upgrade(), options.upgrade()) {
-            choose_uninstall_destination(&window, &options, button, installed.borrow().clone());
+        if let (Some(window), Some(options), Some(progress)) =
+            (dialog.upgrade(), options.upgrade(), job.upgrade())
+        {
+            choose_uninstall_destination(
+                &window,
+                &progress,
+                &options,
+                button,
+                &name,
+                installed.borrow().clone(),
+            );
         }
     });
 
     let preferred = remote.clone();
     let parent = window.downgrade();
+    let job = progress.downgrade();
+    let install_app = move |source: Remote, app: CatalogApp| {
+        if let (Some(window), Some(progress)) = (parent.upgrade(), job.upgrade()) {
+            install_store_app(&window, &progress, source, app);
+        }
+    };
     let (repository, install) = (repository.downgrade(), install.downgrade());
     load_detail_sources(remote, app, sources_section, sources, move |choices| {
         if let (Some(repository), Some(install)) = (repository.upgrade(), install.upgrade()) {
-            bind_install_menu(&parent, &repository, &install, &preferred, choices);
+            bind_install_menu(&repository, &install, &preferred, choices, install_app);
         }
     });
     if remote.flathub {
@@ -1203,27 +1256,13 @@ fn app_card(
 ) -> gtk::Button {
     let button = gtk::Button::builder().hexpand(true).build();
     button.add_css_class("packlift-store-card");
-    let colors = [
-        "blue", "teal", "green", "amber", "orange", "red", "pink", "purple",
-    ];
-    let color = CARD_COLORS.with(|random| random.hash_one(&app.id) as usize % colors.len());
-    button.add_css_class(colors[color]);
+    tint_app_card(&button, &app.id);
     button.set_widget_name(&app.id);
     button.set_size_request(190, 76);
     button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     content.set_valign(gtk::Align::Center);
-    let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    frame.add_css_class("packlift-store-card-icon");
-    frame.set_size_request(52, 52);
-    frame.set_hexpand(false);
-    frame.set_valign(gtk::Align::Center);
-    let icon = catalog_icon(&app, 40);
-    icon.set_hexpand(true);
-    icon.set_halign(gtk::Align::Center);
-    icon.set_valign(gtk::Align::Center);
-    frame.append(&icon);
-    content.append(&frame);
+    content.append(&catalog_icon_frame(&app, 40, 52));
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
     let name = home_label(&app.name, "heading");
@@ -1254,6 +1293,29 @@ fn app_card(
     button
 }
 
+fn tint_app_card(widget: &impl IsA<gtk::Widget>, app_id: &str) {
+    let colors = [
+        "blue", "teal", "green", "amber", "orange", "red", "pink", "purple",
+    ];
+    let color = CARD_COLORS.with(|random| random.hash_one(app_id) as usize % colors.len());
+    widget.add_css_class("packlift-store-tint");
+    widget.add_css_class(colors[color]);
+}
+
+fn catalog_icon_frame(app: &CatalogApp, icon_size: i32, frame_size: i32) -> gtk::Box {
+    let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    frame.add_css_class("packlift-store-card-icon");
+    frame.set_size_request(frame_size, frame_size);
+    frame.set_hexpand(false);
+    frame.set_valign(gtk::Align::Center);
+    let icon = catalog_icon(app, icon_size);
+    icon.set_hexpand(true);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    frame.append(&icon);
+    frame
+}
+
 struct FeaturedApp {
     remote: Remote,
     app: CatalogApp,
@@ -1276,7 +1338,7 @@ fn featured_app(
     intro.set_hexpand(true);
     intro.set_halign(gtk::Align::Center);
     intro.set_valign(gtk::Align::Center);
-    let icon = catalog_icon(app, 56);
+    let icon = catalog_icon_frame(app, 48, 60);
     icon.set_halign(gtk::Align::Start);
     intro.append(&icon);
     let name = home_label(&app.name, "title-1");
@@ -1310,6 +1372,7 @@ fn featured_app(
     let parent = window.clone();
     let banner = gtk::Button::new();
     banner.add_css_class("packlift-store-feature");
+    tint_app_card(&banner, &app.id);
     banner.set_hexpand(true);
     banner.set_cursor_from_name(Some("pointer"));
     banner.set_child(Some(&hero));
@@ -1503,11 +1566,11 @@ fn same_repository(left: &Remote, right: &Remote) -> bool {
 }
 
 fn bind_install_menu(
-    window: &glib::WeakRef<adw::ApplicationWindow>,
     repository: &gtk::DropDown,
     install: &gtk::MenuButton,
     preferred: &Remote,
     choices: Vec<StoreChoice>,
+    install_app: impl Fn(Remote, CatalogApp) + Clone + 'static,
 ) {
     let mut sources: Vec<InstallSource> = Vec::new();
     for choice in choices {
@@ -1544,14 +1607,13 @@ fn bind_install_menu(
     repository.set_model(Some(&gtk::StringList::new(&labels)));
     repository.set_selected(selected as u32);
     repository.set_sensitive(true);
-    let parent = window.clone();
     let button = install.downgrade();
     let update = move |repository: &gtk::DropDown| {
         if let (Some(button), Some(source)) = (
             button.upgrade(),
             sources.get(repository.selected() as usize),
         ) {
-            button.set_popover(Some(&install_scope_popover(&parent, source)));
+            button.set_popover(Some(&install_scope_popover(source, install_app.clone())));
             button.set_sensitive(true);
             if button.is_mapped() && button.root().is_some_and(|root| root.focus().is_none()) {
                 button.grab_focus();
@@ -1563,8 +1625,8 @@ fn bind_install_menu(
 }
 
 fn install_scope_popover(
-    window: &glib::WeakRef<adw::ApplicationWindow>,
     source: &InstallSource,
+    install_app: impl Fn(Remote, CatalogApp) + Clone + 'static,
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.set_offset(-56, 0);
@@ -1616,12 +1678,12 @@ fn install_scope_popover(
         row.append(&text);
         button.set_child(Some(&row));
         if let Some((remote, candidate)) = choice.clone() {
-            let window = window.clone();
+            let install_app = install_app.clone();
             let popover = popover.downgrade();
             button.connect_clicked(move |_| {
-                if let (Some(window), Some(popover)) = (window.upgrade(), popover.upgrade()) {
+                if let Some(popover) = popover.upgrade() {
                     popover.popdown();
-                    install_store_app(&window, remote.clone(), candidate.clone());
+                    install_app(remote.clone(), candidate.clone());
                 }
             });
         }
@@ -1645,75 +1707,49 @@ fn install_scope_popover(
     popover
 }
 
-fn install_store_app(window: &adw::ApplicationWindow, source: Remote, candidate: CatalogApp) {
+fn install_store_app(
+    window: &adw::ApplicationWindow,
+    progress: &gtk::Box,
+    source: Remote,
+    candidate: CatalogApp,
+) {
     let Some(application) = window.application().and_downcast::<adw::Application>() else {
         return;
     };
-    run_job(&application, window, tr("Installing program"), move |log| {
-        let runner = Runner::new(None, log)?;
-        store::install(&runner, &source, &candidate)?;
-        let scope = match source.destination {
-            Destination::User => "user",
-            Destination::System => "system",
-        };
-        let installed = crate::installer()
-            .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
-            .unwrap_or_default();
-        let expected = candidate.reference.trim_start_matches("app/");
-        let mut matches = installed.into_iter().filter(|record| {
-            record["flatpak_scope"].as_str() == Some(scope)
-                && (expected == candidate.id || record["target"].as_str() == Some(expected))
-        });
-        let record = match (matches.next(), matches.next()) {
-            (Some(record), None) => record,
-            _ => json!({
-                "name": candidate.name, "method": "flatpak", "flatpak_app_id": candidate.id,
-            }),
-        };
-        Ok(Some(record))
-    });
-}
-
-fn inline_store_options() -> gtk::Box {
-    let controls = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    controls.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    controls
-}
-
-fn store_options_actions(
-    controls: &gtk::Box,
-    dismiss: Rc<impl Fn() + 'static>,
-    action: &str,
-    style: &str,
-) -> gtk::Button {
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    let cancel = text_button(tr("Cancel"));
-    cancel.add_css_class("flat");
-    let close = dismiss.clone();
-    cancel.connect_clicked(move |_| close());
-    actions.append(&cancel);
-    let confirm = text_button(action);
-    confirm.add_css_class(style);
-    confirm.add_css_class("pill");
-    actions.append(&confirm);
-    controls.append(&actions);
-    let keys = gtk::EventControllerKey::new();
-    keys.connect_key_pressed(move |_, key, _, _| {
-        if key == gtk::gdk::Key::Escape {
-            dismiss();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    controls.add_controller(keys);
-    confirm
+    run_job_with_progress(
+        &application,
+        window,
+        tr("Installing program"),
+        Some(progress),
+        move |log| {
+            let runner = Runner::new(None, log)?;
+            store::install(&runner, &source, &candidate)?;
+            let scope = match source.destination {
+                Destination::User => "user",
+                Destination::System => "system",
+            };
+            let installed = crate::installer()
+                .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
+                .unwrap_or_default();
+            let expected = candidate.reference.trim_start_matches("app/");
+            let mut matches = installed.into_iter().filter(|record| {
+                record["flatpak_scope"].as_str() == Some(scope)
+                    && (expected == candidate.id || record["target"].as_str() == Some(expected))
+            });
+            let record = match (matches.next(), matches.next()) {
+                (Some(record), None) => record,
+                _ => json!({
+                    "name": candidate.name, "method": "flatpak", "flatpak_app_id": candidate.id,
+                }),
+            };
+            Ok(Some(record))
+        },
+    );
 }
 
 fn dismiss_store_options(
     container: &gtk::Box,
-    controls: &gtk::Box,
+    controls: &adw::Clamp,
     open_options: &gtk::Button,
 ) -> Rc<impl Fn()> {
     Rc::new({
@@ -1735,41 +1771,121 @@ fn dismiss_store_options(
 
 fn choose_uninstall_destination(
     window: &adw::ApplicationWindow,
+    progress: &gtk::Box,
     container: &gtk::Box,
     open_options: &gtk::Button,
+    app_name: &str,
     records: Vec<Value>,
 ) {
-    let controls = inline_store_options();
+    if records.is_empty() || window.has_css_class("packlift-running-job") {
+        return;
+    }
+
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    card.add_css_class("packlift-store-uninstall");
+    let layout = adw::Clamp::builder().maximum_size(560).child(&card).build();
+
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let trash = gtk::Image::from_icon_name("user-trash-symbolic");
+    trash.set_pixel_size(20);
+    trash.set_valign(gtk::Align::Center);
+    trash.add_css_class("packlift-uninstall-icon");
+    heading.append(&trash);
+    let title = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let question = tr("Uninstall {app}?").replace("{app}", app_name);
+    title.append(&home_label(&question, "title-3"));
+    heading.append(&title);
+    card.append(&heading);
+
     let labels = records
         .iter()
         .map(|record| {
-            let reference = record["target"].as_str().unwrap_or_default();
-            let details = reference.split_once('/').map_or("", |(_, details)| details);
-            format!("{} · {details}", crate::flatpak_scope_label(record))
+            let scope = crate::flatpak_scope_label(record);
+            match record["target"]
+                .as_str()
+                .and_then(|reference| reference.split_once('/'))
+            {
+                Some((_, details)) => format!("{scope} · {details}"),
+                None => scope,
+            }
         })
         .collect::<Vec<_>>();
-    let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
-    let scope = gtk::DropDown::from_strings(&labels);
-    controls.append(&labeled_control(tr("Install scope"), &scope));
+    let scope = if labels.len() == 1 {
+        title.append(&home_label(&labels[0], "dim-label"));
+        None
+    } else {
+        let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let scope = gtk::DropDown::from_strings(&labels);
+        card.append(&labeled_control(tr("Installation to remove"), &scope));
+        Some(scope)
+    };
 
     let (delete_option, delete_data) = crate::flatpak_delete_data_option();
-    controls.append(&delete_option);
+    delete_option.add_css_class("packlift-uninstall-data");
+    card.append(&delete_option);
 
-    let dismiss = dismiss_store_options(container, &controls, open_options);
-    let uninstall = store_options_actions(
-        &controls,
-        dismiss.clone(),
-        tr("Uninstall"),
-        "destructive-action",
-    );
+    let dismiss = dismiss_store_options(container, &layout, open_options);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let cancel = text_button(tr("Cancel"));
+    let close = dismiss.clone();
+    cancel.connect_clicked(move |_| close());
+    actions.append(&cancel);
+    let uninstall = gtk::Button::new();
+    uninstall.add_css_class("destructive-action");
+    uninstall.add_css_class("pill");
+    let confirm_label = home_label(tr("Uninstall"), "");
+    confirm_label.set_xalign(0.5);
+    confirm_label.set_justify(gtk::Justification::Center);
+    uninstall.set_child(Some(&confirm_label));
+    actions.append(&uninstall);
+    card.append(&actions);
+    let data_row = delete_option.downgrade();
+    delete_data.connect_toggled(move |check| {
+        let deletes_data = check.is_active();
+        confirm_label.set_text(if deletes_data {
+            tr("Uninstall and delete data")
+        } else {
+            tr("Uninstall")
+        });
+        if let Some(row) = data_row.upgrade() {
+            if deletes_data {
+                row.add_css_class("deleting-data");
+            } else {
+                row.remove_css_class("deleting-data");
+            }
+        }
+    });
+
+    let keys = gtk::EventControllerKey::new();
+    let close = dismiss.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    card.add_controller(keys);
+
     let parent = window.downgrade();
-    let choice = scope.downgrade();
+    let job = progress.downgrade();
+    let choice = scope.as_ref().map(|scope| scope.downgrade());
     let delete_data = delete_data.downgrade();
     uninstall.connect_clicked(move |_| {
-        let (Some(window), Some(scope)) = (parent.upgrade(), choice.upgrade()) else {
+        let (Some(window), Some(progress)) = (parent.upgrade(), job.upgrade()) else {
             return;
         };
-        let Some(record) = records.get(scope.selected() as usize).cloned() else {
+        let index = if let Some(choice) = &choice {
+            let Some(scope) = choice.upgrade() else {
+                return;
+            };
+            scope.selected()
+        } else {
+            0
+        };
+        let Some(record) = records.get(index as usize).cloned() else {
             return;
         };
         let Some(application) = window.application().and_downcast::<adw::Application>() else {
@@ -1777,10 +1893,11 @@ fn choose_uninstall_destination(
         };
         let delete_data = delete_data.upgrade().is_some_and(|check| check.is_active());
         dismiss();
-        run_job(
+        run_job_with_progress(
             &application,
             &window,
             tr("Removing from your library"),
+            Some(&progress),
             move |log| {
                 let manager = crate::installer_with_output(log)?;
                 if delete_data {
@@ -1792,10 +1909,14 @@ fn choose_uninstall_destination(
             },
         );
     });
-    container.append(&controls);
+    container.append(&layout);
     container.set_visible(true);
     open_options.set_visible(false);
-    scope.grab_focus();
+    if let Some(scope) = scope {
+        scope.grab_focus();
+    } else {
+        cancel.grab_focus();
+    }
 }
 
 struct ScreenshotGallery {
@@ -1865,7 +1986,7 @@ impl ScreenshotGallery {
         if let Some(old) = preview.first_child() {
             preview.remove(&old);
         }
-        preview.append(&screenshot_frame(shot, None));
+        preview.append(&screenshot_frame(shot, None, false));
         self.selected.set(Some(index));
         stack.set_visible_child_name("preview");
         self.update_controls();
@@ -1921,12 +2042,25 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     }
     gallery.append(&header);
 
+    let single = shots.len() == 1;
     let previews = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let viewport = gtk::Viewport::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     viewport.set_scroll_to_focus(true);
-    viewport.set_child(Some(&previews));
+    if single {
+        let layout = adw::Clamp::builder()
+            .maximum_size(820)
+            .child(&previews)
+            .build();
+        viewport.set_child(Some(&layout));
+    } else {
+        viewport.set_child(Some(&previews));
+    }
     let strip = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .hscrollbar_policy(if single {
+            gtk::PolicyType::Never
+        } else {
+            gtk::PolicyType::Automatic
+        })
         .overlay_scrolling(false)
         .vscrollbar_policy(gtk::PolicyType::Never)
         .propagate_natural_height(true)
@@ -1944,7 +2078,9 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
         .iter()
         .map(|shot| {
             let button = gtk::Button::new();
-            previews.append(&screenshot_frame(shot, Some(&button)));
+            let frame = screenshot_frame(shot, Some(&button), single);
+            frame.set_hexpand(single);
+            previews.append(&frame);
             button
         })
         .collect::<Vec<_>>();
@@ -2011,7 +2147,7 @@ fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {
     gallery.add_controller(keys);
 }
 
-fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>) -> gtk::Box {
+fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>, single: bool) -> gtk::Box {
     const THUMBNAIL_HEIGHT: i32 = 260;
     let enlarged = thumbnail.is_none();
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -2033,7 +2169,11 @@ fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>) -> gtk::
         let width = (shot.aspect_ratio.unwrap_or(1.6) * f64::from(THUMBNAIL_HEIGHT))
             .round()
             .clamp(118.0, 540.0) as i32;
-        canvas.set_size_request(width, THUMBNAIL_HEIGHT);
+        if single {
+            canvas.set_height_request(392);
+        } else {
+            canvas.set_size_request(width, THUMBNAIL_HEIGHT);
+        }
         overlay.set_child(Some(&canvas));
         overlay.add_overlay(&picture);
         let zoom = gtk::Image::from_icon_name("view-fullscreen-symbolic");
@@ -2056,7 +2196,7 @@ fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>) -> gtk::
     }
     let caption = gtk::Label::new(Some(tr("Loading screenshots…")));
     caption.add_css_class("dim-label");
-    if enlarged {
+    if enlarged || single {
         caption.set_wrap(true);
     } else {
         caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -2064,7 +2204,7 @@ fn screenshot_frame(shot: &Screenshot, thumbnail: Option<&gtk::Button>) -> gtk::
         caption.set_tooltip_text((!shot.caption.is_empty()).then_some(shot.caption.as_str()));
     }
     frame.append(&caption);
-    let (url, fallback) = if enlarged && shot.large_url != shot.url {
+    let (url, fallback) = if (enlarged || single) && shot.large_url != shot.url {
         (shot.large_url.clone(), Some(shot.url.clone()))
     } else {
         (shot.url.clone(), None)
