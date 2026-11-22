@@ -1243,17 +1243,53 @@ fn install_scope_popover(
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.set_offset(-56, 0);
-    let options = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    let heading = home_label(tr("Who should this app be installed for?"), "heading");
-    heading.set_max_width_chars(28);
+    let options = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    options.set_margin_top(4);
+    options.set_margin_bottom(4);
+    options.set_margin_start(4);
+    options.set_margin_end(4);
+    let heading = home_label(tr("Install scope"), "heading");
+    heading.set_margin_start(4);
     options.append(&heading);
-    for (label, choice) in [tr("For my account"), tr("For the system")]
-        .into_iter()
-        .zip(&source.scopes)
-    {
-        let button = gtk::Button::with_label(label);
-        button.add_css_class("flat");
-        button.set_sensitive(choice.is_some());
+    let destinations = [
+        (
+            tr("For my account"),
+            "avatar-default-symbolic",
+            tr("Available only to your Linux account."),
+        ),
+        (
+            tr("For the system"),
+            "computer-symbolic",
+            tr("Available to everyone on this computer. May require authorization."),
+        ),
+    ];
+    for ((label, icon, description), choice) in destinations.into_iter().zip(&source.scopes) {
+        let available = choice.is_some();
+        let description = if available {
+            description
+        } else {
+            tr("Unavailable from this repository.")
+        };
+        let button = gtk::Button::new();
+        button.add_css_class("packlift-scope-option");
+        button.set_sensitive(available);
+        button.update_property(&[
+            gtk::accessible::Property::Label(label),
+            gtk::accessible::Property::Description(description),
+        ]);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let icon = gtk::Image::from_icon_name(icon);
+        icon.add_css_class("packlift-scope-icon");
+        icon.set_valign(gtk::Align::Center);
+        row.append(&icon);
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        text.set_hexpand(true);
+        text.append(&home_label(label, "heading"));
+        let subtitle = home_label(description, "dim-label");
+        subtitle.set_max_width_chars(29);
+        text.append(&subtitle);
+        row.append(&text);
+        button.set_child(Some(&row));
         if let Some((remote, candidate)) = choice.clone() {
             let window = window.clone();
             let popover = popover.downgrade();
@@ -1263,10 +1299,6 @@ fn install_scope_popover(
                     install_store_app(&window, remote.clone(), candidate.clone());
                 }
             });
-        } else {
-            button.set_tooltip_text(Some(tr(
-                "No repository offers this app for the selected scope.",
-            )));
         }
         options.append(&button);
     }
@@ -1280,7 +1312,8 @@ fn install_scope_popover(
             tr("Packlift will add Flathub to the selected scope if needed."),
             "dim-label",
         );
-        note.set_max_width_chars(34);
+        note.set_max_width_chars(32);
+        note.set_margin_start(4);
         options.append(&note);
     }
     popover.set_child(Some(&options));

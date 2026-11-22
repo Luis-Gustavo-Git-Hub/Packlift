@@ -66,6 +66,9 @@ fn main() -> glib::ExitCode {
                  .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; box-shadow: 0 4px 18px alpha(black, 0.24); }
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.18), alpha(@accent_bg_color, 0.04)); border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
+                 button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
+                 button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
+                 .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
                  .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; background-image: linear-gradient(125deg, alpha(@accent_bg_color, 0.12), transparent); border: 1px solid alpha(@borders, 0.5); }
                  .packlift-store-fact > button { padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
                  .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }
@@ -1551,19 +1554,34 @@ where
     }
     window.add_css_class("packlift-running-job");
     let previous = PageReturn::capture(window);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    body.add_css_class("packlift-progress");
-    body.set_halign(gtk::Align::Center);
-    body.set_valign(gtk::Align::Center);
-    body.set_size_request(280, -1);
-    body.set_margin_top(20);
-    body.set_margin_bottom(20);
+    let store_toolbar = if window.widget_name() == "packlift-store-details" {
+        window.content().and_downcast::<adw::ToolbarView>()
+    } else {
+        None
+    };
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
     body.set_margin_start(20);
     body.set_margin_end(20);
+    if store_toolbar.is_some() {
+        body.set_margin_top(8);
+        body.set_margin_bottom(10);
+    } else {
+        body.add_css_class("packlift-progress");
+        body.set_halign(gtk::Align::Center);
+        body.set_valign(gtk::Align::Center);
+        body.set_size_request(280, -1);
+        body.set_margin_top(20);
+        body.set_margin_bottom(20);
+    }
     let heading = gtk::Label::new(Some(title));
     heading.set_wrap(true);
     heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    heading.add_css_class("title-2");
+    if store_toolbar.is_some() {
+        heading.add_css_class("heading");
+        heading.set_xalign(0.0);
+    } else {
+        heading.add_css_class("title-2");
+    }
     body.append(&heading);
     let stage = gtk::Label::new(Some(tr("Working…")));
     stage.set_wrap(true);
@@ -1583,7 +1601,15 @@ where
     progress.set_show_text(false);
     progress.set_fraction(0.08);
     body.append(&progress);
-    window.set_content(Some(&body));
+    let store_progress = store_toolbar.map(|toolbar| {
+        let footer = adw::Clamp::builder().maximum_size(560).child(&body).build();
+        toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
+        toolbar.add_bottom_bar(&footer);
+        (toolbar, footer)
+    });
+    if store_progress.is_none() {
+        window.set_content(Some(&body));
+    }
     stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
 
     enum JobEvent {
@@ -1628,9 +1654,19 @@ where
                     }
                 }
                 progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
+                if let Some((toolbar, footer)) = &store_progress {
+                    toolbar.remove(footer);
+                }
                 if let Some(window) = weak_window.upgrade() {
                     window.remove_css_class("packlift-running-job");
-                    if let Some(page) = &previous {
+                    let left_store_page = store_progress.as_ref().is_some_and(|(toolbar, _)| {
+                        window.content().as_ref() != Some(toolbar.upcast_ref())
+                    });
+                    if let Some(page) = previous.as_ref().filter(|_| !left_store_page) {
+                        if store_progress.is_some() {
+                            // Remap the details to refresh its installed state after the job.
+                            window.set_content(None::<&gtk::Widget>);
+                        }
                         page.restore(&window);
                     }
                     match result {
@@ -1662,14 +1698,19 @@ where
                                 }
                             }
                             if record["method"] == "flatpak" {
-                                if window.widget_name() != "packlift-store-details" {
+                                let page = window.widget_name();
+                                if page == "packlift-library"
+                                    || (!left_store_page && page != "packlift-store-details")
+                                {
                                     render_home(&app, &window);
                                 }
                             } else {
                                 show_success(&app, &window, &record);
                             }
                         }
-                        Ok(None) if window.widget_name() == "packlift-store-details" => {}
+                        Ok(None)
+                            if store_progress.is_some()
+                                && window.widget_name() != "packlift-library" => {}
                         Ok(None) => render_home(&app, &window),
                     }
                 }
