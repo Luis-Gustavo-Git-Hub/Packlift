@@ -265,15 +265,10 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             ))]);
             let filters = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             filters.append(&search);
-            let scope = gtk::DropDown::from_strings(&[
-                tr("All apps"),
-                tr("Flatpak apps"),
-                tr("Other apps"),
-            ]);
+            let labels: Vec<_> = LIBRARY_FILTERS.iter().map(|(label, _)| tr(label)).collect();
+            let scope = gtk::DropDown::from_strings(&labels);
             scope.update_property(&[gtk::accessible::Property::Label(tr("Filter by app type"))]);
-            if records.iter().any(|record| record["method"] == "flatpak") {
-                filters.append(&scope);
-            }
+            filters.append(&scope);
             library.append(&filters);
 
             let list = gtk::ListBox::new();
@@ -291,27 +286,26 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                     )
                     .to_lowercase();
                     list.append(&row);
-                    (row, searchable, record["method"] == "flatpak")
+                    (row, searchable, record)
                 })
                 .collect();
             library.append(&list);
             let empty = library_status(
                 "system-search-symbolic",
                 tr("No matches"),
-                tr("Try a different name or runtime."),
+                tr("Try a different search or filter."),
             );
             empty.set_visible(false);
             library.append(&empty);
-            let update_filter = Rc::new(move |query: &str, scope| {
+            let update_filter = Rc::new(move |query: &str, scope: u32| {
                 let query = query.trim().to_lowercase();
+                let filter = LIBRARY_FILTERS
+                    .get(scope as usize)
+                    .unwrap_or(&LIBRARY_FILTERS[0])
+                    .1;
                 let mut matches = false;
-                for (row, searchable, flatpak) in &rows {
-                    let visible = searchable.contains(&query)
-                        && match scope {
-                            1 => *flatpak,
-                            2 => !*flatpak,
-                            _ => true,
-                        };
+                for (row, searchable, record) in &rows {
+                    let visible = searchable.contains(&query) && filter(record);
                     row.set_visible(visible);
                     matches |= visible;
                 }
@@ -353,6 +347,36 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     toolbar.set_content(Some(&scroll));
     window.set_content(Some(&toolbar));
 }
+
+type LibraryFilter = (&'static str, fn(&Value) -> bool);
+
+const LIBRARY_FILTERS: &[LibraryFilter] = &[
+    ("All apps", |_| true),
+    ("Flatpak apps", |app| app["method"] == "flatpak"),
+    ("User Flatpaks", |app| {
+        app["method"] == "flatpak" && app["flatpak_scope"].as_str().unwrap_or("user") == "user"
+    }),
+    ("System Flatpaks", |app| {
+        app["method"] == "flatpak"
+            && app["flatpak_scope"]
+                .as_str()
+                .is_some_and(|scope| scope != "user")
+    }),
+    ("Windows apps", |app| app["method"] == "wine"),
+    ("Windows game shortcuts", |app| {
+        app["method"] == "wine" && app["game_shortcut"] == true
+    }),
+    ("Wine", |app| {
+        app["method"] == "wine" && app["runtime"] != "proton"
+    }),
+    ("Proton", |app| {
+        app["method"] == "wine" && app["runtime"] == "proton"
+    }),
+    ("Local Linux apps", |app| app["method"] == "local"),
+    ("Native Linux packages", |app| app["method"] == "native"),
+    ("Toolbx apps", |app| app["method"] == "toolbox"),
+    ("Other apps", |app| app["method"] != "flatpak"),
+];
 
 fn home_label(text: &str, class: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
@@ -442,13 +466,7 @@ fn library_row(
                 .trim_start_matches("flatapk-")
         ),
         "native" => tr("Installed on this system").into(),
-        "flatpak" => match record["flatpak_scope"].as_str() {
-            Some("system") => tr("System Flatpak").into(),
-            Some(scope) if scope.starts_with("system (") => {
-                format!("{} · {}", tr("System Flatpak"), &scope["system ".len()..])
-            }
-            _ => tr("Flatpak for your account").into(),
-        },
+        "flatpak" => flatpak_scope_label(record),
         _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").into(),
         _ => tr("Local Linux application").into(),
     };
@@ -513,7 +531,6 @@ fn library_row(
     );
     menu.set_valign(gtk::Align::Center);
     if method == "flatpak" {
-        let external = record["external_flatpak"] == true;
         let parent = window.downgrade();
         let record = record.clone();
         add_menu_item(&popover, &actions, tr("Permissions…"), move || {
@@ -521,10 +538,6 @@ fn library_row(
                 flatpak_ui::show(&window, &record);
             }
         });
-        if external {
-            row.add_suffix(&menu);
-            return row;
-        }
     }
     if method == "wine" {
         let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
@@ -574,15 +587,20 @@ fn library_row(
     let (remove, detail) = match (game, method) {
         (true, _) => (
             tr("Remove shortcut"),
-            tr("The game files will stay in their original folder."),
+            tr("The game files will stay in their original folder.").into(),
+        ),
+        (_, "flatpak") => (
+            tr("Uninstall"),
+            tr("The app’s data will be kept when removing this installation ({scope}).")
+                .replace("{scope}", &flatpak_scope_label(record)),
         ),
         (_, "wine") => (
             tr("Remove from Packlift"),
-            tr("This removes the program's library entry, shortcut and managed installation files."),
+            tr("This removes the program's library entry, shortcut and managed installation files.").into(),
         ),
         _ => (
             tr("Uninstall"),
-            tr("This removes the installed program and its shortcuts."),
+            tr("This removes the installed program and its shortcuts.").into(),
         ),
     };
     let name = name.to_owned();
@@ -598,7 +616,7 @@ fn library_row(
         confirm_library_action(
             &window,
             &format!("{remove}: {name}?"),
-            detail,
+            &detail,
             remove,
             true,
             move |window| {
@@ -618,6 +636,16 @@ fn library_row(
     });
     row.add_suffix(&menu);
     row
+}
+
+fn flatpak_scope_label(record: &Value) -> String {
+    match record["flatpak_scope"].as_str() {
+        Some("system") => tr("System Flatpak").into(),
+        Some(scope) if scope.starts_with("system (") => {
+            format!("{} · {}", tr("System Flatpak"), &scope["system ".len()..])
+        }
+        _ => tr("Flatpak for your account").into(),
+    }
 }
 
 fn confirm_library_action(

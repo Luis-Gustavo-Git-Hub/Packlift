@@ -218,3 +218,12 @@ All apps|Todos os apps|Todas las aplicaciones|Все приложения|所有
 Flatpak apps|Apps Flatpak|Aplicaciones Flatpak|Приложения Flatpak|Flatpak 应用
 Other apps|Outros apps|Otras aplicaciones|Другие приложения|其他应用
 Filter by app type|Filtrar por tipo de app|Filtrar por tipo de aplicación|Фильтр по типу приложения|按应用类型筛选
+Try a different search or filter.|Tente outro termo de busca ou filtro.|Prueba otra búsqueda u otro filtro.|Попробуйте другой запрос или фильтр.|请尝试其他搜索词或筛选条件。
+User Flatpaks|Flatpaks da conta|Flatpaks de tu cuenta|Пользовательские Flatpak|用户 Flatpak
+System Flatpaks|Flatpaks do sistema|Flatpaks del sistema|Системные Flatpak|系统 Flatpak
+Windows apps|Apps Windows|Aplicaciones de Windows|Приложения Windows|Windows 应用
+Windows game shortcuts|Atalhos de jogos Windows|Accesos directos a juegos de Windows|Ярлыки игр Windows|Windows 游戏快捷方式
+Local Linux apps|Apps Linux locais|Aplicaciones locales de Linux|Локальные приложения Linux|本地 Linux 应用
+Native Linux packages|Pacotes nativos Linux|Paquetes nativos de Linux|Системные пакеты Linux|Linux 原生软件包
+Toolbx apps|Apps do Toolbx|Aplicaciones de Toolbx|Приложения Toolbx|Toolbx 应用
+The app’s data will be kept when removing this installation ({scope}).|Os dados do app serão mantidos ao remover esta instalação ({scope}).|Los datos de la aplicación se conservarán al eliminar esta instalación ({scope}).|При удалении этой установки ({scope}) данные приложения сохранятся.|卸载此安装（{scope}）时会保留应用数据。

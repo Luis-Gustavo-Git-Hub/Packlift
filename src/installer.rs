@@ -720,21 +720,24 @@ impl Installer {
 
     fn flatpak_apps(&self) -> Result<BTreeMap<String, FlatpakApp>> {
         Ok(self
-            .installed_flatpaks(true)?
+            .installed_flatpaks(Some("--user"))?
             .into_iter()
             .map(|(_, reference, app)| (reference, app))
             .collect())
     }
 
-    fn installed_flatpaks(&self, user_only: bool) -> Result<Vec<(String, String, FlatpakApp)>> {
+    fn installed_flatpaks(
+        &self,
+        installation: Option<&str>,
+    ) -> Result<Vec<(String, String, FlatpakApp)>> {
         let mut args = vec![
             "flatpak".into(),
             "list".into(),
             "--app".into(),
             "--columns=installation,ref,active:full,name,version".into(),
         ];
-        if user_only {
-            args.push("--user".into());
+        if let Some(installation) = installation {
+            args.push(installation.into());
         }
         let output = self.runner.capture(&args, false)?;
         Ok(flatpak_apps_from_list(&output))
@@ -746,8 +749,8 @@ impl Installer {
             return Ok(records);
         }
         let Ok(installed) = self
-            .installed_flatpaks(false)
-            .or_else(|_| self.installed_flatpaks(true))
+            .installed_flatpaks(None)
+            .or_else(|_| self.installed_flatpaks(Some("--user")))
         else {
             return Ok(records);
         };
@@ -2079,13 +2082,18 @@ fi"#
                         "The Flatpak record has no valid application reference.".into(),
                     )
                 })?;
-            if self.flatpak_apps()?.contains_key(target) {
+            let scope = app["flatpak_scope"].as_str().unwrap_or("user");
+            let installation = crate::flatpak::installation_flag(scope)
+                .ok_or_else(|| PackliftError::Message("Unknown Flatpak installation.".into()))?;
+            if self.installed_flatpaks(Some(&installation))?.iter().any(
+                |(installed_scope, reference, _)| installed_scope == scope && reference == target,
+            ) {
                 self.runner.run(
                     &[
                         "flatpak".into(),
                         "uninstall".into(),
-                        "--user".into(),
-                        "--noninteractive".into(),
+                        installation,
+                        "--assumeyes".into(),
                         "--".into(),
                         format!("app/{target}"),
                     ],
