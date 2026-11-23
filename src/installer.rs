@@ -146,7 +146,7 @@ impl Installer {
             .write(&format!("Analyzing package: {}", path.display()));
         let (kind, architecture) = detect(path)?;
         let sandbox_only = !host_access_available();
-        if sandbox_only && !matches!(kind.as_str(), "appimage" | "tar") {
+        if sandbox_only && !matches!(kind.as_str(), "appimage" | "tar" | "binary") {
             return Err(PackliftError::HostAccessRequired);
         }
         if sandbox_only && kind == "appimage" && appimage_offset(path)?.is_none() {
@@ -154,10 +154,15 @@ impl Installer {
                 "Sandbox mode requires a type 2 AppImage.".into(),
             ));
         }
+        let resolved_path = if path.is_dir() {
+            find_dir_binary(path).unwrap_or_else(|| path.to_owned())
+        } else {
+            path.to_owned()
+        };
         let mut package = Package {
-            path: path.to_owned(),
+            path: resolved_path.clone(),
             kind: kind.clone(),
-            name: path
+            name: resolved_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Program")
@@ -166,7 +171,7 @@ impl Installer {
             signature: "unknown".into(),
             ..Default::default()
         };
-        package.digest = sha256(path)?;
+        package.digest = sha256(&resolved_path)?;
         match kind.as_str() {
             "deb" => self.inspect_deb(&mut package)?,
             "rpm" => self.inspect_rpm(&mut package)?,
@@ -175,6 +180,7 @@ impl Installer {
             "exe" | "setup" => self.inspect_pe_icon(&mut package)?,
             "appimage" => self.inspect_appimage(&mut package)?,
             "tar" => self.inspect_archive(&mut package)?,
+            "binary" => self.inspect_binary(&mut package)?,
             #[cfg(feature = "gui")]
             "flatpak" => self.inspect_flatpak_bundle(&mut package)?,
             "flatpakref" => inspect_flatpak_ref(&mut package)?,
@@ -455,6 +461,52 @@ impl Installer {
         Ok(())
     }
 
+    fn inspect_binary(&self, package: &mut Package) -> Result<()> {
+        let parent = package.path.parent().unwrap_or(&package.path);
+        let bin_stem = package
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Program");
+        let mut chars = bin_stem.chars();
+        package.name = match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => "Program".into(),
+        };
+        package.identifier = package.name.to_ascii_lowercase().replace(' ', "-");
+        package.desktop_id = format!("{}.desktop", package.identifier);
+
+        for version_file in ["version", "VERSION", "version.txt", "VERSION.txt"] {
+            let vp = parent.join(version_file);
+            if vp.is_file() {
+                if let Ok(content) = fs::read_to_string(&vp) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() && trimmed.len() <= 32 {
+                        package.version = trimmed.to_owned();
+                        break;
+                    }
+                }
+            }
+        }
+
+        let candidates = [
+            parent.join(format!("{}.png", bin_stem)),
+            parent.join(format!("{}.svg", bin_stem)),
+            parent.join("icon.png"),
+            parent.join("icon.svg"),
+            parent.join("logo.png"),
+            parent.join("resources/app/icon.png"),
+            parent.join("resources/icon.png"),
+        ];
+        for candidate in candidates {
+            if candidate.is_file() {
+                package.icon = Some(candidate);
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn inspect_appimage(&self, package: &mut Package) -> Result<()> {
         let Some(offset) = appimage_offset(&package.path)? else {
             return Ok(());
@@ -694,7 +746,7 @@ impl Installer {
                 .unwrap_or_default();
             crate::core::host_info(&release, &machine, self.immutable_host()?)
         } else {
-            if !matches!(package.kind.as_str(), "appimage" | "tar") {
+            if !matches!(package.kind.as_str(), "appimage" | "tar" | "binary") {
                 return Err(PackliftError::HostAccessRequired);
             }
             crate::core::host_info("", std::env::consts::ARCH, false)
@@ -1487,16 +1539,68 @@ fi"#
                 ],
                 false,
             )
+        } else if package.kind == "binary" {
+            let payload = directory.join("payload");
+            fs::create_dir_all(&payload)?;
+            let parent = package.path.parent().unwrap_or(&package.path);
+            let bin_name = package
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("program");
+
+            let has_siblings = fs::read_dir(parent)
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        e.file_name() != package.path.file_name().unwrap_or_default()
+                    })
+                })
+                .unwrap_or(false);
+
+            if has_siblings {
+                copy_dir_all(parent, &payload)?;
+            } else {
+                fs::copy(&package.path, payload.join(bin_name))?;
+            }
+
+            let target = payload.join(bin_name);
+            make_executables_in_payload(&payload);
+
+            (
+                vec![
+                    "env".into(),
+                    "-C".into(),
+                    payload.to_string_lossy().into_owned(),
+                    target.to_string_lossy().into_owned(),
+                ],
+                package.terminal,
+            )
         } else {
             return Err(PackliftError::Message(
                 "This local package format is not available in the Rust build yet.".into(),
             ));
         };
-        let icon = package
-            .icon
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "application-x-executable".into());
+        let icon = if let Some(ref icon_path) = package.icon {
+            let ext = icon_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("png");
+            let target_icon = directory.join(format!("icon.{}", ext));
+            if fs::copy(icon_path, &target_icon).is_ok() {
+                target_icon.to_string_lossy().into_owned()
+            } else {
+                icon_path.to_string_lossy().into_owned()
+            }
+        } else if package.kind == "binary" {
+            package
+                .path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("application-x-executable")
+                .to_ascii_lowercase()
+        } else {
+            "application-x-executable".into()
+        };
         let export = if sandbox_only {
             self.runner
                 .write("Registering the application in the sandbox library");
@@ -4167,6 +4271,79 @@ fn collect_exes(
     Ok(())
 }
 
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else if file_type.is_symlink() {
+            if let Ok(link) = fs::read_link(entry.path()) {
+                let _ = std::os::unix::fs::symlink(link, &target);
+            }
+        } else {
+            fs::copy(entry.path(), &target)?;
+            if let Ok(meta) = entry.metadata() {
+                let _ = fs::set_permissions(
+                    &target,
+                    fs::Permissions::from_mode(meta.permissions().mode()),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn make_executables_in_payload(payload: &Path) {
+    if let Ok(entries) = fs::read_dir(payload) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Ok(mut f) = fs::File::open(&p) {
+                    let mut h = [0u8; 4];
+                    if let Ok(4) = f.read(&mut h) {
+                        if &h == b"\x7fELF" {
+                            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_dir_binary(dir: &Path) -> Option<PathBuf> {
+    let dir_name = dir.file_name()?.to_str()?;
+    let entries = fs::read_dir(dir).ok()?;
+    let mut fallback = None;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file() {
+            if let Ok(mut f) = fs::File::open(&p) {
+                let mut h = [0u8; 4];
+                if let Ok(4) = f.read(&mut h) {
+                    if &h == b"\x7fELF" {
+                        let fname = p.file_name()?.to_str()?;
+                        if fname.eq_ignore_ascii_case(dir_name)
+                            || dir_name
+                                .to_ascii_lowercase()
+                                .starts_with(&fname.to_ascii_lowercase())
+                        {
+                            return Some(p);
+                        }
+                        if fallback.is_none() {
+                            fallback = Some(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fallback
+}
+
 #[cfg(test)]
 mod tests {
     use super::{desktop_exec, ico_to_png, windows_desktop_command};
@@ -4560,5 +4737,56 @@ mod tests {
 
         let png = ico_to_png(&icon).expect("supported BMP icon should convert");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn local_binary_payload_registers_and_creates_desktop_shortcut() {
+        use super::{fs, Installer, Package};
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!(
+            "packlift-binary-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let app_dir = root.join("App-x64");
+        fs::create_dir_all(&app_dir).unwrap();
+        let bin_path = app_dir.join("app");
+        fs::write(
+            &bin_path,
+            b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00>\x00",
+        )
+        .unwrap();
+
+        let applications = root.join("applications");
+        let installer = Installer::new(
+            Arc::new(|_| {}),
+            Some(root.join("data")),
+            Some(applications.clone()),
+        )
+        .unwrap();
+        let directory = installer.data.join("installed/app");
+        let package = Package {
+            path: bin_path,
+            kind: "binary".into(),
+            name: "App".into(),
+            ..Package::default()
+        };
+        let record = installer
+            .install_local_payload(&package, std::env::consts::ARCH, "app", &directory, false)
+            .unwrap();
+
+        assert!(record["exports"][0]["desktop"].is_string());
+        assert!(applications.exists());
+        assert_eq!(installer.registry.apps().unwrap().len(), 1);
+        installer.uninstall(&record).unwrap();
+        assert!(!directory.exists());
+        assert!(installer.registry.apps().unwrap().is_empty());
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

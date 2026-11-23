@@ -149,6 +149,40 @@ pub fn tar_header(header: &[u8]) -> bool {
 }
 
 pub fn detect(path: &Path) -> Result<(String, String)> {
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let mut fallback_arch = None;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Ok(mut f) = File::open(&p) {
+                        let mut hdr = [0u8; 64];
+                        if let Ok(n) = f.read(&mut hdr) {
+                            if n >= 4 && &hdr[..4] == b"\x7fELF" {
+                                let arch = elf_architecture(&hdr[..n]);
+                                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                if fname.eq_ignore_ascii_case(dir_name)
+                                    || dir_name.to_ascii_lowercase().starts_with(&fname.to_ascii_lowercase())
+                                {
+                                    return Ok(("binary".into(), arch));
+                                }
+                                if fallback_arch.is_none() {
+                                    fallback_arch = Some(arch);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(arch) = fallback_arch {
+                return Ok(("binary".into(), arch));
+            }
+        }
+        return Err(PackliftError::Message(
+            "No compatible executable found in directory.".into(),
+        ));
+    }
     let mut file = File::open(path)?;
     let mut header = vec![0; 512];
     let count = file.read(&mut header)?;
@@ -193,12 +227,14 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
     if tar_header(&header) {
         return Ok(("tar".into(), String::new()));
     }
-    if header.starts_with(b"\x7fELF")
-        && header
+    if header.starts_with(b"\x7fELF") {
+        if header
             .get(8..11)
             .is_some_and(|v| v == b"AI\x01" || v == b"AI\x02")
-    {
-        return Ok(("appimage".into(), elf_architecture(&header)));
+        {
+            return Ok(("appimage".into(), elf_architecture(&header)));
+        }
+        return Ok(("binary".into(), elf_architecture(&header)));
     }
     if header.starts_with(b"MZ") {
         return Ok((
