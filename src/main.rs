@@ -74,11 +74,6 @@ fn main() -> glib::ExitCode {
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
-                 .packlift-store-uninstall { padding: 12px 14px; border-radius: 12px; background: @card_bg_color; }
-                 .packlift-store-uninstall { border: 1px solid alpha(@destructive_color, 0.32); }
-                 .packlift-uninstall-icon { padding: 8px; color: @destructive_color; background: alpha(@destructive_color, 0.13); border-radius: 10px; }
-                 .packlift-uninstall-data { padding: 8px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.06); }
-                 .packlift-uninstall-data.deleting-data { background: alpha(@destructive_color, 0.10); }
                  .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; border: 1px solid alpha(@borders, 0.5); }
                  .packlift-store-fact > button { min-height: 4.6em; padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
                  .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }

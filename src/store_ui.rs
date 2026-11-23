@@ -1071,16 +1071,16 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     open.add_css_class("pill");
     installed_actions.append(&open);
 
-    let uninstall = gtk::Button::with_label(tr("Uninstall"));
+    let uninstall = gtk::MenuButton::builder()
+        .label(tr("Uninstall"))
+        .direction(gtk::ArrowType::Down)
+        .build();
     uninstall.set_valign(gtk::Align::Center);
     uninstall.add_css_class("destructive-action");
     uninstall.add_css_class("pill");
     installed_actions.append(&uninstall);
     actions.append(&installed_actions);
     hero.append(&identity);
-    let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    install_options.set_visible(false);
-    hero.append(&install_options);
     let progress = gtk::Box::new(gtk::Orientation::Vertical, 0);
     progress.set_visible(false);
     progress.set_width_request(128);
@@ -1185,6 +1185,10 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
             }
         }
     });
+    let remove = uninstall.downgrade();
+    let owner = window.downgrade();
+    let job = progress.downgrade();
+    let name = app.name.clone();
     let installed_state = installed.clone();
     let controls = install_controls.downgrade();
     let refresh_button = installed_actions.downgrade();
@@ -1193,6 +1197,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     let refresh_installation = move || {
         let id = app_id.clone();
         let open_button = open_button.clone();
+        let (remove, owner, job, name) = (remove.clone(), owner.clone(), job.clone(), name.clone());
         let state = installed_state.clone();
         let (controls, refresh_button) = (controls.clone(), refresh_button.clone());
         let (Some(install_controls), Some(button)) = (controls.upgrade(), refresh_button.upgrade())
@@ -1210,6 +1215,15 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
                 };
                 if let Ok(records) = result {
                     let is_installed = !records.is_empty();
+                    if let Some(remove) = remove.upgrade() {
+                        remove.set_popover(
+                            is_installed
+                                .then(|| {
+                                    uninstall_scope_popover(&owner, &job, &name, records.clone())
+                                })
+                                .as_ref(),
+                        );
+                    }
                     *state.borrow_mut() = records;
                     controls.set_visible(!is_installed);
                     button.set_visible(is_installed);
@@ -1251,25 +1265,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
             refresh_installation();
         }
     });
-    let dialog = window.downgrade();
-    let options = install_options.downgrade();
-    let job = progress.downgrade();
-    let name = app.name.clone();
-    uninstall.connect_clicked(move |button| {
-        if let (Some(window), Some(options), Some(progress)) =
-            (dialog.upgrade(), options.upgrade(), job.upgrade())
-        {
-            choose_uninstall_destination(
-                &window,
-                &progress,
-                &options,
-                button,
-                &name,
-                installed.borrow().clone(),
-            );
-        }
-    });
-
     let preferred = remote.clone();
     let parent = window.downgrade();
     let job = progress.downgrade();
@@ -2276,26 +2271,8 @@ fn install_scope_popover(
         } else {
             tr("Unavailable from this repository.")
         };
-        let button = gtk::Button::new();
-        button.add_css_class("packlift-scope-option");
+        let button = scope_option(label, icon, description);
         button.set_sensitive(available);
-        button.update_property(&[
-            gtk::accessible::Property::Label(label),
-            gtk::accessible::Property::Description(description),
-        ]);
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let icon = gtk::Image::from_icon_name(icon);
-        icon.add_css_class("packlift-scope-icon");
-        icon.set_valign(gtk::Align::Center);
-        row.append(&icon);
-        let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        text.set_hexpand(true);
-        text.append(&home_label(label, "heading"));
-        let subtitle = home_label(description, "dim-label");
-        subtitle.set_max_width_chars(29);
-        text.append(&subtitle);
-        row.append(&text);
-        button.set_child(Some(&row));
         if let Some((remote, candidate)) = choice.clone() {
             let install_app = install_app.clone();
             let popover = popover.downgrade();
@@ -2366,55 +2343,46 @@ fn install_store_app(
     );
 }
 
-fn dismiss_store_options(
-    container: &gtk::Box,
-    controls: &adw::Clamp,
-    open_options: &gtk::Button,
-) -> Rc<impl Fn()> {
-    Rc::new({
-        let container = container.downgrade();
-        let controls = controls.downgrade();
-        let open_options = open_options.downgrade();
-        move || {
-            if let (Some(container), Some(controls)) = (container.upgrade(), controls.upgrade()) {
-                container.remove(&controls);
-                container.set_visible(false);
-            }
-            if let Some(button) = open_options.upgrade() {
-                button.set_visible(true);
-                button.grab_focus();
-            }
-        }
-    })
+fn scope_option(label: &str, icon: &str, description: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("packlift-scope-option");
+    button.update_property(&[
+        gtk::accessible::Property::Label(label),
+        gtk::accessible::Property::Description(description),
+    ]);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let icon = gtk::Image::from_icon_name(icon);
+    icon.add_css_class("packlift-scope-icon");
+    icon.set_valign(gtk::Align::Center);
+    row.append(&icon);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    text.append(&home_label(label, "heading"));
+    let subtitle = home_label(description, "dim-label");
+    subtitle.set_max_width_chars(29);
+    text.append(&subtitle);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button
 }
 
-fn choose_uninstall_destination(
-    window: &adw::ApplicationWindow,
-    progress: &gtk::Box,
-    container: &gtk::Box,
-    open_options: &gtk::Button,
+fn uninstall_scope_popover(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    progress: &glib::WeakRef<gtk::Box>,
     app_name: &str,
     records: Vec<Value>,
-) {
-    if records.is_empty() || window.has_css_class("packlift-running-job") {
-        return;
-    }
-
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    card.add_css_class("packlift-store-uninstall");
-    let layout = adw::Clamp::builder().maximum_size(560).child(&card).build();
-
-    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let trash = gtk::Image::from_icon_name("user-trash-symbolic");
-    trash.set_pixel_size(20);
-    trash.set_valign(gtk::Align::Center);
-    trash.add_css_class("packlift-uninstall-icon");
-    heading.append(&trash);
-    let title = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let question = tr("Uninstall {app}?").replace("{app}", app_name);
-    title.append(&home_label(&question, "title-3"));
-    heading.append(&title);
-    card.append(&heading);
+) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.set_offset(-56, 0);
+    let options = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    options.set_margin_top(4);
+    options.set_margin_bottom(4);
+    options.set_margin_start(4);
+    options.set_margin_end(4);
+    let title = tr("Uninstall {app}?").replace("{app}", app_name);
+    let heading = home_label(&title, "heading");
+    heading.set_max_width_chars(32);
+    options.append(&heading);
 
     let labels = records
         .iter()
@@ -2430,112 +2398,61 @@ fn choose_uninstall_destination(
         })
         .collect::<Vec<_>>();
     let scope = if labels.len() == 1 {
-        title.append(&home_label(&labels[0], "dim-label"));
+        let label = home_label(&labels[0], "dim-label");
+        label.set_max_width_chars(32);
+        options.append(&label);
         None
     } else {
-        let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
-        let scope = gtk::DropDown::from_strings(&labels);
-        card.append(&labeled_control(tr("Installation to remove"), &scope));
+        let strings = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        let scope = gtk::DropDown::from_strings(&strings);
+        options.append(&labeled_control(tr("Installation to remove"), &scope));
         Some(scope)
     };
 
-    let (delete_option, delete_data) = crate::flatpak_delete_data_option();
-    delete_option.add_css_class("packlift-uninstall-data");
-    card.append(&delete_option);
-
-    let dismiss = dismiss_store_options(container, &layout, open_options);
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    let cancel = text_button(tr("Cancel"));
-    let close = dismiss.clone();
-    cancel.connect_clicked(move |_| close());
-    actions.append(&cancel);
-    let uninstall = gtk::Button::new();
-    uninstall.add_css_class("destructive-action");
-    uninstall.add_css_class("pill");
-    let confirm_label = home_label(tr("Uninstall"), "");
-    confirm_label.set_xalign(0.5);
-    confirm_label.set_justify(gtk::Justification::Center);
-    uninstall.set_child(Some(&confirm_label));
-    actions.append(&uninstall);
-    card.append(&actions);
-    let data_row = delete_option.downgrade();
-    delete_data.connect_toggled(move |check| {
-        let deletes_data = check.is_active();
-        confirm_label.set_text(if deletes_data {
-            tr("Uninstall and delete data")
-        } else {
-            tr("Uninstall")
-        });
-        if let Some(row) = data_row.upgrade() {
-            if deletes_data {
-                row.add_css_class("deleting-data");
-            } else {
-                row.remove_css_class("deleting-data");
-            }
+    let records = Rc::new(records);
+    for (delete_data, icon, label, description) in [
+        (false, "folder-symbolic", tr("Keep app data"), tr("Keep saved data and settings for a future installation.")),
+        (true, "user-trash-symbolic", tr("Delete app data"), tr("This permanently deletes saved data and settings for this app in your account, including data shared with other installations of the same app.")),
+    ] {
+        let button = scope_option(label, icon, description);
+        if delete_data {
+            button.add_css_class("destructive-action");
         }
-    });
-
-    let keys = gtk::EventControllerKey::new();
-    let close = dismiss.clone();
-    keys.connect_key_pressed(move |_, key, _, _| {
-        if key == gtk::gdk::Key::Escape {
-            close();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    card.add_controller(keys);
-
-    let parent = window.downgrade();
-    let job = progress.downgrade();
-    let choice = scope.as_ref().map(|scope| scope.downgrade());
-    let delete_data = delete_data.downgrade();
-    uninstall.connect_clicked(move |_| {
-        let (Some(window), Some(progress)) = (parent.upgrade(), job.upgrade()) else {
-            return;
-        };
-        let index = if let Some(choice) = &choice {
-            let Some(scope) = choice.upgrade() else {
-                return;
-            };
-            scope.selected()
-        } else {
-            0
-        };
-        let Some(record) = records.get(index as usize).cloned() else {
-            return;
-        };
-        let Some(application) = window.application().and_downcast::<adw::Application>() else {
-            return;
-        };
-        let delete_data = delete_data.upgrade().is_some_and(|check| check.is_active());
-        dismiss();
-        run_job_with_progress(
-            &application,
-            &window,
-            tr("Removing from your library"),
-            Some(&progress),
-            move |log| {
-                let manager = crate::installer_with_output(log)?;
-                if delete_data {
-                    manager.uninstall_removing_data(&record)?;
-                } else {
-                    manager.uninstall(&record)?;
-                }
-                Ok(None)
-            },
+        let (window, progress, popover, records) = (
+            window.clone(), progress.clone(), popover.downgrade(), records.clone(),
         );
-    });
-    container.append(&layout);
-    container.set_visible(true);
-    open_options.set_visible(false);
-    if let Some(scope) = scope {
-        scope.grab_focus();
-    } else {
-        cancel.grab_focus();
+        let scope = scope.as_ref().map(ObjectExt::downgrade);
+        button.connect_clicked(move |_| {
+            let (Some(window), Some(progress), Some(popover)) =
+                (window.upgrade(), progress.upgrade(), popover.upgrade())
+            else { return; };
+            let index = if let Some(scope) = &scope {
+                let Some(scope) = scope.upgrade() else { return; };
+                scope.selected() as usize
+            } else { 0 };
+            let Some(record) = records.get(index).cloned() else { return; };
+            let Some(application) = window.application().and_downcast::<adw::Application>() else { return; };
+            popover.popdown();
+            run_job_with_progress(
+                &application,
+                &window,
+                tr("Removing from your library"),
+                Some(&progress),
+                move |log| {
+                    let manager = crate::installer_with_output(log)?;
+                    if delete_data {
+                        manager.uninstall_removing_data(&record)?;
+                    } else {
+                        manager.uninstall(&record)?;
+                    }
+                    Ok(None)
+                },
+            );
+        });
+        options.append(&button);
     }
+    popover.set_child(Some(&options));
+    popover
 }
 
 fn bind_gallery(gallery: &gtk::Box, shots: Vec<Screenshot>) {

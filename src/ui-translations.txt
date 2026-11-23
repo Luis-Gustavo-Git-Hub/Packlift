@@ -321,3 +321,5 @@ Game tools|Ferramentas para jogos|Herramientas para juegos|Игровые инс
 Developer Tools|Ferramentas de desenvolvimento|Herramientas de desarrollo|Инструменты разработчика|开发工具
 More|Mais|Más|Ещё|更多
 More in {category}|Mais em {category}|Más en {category}|Ещё в категории «{category}»|查看更多：{category}
+Keep app data|Manter dados do app|Conservar los datos de la aplicación|Сохранить данные приложения|保留应用数据
+Keep saved data and settings for a future installation.|Preserva os dados salvos e as configurações para uma instalação futura.|Conserva los datos guardados y la configuración para una instalación futura.|Сохраняет данные и настройки для будущей установки.|保留已保存的数据和设置，以便将来重新安装。
