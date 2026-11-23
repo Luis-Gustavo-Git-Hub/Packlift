@@ -465,7 +465,8 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
 }
 
 fn flathub_collection(runner: &Runner, key: &str, page: usize) -> Result<Value> {
-    let url = format!("{FLATHUB_API}/collection/{key}?page={page}&per_page={PAGE_SIZE}");
+    let (path, filters) = key.split_once('?').unwrap_or((key, ""));
+    let url = format!("{FLATHUB_API}/collection/{path}?page={page}&per_page={PAGE_SIZE}&{filters}");
     Ok(serde_json::from_slice(&fetch_with_timeout(
         runner,
         &url,
@@ -475,26 +476,40 @@ fn flathub_collection(runner: &Runner, key: &str, page: usize) -> Result<Value> 
     )?)?)
 }
 
-pub fn category_apps(
+pub fn discovery_page(runner: &Runner, collection: &str, page: usize) -> Result<CatalogPage> {
+    let response = if collection == "game-launchers" {
+        flathub_search(runner, "game launcher", page)?
+    } else {
+        flathub_collection(runner, collection, page)?
+    };
+    let apps = response["hits"]
+        .as_array()
+        .ok_or_else(|| {
+            PackliftError::Message("Flathub returned an invalid catalog response.".into())
+        })?
+        .iter()
+        .filter_map(flathub_catalog_app)
+        .collect();
+    Ok(CatalogPage {
+        apps,
+        has_next: response["totalPages"].as_u64().unwrap_or(0) > page as u64,
+    })
+}
+
+pub fn discovery_apps(
     runner: &Runner,
-    category: &str,
+    collection: &str,
     installed: &BTreeSet<String>,
 ) -> Vec<CatalogApp> {
-    let key = format!("category/{category}");
-    flathub_collection(runner, &key, 1)
-        .ok()
-        .into_iter()
-        .flat_map(|response| {
-            response["hits"]
-                .as_array()
+    discovery_page(runner, collection, 1)
+        .map(|page| {
+            page.apps
                 .into_iter()
-                .flatten()
-                .filter_map(flathub_catalog_app)
                 .filter(|app| !installed.contains(&app.id))
                 .take(6)
-                .collect::<Vec<_>>()
+                .collect()
         })
-        .collect()
+        .unwrap_or_default()
 }
 
 fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {

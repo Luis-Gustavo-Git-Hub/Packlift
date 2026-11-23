@@ -312,3 +312,12 @@ Networking|Rede|Redes|Сеть|网络
 Science|Ciência|Ciencia|Наука|科学
 System|Sistema|Sistema|Система|系统
 Utilities|Utilitários|Utilidades|Утилиты|实用工具
+App of the Day|App do dia|Aplicación del día|Приложение дня|每日应用
+Apps for phones and tablets|Apps para celulares e tablets|Aplicaciones para móviles y tabletas|Приложения для телефонов и планшетов|手机和平板应用
+Games and emulators|Jogos e emuladores|Juegos y emuladores|Игры и эмуляторы|游戏和模拟器
+Emulators|Emuladores|Emuladores|Эмуляторы|模拟器
+Launchers|Inicializadores|Lanzadores|Лаунчеры|启动器
+Game tools|Ferramentas para jogos|Herramientas para juegos|Игровые инструменты|游戏工具
+Developer Tools|Ferramentas de desenvolvimento|Herramientas de desarrollo|Инструменты разработчика|开发工具
+More|Mais|Más|Ещё|更多
+More in {category}|Mais em {category}|Más en {category}|Ещё в категории «{category}»|查看更多：{category}

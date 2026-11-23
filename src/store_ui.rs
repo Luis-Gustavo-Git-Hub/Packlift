@@ -485,62 +485,86 @@ impl StoreView {
         let Some(installed) = self.installed.borrow().clone() else {
             return;
         };
-        let categories = self.categories.downgrade();
-        let window = self.window.clone();
+        let window = &self.window;
         for (index, (key, label)) in [
-            ("Office", "Productivity"),
-            ("Graphics", "Graphics & Photography"),
-            ("AudioVideo", "Audio & Video"),
-            ("Game", "Games"),
-            ("Education", "Education"),
-            ("Network", "Networking"),
-            ("Science", "Science"),
-            ("System", "System"),
-            ("Utility", "Utilities"),
+            ("category/Office", "Productivity"),
+            ("daily", "App of the Day"),
+            ("category/Graphics", "Graphics & Photography"),
+            ("category/AudioVideo", "Audio & Video"),
+            ("mobile", "Apps for phones and tablets"),
+            ("category/Education", "Education"),
+            ("category/Network", "Networking"),
+            ("category/Game", "Games and emulators"),
+            ("category/Development", "Developer Tools"),
+            ("category/Science", "Science"),
+            ("category/System", "System"),
+            ("category/Utility", "Utilities"),
         ]
         .into_iter()
         .enumerate()
         {
-            let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            let section = gtk::Box::new(gtk::Orientation::Vertical, 12);
             section.set_visible(false);
             self.categories.append(&section);
-            let section = section.downgrade();
-            let (categories, window, remote, installed) = (
-                categories.clone(),
-                window.clone(),
-                remote.clone(),
-                installed.clone(),
-            );
-            background(
-                move || {
-                    worker()
-                        .map(|runner| store::category_apps(&runner, key, &installed))
-                        .unwrap_or_default()
-                },
-                move |apps| {
-                    let (Some(_), Some(section)) = (categories.upgrade(), section.upgrade()) else {
-                        return;
-                    };
-                    if apps.is_empty() {
-                        return;
-                    }
-                    section.append(&home_label(tr(label), "title-2"));
-                    let tiles = gtk::FlowBox::builder()
-                        .selection_mode(gtk::SelectionMode::None)
-                        .min_children_per_line(1)
-                        .max_children_per_line(3)
-                        .homogeneous(true)
-                        .row_spacing(10)
-                        .column_spacing(10)
-                        .build();
-                    for (position, app) in apps.into_iter().enumerate() {
-                        let color = (index * 7 + position * 5) % APP_COLORS.len();
-                        tiles.append(&app_card(&window, remote.clone(), app, color));
-                    }
-                    section.append(&tiles);
-                    section.set_visible(true);
-                },
-            );
+            if key == "daily" {
+                load_daily_feature(&section, window, &remote, &installed);
+                continue;
+            }
+            section.append(&home_label(tr(label), "title-2"));
+            if key == "category/Game" {
+                section.add_css_class("packlift-games-banner");
+                let games = gtk::Stack::new();
+                games.set_vhomogeneous(false);
+                let switcher = gtk::StackSwitcher::new();
+                switcher.set_stack(Some(&games));
+                switcher.set_halign(gtk::Align::Start);
+                section.append(&switcher);
+                section.append(&games);
+                for (tab, (id, title, collection)) in [
+                    ("games", "Games", key),
+                    (
+                        "emulators",
+                        "Emulators",
+                        "category/Game/subcategories?subcategory=Emulator",
+                    ),
+                    ("launchers", "Launchers", "game-launchers"),
+                    (
+                        "tools",
+                        "Game tools",
+                        "category/Game/subcategories?subcategory=GameTool",
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
+                    games.add_titled(&panel, Some(id), tr(title));
+                    load_discovery_grid(
+                        &section,
+                        &panel,
+                        window,
+                        &remote,
+                        &installed,
+                        (collection, title),
+                        index + tab,
+                    );
+                }
+            } else {
+                if key == "mobile" {
+                    section.add_css_class("packlift-mobile-banner");
+                }
+                let panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
+                section.append(&panel);
+                load_discovery_grid(
+                    &section,
+                    &panel,
+                    window,
+                    &remote,
+                    &installed,
+                    (key, label),
+                    index,
+                );
+            }
         }
     }
 
@@ -642,6 +666,256 @@ impl StoreView {
         }
         first
     }
+}
+
+fn discovery_grid() -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(true)
+        .row_spacing(10)
+        .column_spacing(10)
+        .build()
+}
+
+fn load_discovery_grid(
+    section: &gtk::Box,
+    panel: &gtk::Box,
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    remote: &Remote,
+    installed: &BTreeSet<String>,
+    (collection, title): (&'static str, &'static str),
+    color_offset: usize,
+) {
+    let (section, panel) = (section.downgrade(), panel.downgrade());
+    let (window, remote, installed) = (window.clone(), remote.clone(), installed.clone());
+    background(
+        move || {
+            worker()
+                .map(|runner| store::discovery_apps(&runner, collection, &installed))
+                .unwrap_or_default()
+        },
+        move |apps| {
+            let (Some(section), Some(panel)) = (section.upgrade(), panel.upgrade()) else {
+                return;
+            };
+            if apps.is_empty() {
+                panel.set_visible(false);
+                return;
+            }
+            let tiles = discovery_grid();
+            for (position, app) in apps.into_iter().enumerate() {
+                let color = (color_offset * 7 + position * 5) % APP_COLORS.len();
+                tiles.append(&app_card(&window, remote.clone(), app, color));
+            }
+            panel.append(&tiles);
+            let more = text_button(tr("More"));
+            more.add_css_class("pill");
+            more.set_halign(gtk::Align::Center);
+            let accessible = tr("More in {category}").replace("{category}", tr(title));
+            more.update_property(&[gtk::accessible::Property::Label(&accessible)]);
+            more.connect_clicked(move |_| {
+                if let Some(window) = window.upgrade() {
+                    show_collection(&window, &remote, collection, tr(title));
+                }
+            });
+            panel.append(&more);
+            section.set_visible(true);
+        },
+    );
+}
+
+fn show_collection(
+    window: &adw::ApplicationWindow,
+    remote: &Remote,
+    collection: &'static str,
+    title: &'static str,
+) {
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
+    back_to_previous(&toolbar, &header, window);
+    toolbar.add_top_bar(&header);
+
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    section.set_margin_top(18);
+    section.set_margin_bottom(18);
+    section.set_margin_start(18);
+    section.set_margin_end(18);
+    let tiles = discovery_grid();
+    let status = home_label("", "dim-label");
+    section.append(&status);
+    section.append(&tiles);
+    let clamp = adw::Clamp::builder()
+        .maximum_size(1180)
+        .child(&section)
+        .build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .child(&clamp)
+        .build();
+    toolbar.set_content(Some(&scroll));
+
+    let nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    nav.set_halign(gtk::Align::Center);
+    nav.set_margin_top(8);
+    nav.set_margin_bottom(12);
+    let previous = text_button(tr("Previous"));
+    let next = text_button(tr("Next"));
+    let page_label = home_label("", "dim-label");
+    nav.append(&previous);
+    nav.append(&page_label);
+    nav.append(&next);
+    toolbar.add_bottom_bar(&nav);
+
+    let page = Rc::new(Cell::new(1usize));
+    let load = Rc::new({
+        let (tiles, status, scroll, page_label, previous, next) = (
+            tiles.downgrade(),
+            status.downgrade(),
+            scroll.downgrade(),
+            page_label.downgrade(),
+            previous.downgrade(),
+            next.downgrade(),
+        );
+        let window = window.downgrade();
+        let remote = remote.clone();
+        let page = page.clone();
+        move |number: usize| {
+            let (
+                Some(tiles),
+                Some(status),
+                Some(scroll),
+                Some(page_label),
+                Some(previous),
+                Some(next),
+            ) = (
+                tiles.upgrade(),
+                status.upgrade(),
+                scroll.upgrade(),
+                page_label.upgrade(),
+                previous.upgrade(),
+                next.upgrade(),
+            )
+            else {
+                return;
+            };
+            previous.set_sensitive(false);
+            next.set_sensitive(false);
+            status.set_visible(true);
+            status.set_text(tr("Searching the store…"));
+            let (window, remote, page) = (window.clone(), remote.clone(), page.clone());
+            background(
+                move || {
+                    worker().and_then(|runner| store::discovery_page(&runner, collection, number))
+                },
+                move |result| {
+                    match result {
+                        Ok(result) => {
+                            page.set(number);
+                            tiles.remove_all();
+                            for (position, app) in result.apps.into_iter().enumerate() {
+                                let color = (number + position * 5) % APP_COLORS.len();
+                                tiles.append(&app_card(&window, remote.clone(), app, color));
+                            }
+                            let empty = tiles.first_child().is_none();
+                            status.set_visible(empty);
+                            if empty {
+                                status.set_text(tr("No apps match this search."));
+                            }
+                            page_label.set_text(
+                                &tr("Page {number}").replace("{number}", &number.to_string()),
+                            );
+                            next.set_sensitive(result.has_next);
+                            scroll.vadjustment().set_value(0.0);
+                        }
+                        Err(error) => {
+                            status.set_text(&error.to_string());
+                            next.set_sensitive(number > page.get());
+                        }
+                    }
+                    previous.set_sensitive(page.get() > 1);
+                },
+            );
+        }
+    });
+    for (button, forward) in [(&previous, false), (&next, true)] {
+        let (load, page) = (load.clone(), page.clone());
+        button.connect_clicked(move |_| {
+            load(if forward {
+                page.get() + 1
+            } else {
+                page.get().saturating_sub(1).max(1)
+            });
+        });
+    }
+    window.set_widget_name("packlift-store-collection");
+    window.set_title(Some(title));
+    window.set_content(Some(&toolbar));
+    load(1);
+}
+
+fn load_daily_feature(
+    section: &gtk::Box,
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    remote: &Remote,
+    installed: &BTreeSet<String>,
+) {
+    let (section, window) = (section.downgrade(), window.clone());
+    let (remote, installed) = (remote.clone(), installed.clone());
+    background(
+        move || {
+            let runner = worker().ok()?;
+            let mut apps = store::discovery_apps(&runner, "trending", &installed);
+            if apps.is_empty() {
+                return None;
+            }
+            let days = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs()
+                / 86400;
+            let offset = days as usize % apps.len();
+            apps.rotate_left(offset);
+            apps.into_iter().find_map(|app| {
+                let details = store::app_details(&runner, &remote, &app).ok()?;
+                let shot = details.screenshots.first()?;
+                let bytes = store::screenshot_bytes(&runner, &shot.url).ok()?;
+                Some((remote.clone(), app, bytes, shot.caption.clone()))
+            })
+        },
+        move |result| {
+            let (Some(section), Some((remote, app, bytes, caption))) = (section.upgrade(), result)
+            else {
+                return;
+            };
+            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+            let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+                &stream,
+                1440,
+                1440,
+                true,
+                gio::Cancellable::NONE,
+            ) else {
+                return;
+            };
+            let featured = FeaturedApp {
+                remote,
+                app,
+                image: gtk::gdk::Texture::for_pixbuf(&pixbuf),
+                caption,
+            };
+            section.append(&home_label(tr("App of the Day"), "title-2"));
+            section.append(&featured_app(
+                &window,
+                &featured,
+                app_color(&featured.app.id),
+            ));
+            section.set_visible(true);
+        },
+    );
 }
 
 fn store_carousel() -> (gtk::Box, adw::Carousel) {
@@ -784,29 +1058,33 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     install.add_css_class("pill");
     install.set_width_request(104);
     install_controls.append(&install);
-    identity.append(&install_controls);
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    actions.set_hexpand(false);
+    actions.set_valign(gtk::Align::Center);
+    actions.append(&install_controls);
+    identity.append(&actions);
+
+    let installed_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    installed_actions.set_visible(false);
+    let open = text_button(tr("Open"));
+    open.add_css_class("suggested-action");
+    open.add_css_class("pill");
+    installed_actions.append(&open);
 
     let uninstall = gtk::Button::with_label(tr("Uninstall"));
     uninstall.set_valign(gtk::Align::Center);
     uninstall.add_css_class("destructive-action");
     uninstall.add_css_class("pill");
-    uninstall.set_visible(false);
-    identity.append(&uninstall);
+    installed_actions.append(&uninstall);
+    actions.append(&installed_actions);
     hero.append(&identity);
     let install_options = gtk::Box::new(gtk::Orientation::Vertical, 0);
     install_options.set_visible(false);
     hero.append(&install_options);
     let progress = gtk::Box::new(gtk::Orientation::Vertical, 0);
     progress.set_visible(false);
-    let progress_layout = adw::Clamp::builder()
-        .maximum_size(560)
-        .child(&progress)
-        .build();
-    progress
-        .bind_property("visible", &progress_layout, "visible")
-        .sync_create()
-        .build();
-    hero.append(&progress_layout);
+    progress.set_width_request(128);
+    actions.append(&progress);
 
     let facts = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -885,12 +1163,36 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
     let installed = Rc::new(RefCell::new(Vec::new()));
+    let launch_state = installed.clone();
+    let application = window.application().map(|app| app.downgrade());
+    open.connect_clicked(move |_| {
+        let records = launch_state.borrow();
+        let record = records
+            .iter()
+            .find(|record: &&Value| record["flatpak_scope"] == "user")
+            .or_else(|| records.first());
+        if let (Some(record), Some(app)) = (
+            record,
+            application.as_ref().and_then(glib::WeakRef::upgrade),
+        ) {
+            if let (Some(scope), Some(target)) =
+                (record["flatpak_scope"].as_str(), record["target"].as_str())
+            {
+                app.activate_action(
+                    "open-installed-flatpak",
+                    Some(&(scope, target).to_variant()),
+                );
+            }
+        }
+    });
     let installed_state = installed.clone();
     let controls = install_controls.downgrade();
-    let refresh_button = uninstall.downgrade();
+    let refresh_button = installed_actions.downgrade();
+    let open_button = open.downgrade();
     let app_id = app.id.clone();
     let refresh_installation = move || {
         let id = app_id.clone();
+        let open_button = open_button.clone();
         let state = installed_state.clone();
         let (controls, refresh_button) = (controls.clone(), refresh_button.clone());
         let (Some(install_controls), Some(button)) = (controls.upgrade(), refresh_button.upgrade())
@@ -915,7 +1217,9 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
                 controls.set_sensitive(true);
                 button.set_sensitive(true);
                 if button.is_visible() && button.root().is_some_and(|root| root.focus().is_none()) {
-                    button.grab_focus();
+                    if let Some(open) = open_button.upgrade() {
+                        open.grab_focus();
+                    }
                 }
             },
         );
@@ -927,12 +1231,21 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
             on_map();
         }
     });
-    let (controls, action) = (install_controls.downgrade(), uninstall.downgrade());
+    let (controls, installed_group, install_button) = (
+        install_controls.downgrade(),
+        installed_actions.downgrade(),
+        install.downgrade(),
+    );
     progress.connect_visible_notify(move |progress| {
+        if let Some(install) = install_button.upgrade() {
+            install.set_visible(!progress.is_visible());
+        }
         if progress.is_visible() {
-            if let (Some(controls), Some(action)) = (controls.upgrade(), action.upgrade()) {
+            if let (Some(controls), Some(installed)) =
+                (controls.upgrade(), installed_group.upgrade())
+            {
                 controls.set_sensitive(false);
-                action.set_sensitive(false);
+                installed.set_visible(false);
             }
         } else {
             refresh_installation();
@@ -1589,10 +1902,10 @@ fn app_card(
 
 const HUE_COUNT: usize = 8;
 const APP_COLORS: [&str; HUE_COUNT * 4] = [
-    "#195fc9", "#008978", "#268338", "#ae7900", "#be4d15", "#ba2e3e", "#b03383", "#7142c2",
-    "#1885bc", "#147a55", "#647b16", "#b88e14", "#b96622", "#ab294f", "#9b3875", "#5953bf",
-    "#2b50a3", "#198b87", "#318a58", "#a16518", "#c35435", "#a33037", "#aa4f90", "#8439a7",
-    "#476bb4", "#187d68", "#518338", "#a88026", "#a55032", "#c23f54", "#923e8d", "#6f53ac",
+    "#175de0", "#00877d", "#139747", "#d08805", "#d6580d", "#cc193e", "#c41b85", "#7337d1",
+    "#087fb8", "#057b58", "#6b9608", "#b89208", "#da4322", "#b91557", "#b321a2", "#5540d7",
+    "#254bbf", "#0495a0", "#07904f", "#c27008", "#e04c36", "#b91436", "#cb288e", "#9026c5",
+    "#2d6ac8", "#138e77", "#4a9f16", "#c18c16", "#c74917", "#d32b60", "#a829bd", "#674fce",
 ];
 
 pub(super) fn app_color_styles() -> String {
@@ -1600,7 +1913,7 @@ pub(super) fn app_color_styles() -> String {
         .iter()
         .enumerate()
         .map(|(index, color)| {
-            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.64); }}\n")
+            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.78); }}\n")
         })
         .collect()
 }

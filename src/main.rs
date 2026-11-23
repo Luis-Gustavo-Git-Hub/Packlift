@@ -66,13 +66,15 @@ fn main() -> glib::ExitCode {
                  .packlift-package-note { padding: 10px 12px; border-radius: 9px; background-color: @card_bg_color; }
                  .packlift-progress-window { background-color: @window_bg_color; border-radius: 12px; }
                  .packlift-progress { padding: 14px 16px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-games-banner { padding: 20px; border-radius: 16px; color: white; background-image: linear-gradient(115deg, #6221aa, #063f78); }
+                 .packlift-mobile-banner { padding: 20px; border-radius: 16px; color: white; background-image: linear-gradient(115deg, #123f8c, #70319b); }
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-feature:hover, .packlift-store-feature:focus-visible { border-color: alpha(@accent_bg_color, 0.65); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
-                 .packlift-store-job, .packlift-store-uninstall { padding: 12px 14px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-store-uninstall { padding: 12px 14px; border-radius: 12px; background: @card_bg_color; }
                  .packlift-store-uninstall { border: 1px solid alpha(@destructive_color, 0.32); }
                  .packlift-uninstall-icon { padding: 8px; color: @destructive_color; background: alpha(@destructive_color, 0.13); border-radius: 10px; }
                  .packlift-uninstall-data { padding: 8px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.06); }
@@ -86,6 +88,7 @@ fn main() -> glib::ExitCode {
                  .packlift-store-card-icon { border-radius: 12px; background: #303036; border: 1px solid #45454d; }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  button.packlift-store-suggestion { padding: 10px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); }
+                 .packlift-store-tint .dim-label { opacity: 0.87; }
                  button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
                  button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",
                 &store_ui::app_color_styles(),
@@ -1621,35 +1624,39 @@ fn run_job_with_progress<F>(
         return;
     }
     window.add_css_class("packlift-running-job");
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    if inline.is_some() {
-        body.add_css_class("packlift-store-job");
-    } else {
+    let body = gtk::Box::new(
+        gtk::Orientation::Vertical,
+        if inline.is_some() { 4 } else { 8 },
+    );
+    if inline.is_none() {
         body.add_css_class("packlift-progress");
-    }
-    let heading = gtk::Label::new(Some(title));
-    heading.set_wrap(true);
-    heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    if inline.is_some() {
-        heading.add_css_class("heading");
-        heading.set_xalign(0.0);
-    } else {
+        let heading = gtk::Label::new(Some(title));
+        heading.set_wrap(true);
+        heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         heading.add_css_class("title-2");
         heading.set_max_width_chars(28);
+        body.append(&heading);
     }
-    body.append(&heading);
     let stage = gtk::Label::new(Some(tr("Working…")));
     stage.set_wrap(true);
     stage.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     stage.set_xalign(0.0);
     stage.add_css_class("dim-label");
     stage.set_hexpand(true);
-    let status = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    status.append(&spinner);
-    status.append(&stage);
-    body.append(&status);
+    if inline.is_some() {
+        stage.set_wrap(false);
+        stage.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        stage.set_max_width_chars(16);
+        stage.add_css_class("caption");
+        body.append(&stage);
+    } else {
+        let status = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let spinner = gtk::Spinner::new();
+        spinner.start();
+        status.append(&spinner);
+        status.append(&stage);
+        body.append(&status);
+    }
     let progress = gtk::ProgressBar::new();
     progress.update_property(&[gtk::accessible::Property::Label(title)]);
     progress.set_show_text(false);
@@ -1708,6 +1715,7 @@ fn run_job_with_progress<F>(
             JobEvent::Progress(label, fraction) => {
                 if stage.text().as_str() != label {
                     stage.set_text(label);
+                    stage.set_tooltip_text(Some(label));
                     stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
                 }
                 progress.set_fraction(progress.fraction().max(fraction));
