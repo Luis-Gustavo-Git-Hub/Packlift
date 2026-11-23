@@ -302,3 +302,13 @@ Could not check which Flatpaks are installed.|Não foi possível verificar quais
 Available only to your Linux account.|Disponível apenas para sua conta no Linux.|Disponible solo para tu cuenta de Linux.|Доступно только вашей учётной записи Linux.|仅供你的 Linux 账户使用。
 Available to everyone on this computer. May require authorization.|Disponível para todos neste computador. Pode exigir autorização.|Disponible para todos en este equipo. Puede requerir autorización.|Доступно всем пользователям компьютера. Может потребоваться разрешение.|此电脑上的所有用户均可使用。可能需要授权。
 Unavailable from this repository.|Indisponível neste repositório.|No disponible en este repositorio.|Недоступно в этом репозитории.|此软件仓库不提供该选项。
+Trending|Em alta|Tendencias|В тренде|热门趋势
+Productivity|Produtividade|Productividad|Продуктивность|效率
+Graphics & Photography|Gráficos e fotografia|Gráficos y fotografía|Графика и фотография|图形与摄影
+Audio & Video|Áudio e vídeo|Audio y vídeo|Аудио и видео|音频与视频
+Games|Jogos|Juegos|Игры|游戏
+Education|Educação|Educación|Образование|教育
+Networking|Rede|Redes|Сеть|网络
+Science|Ciência|Ciencia|Наука|科学
+System|Sistema|Sistema|Система|系统
+Utilities|Utilitários|Utilidades|Утилиты|实用工具

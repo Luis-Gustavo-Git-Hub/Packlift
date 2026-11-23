@@ -21,7 +21,8 @@ use crate::{
 struct StoreView {
     window: glib::WeakRef<adw::ApplicationWindow>,
     search: gtk::SearchEntry,
-    submit: gtk::Button,
+    categories: gtk::Box,
+    discover_heading: gtk::Label,
     feature: gtk::Box,
     carousel: adw::Carousel,
     list: gtk::FlowBox,
@@ -132,10 +133,8 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     search.set_placeholder_text(Some(tr("Search the store")));
     search.update_property(&[gtk::accessible::Property::Label(tr("Search the store"))]);
     search.set_hexpand(true);
-    let submit = text_button(tr("Search"));
-    submit.add_css_class("suggested-action");
+    search.set_search_delay(350);
     search_row.append(&search);
-    search_row.append(&submit);
     body.append(&search_row);
 
     let status = home_label("", "dim-label");
@@ -152,7 +151,13 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         .build();
     let catalog = gtk::Box::new(gtk::Orientation::Vertical, 14);
     catalog.append(&feature);
+    let discover_heading = home_label(tr("Trending"), "title-2");
+    discover_heading.set_visible(false);
+    catalog.append(&discover_heading);
     catalog.append(&list);
+    let categories = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    categories.set_visible(false);
+    catalog.append(&categories);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)
@@ -185,7 +190,8 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     let view = Rc::new(StoreView {
         window: window.downgrade(),
         search,
-        submit,
+        categories,
+        discover_heading,
         feature,
         carousel,
         list,
@@ -206,19 +212,13 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         pending_search: Cell::new(false),
     });
     let weak = Rc::downgrade(&view);
-    view.search.connect_activate(move |_| {
+    view.search.connect_search_changed(move |_| {
         if let Some(view) = weak.upgrade() {
             if view.busy.get() {
                 view.pending_search.set(true);
             } else {
                 view.new_search();
             }
-        }
-    });
-    let weak = Rc::downgrade(&view);
-    view.submit.connect_clicked(move |_| {
-        if let Some(view) = weak.upgrade() {
-            view.new_search();
         }
     });
     let weak = Rc::downgrade(&view);
@@ -259,8 +259,6 @@ impl StoreView {
 
     fn set_busy(&self, busy: bool) {
         self.busy.set(busy);
-        self.submit
-            .set_sensitive(!busy && !self.remotes.borrow().is_empty());
         if busy {
             self.previous.set_sensitive(false);
             self.next.set_sensitive(false);
@@ -282,6 +280,7 @@ impl StoreView {
                 Ok((remotes, installed)) => {
                     *view.remotes.borrow_mut() = remotes;
                     *view.installed.borrow_mut() = installed;
+                    view.load_categories();
                     view.new_search();
                 }
                 Err(error) => {
@@ -321,6 +320,7 @@ impl StoreView {
                     }
                     *view.installed.borrow_mut() = Some(installed);
                     if refresh {
+                        view.load_categories();
                         view.load_catalog_page(view.page.get(), true);
                     }
                 }
@@ -428,6 +428,9 @@ impl StoreView {
                                 (app.id.clone(), (first_color + 5 * index) % APP_COLORS.len())
                             })
                             .collect();
+                        view.categories.set_visible(explore);
+                        view.discover_heading
+                            .set_visible(explore && !results.apps.is_empty());
                         let featured_id = if explore {
                             let featured = view.render_banner(&results.apps);
                             view.prepare_banner(&results.apps);
@@ -462,6 +465,83 @@ impl StoreView {
             self.carousel.remove(&slide);
         }
         self.feature.set_visible(false);
+        self.categories.set_visible(false);
+        self.discover_heading.set_visible(false);
+    }
+
+    fn load_categories(&self) {
+        while let Some(section) = self.categories.first_child() {
+            self.categories.remove(&section);
+        }
+        let Some(remote) = self
+            .remotes
+            .borrow()
+            .iter()
+            .find(|remote| remote.flathub)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(installed) = self.installed.borrow().clone() else {
+            return;
+        };
+        let categories = self.categories.downgrade();
+        let window = self.window.clone();
+        for (index, (key, label)) in [
+            ("Office", "Productivity"),
+            ("Graphics", "Graphics & Photography"),
+            ("AudioVideo", "Audio & Video"),
+            ("Game", "Games"),
+            ("Education", "Education"),
+            ("Network", "Networking"),
+            ("Science", "Science"),
+            ("System", "System"),
+            ("Utility", "Utilities"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            section.set_visible(false);
+            self.categories.append(&section);
+            let section = section.downgrade();
+            let (categories, window, remote, installed) = (
+                categories.clone(),
+                window.clone(),
+                remote.clone(),
+                installed.clone(),
+            );
+            background(
+                move || {
+                    worker()
+                        .map(|runner| store::category_apps(&runner, key, &installed))
+                        .unwrap_or_default()
+                },
+                move |apps| {
+                    let (Some(_), Some(section)) = (categories.upgrade(), section.upgrade()) else {
+                        return;
+                    };
+                    if apps.is_empty() {
+                        return;
+                    }
+                    section.append(&home_label(tr(label), "title-2"));
+                    let tiles = gtk::FlowBox::builder()
+                        .selection_mode(gtk::SelectionMode::None)
+                        .min_children_per_line(1)
+                        .max_children_per_line(3)
+                        .homogeneous(true)
+                        .row_spacing(10)
+                        .column_spacing(10)
+                        .build();
+                    for (position, app) in apps.into_iter().enumerate() {
+                        let color = (index * 7 + position * 5) % APP_COLORS.len();
+                        tiles.append(&app_card(&window, remote.clone(), app, color));
+                    }
+                    section.append(&tiles);
+                    section.set_visible(true);
+                },
+            );
+        }
     }
 
     fn prepare_banner(self: &Rc<Self>, apps: &[StoreChoice]) {
@@ -1727,14 +1807,7 @@ fn load_queued_icons() {
                 let pixbuf = bytes.and_then(|bytes| {
                     let stream =
                         gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
-                    gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
-                        &stream,
-                        256,
-                        256,
-                        true,
-                        gio::Cancellable::NONE,
-                    )
-                    .ok()
+                    gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE).ok()
                 });
                 let targets = ICONS.with_borrow_mut(|icons| {
                     icons.active -= 1;

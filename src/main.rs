@@ -83,7 +83,7 @@ fn main() -> glib::ExitCode {
                  .packlift-store-shot { border-radius: 10px; }
                  .packlift-store-release { padding: 16px; border-radius: 12px; background: @card_bg_color; }
                  .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
-                 .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.08); border: 1px solid alpha(@window_fg_color, 0.10); }
+                 .packlift-store-card-icon { border-radius: 12px; background: #303036; border: 1px solid #45454d; }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  button.packlift-store-suggestion { padding: 10px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); }
                  button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
@@ -164,8 +164,12 @@ fn build_home(app: &adw::Application) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(720, 540);
-    render_home(app, &window);
-    window.present();
+    if host_access_available() {
+        store_ui::show(app, &window);
+    } else {
+        render_home(app, &window);
+        window.present();
+    }
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {

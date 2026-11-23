@@ -1,9 +1,7 @@
 use std::{
-    collections::{hash_map::RandomState, BTreeSet, HashSet},
-    hash::BuildHasher,
+    collections::{BTreeSet, HashSet},
     io::Read,
     path::PathBuf,
-    sync::OnceLock,
     thread,
 };
 
@@ -18,7 +16,6 @@ const FLATHUB_REPO: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 const FLATHUB_API: &str = "https://flathub.org/api/v2";
 const PAGE_SIZE: usize = 24;
 const SUGGESTION_LIMIT: usize = 6;
-static DISCOVER_ORDER: OnceLock<RandomState> = OnceLock::new();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Destination {
@@ -220,6 +217,7 @@ impl CatalogSearch {
         let featured = usize::from(self.is_explore());
         let start = (page - 1) * PAGE_SIZE + if page > 1 { featured } else { 0 };
         let end = page * PAGE_SIZE + featured;
+        let first_request = self.remote_page == 1;
         let rotate = self.is_explore() && self.remote_page == 1 && page == 1;
         while !self.remotes.is_empty()
             && (self
@@ -270,10 +268,12 @@ impl CatalogSearch {
             self.remotes = remaining;
             self.remote_page += 1;
         }
-        if rotate {
-            let random = DISCOVER_ORDER.get_or_init(RandomState::new);
-            self.apps
-                .sort_by_cached_key(|(_, app)| random.hash_one(&app.id));
+        if !self.is_explore() && page == 1 && first_request {
+            let query = self.query.to_lowercase();
+            let first_new = if page == 1 { 0 } else { start };
+            if let Some(apps) = self.apps.get_mut(first_new..) {
+                apps.sort_by_cached_key(|(_, app)| search_rank(app, &query));
+            }
         }
         let mut visible = self
             .apps
@@ -422,7 +422,12 @@ fn configured_remotes(
 
 pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Result<CatalogPage> {
     if remote.flathub {
-        let response = flathub_search(runner, query, page)?;
+        let response = if query.is_empty() {
+            flathub_collection(runner, "trending", page)
+                .or_else(|_| flathub_search(runner, query, page))?
+        } else {
+            flathub_search(runner, query, page)?
+        };
         let apps = response["hits"]
             .as_array()
             .ok_or_else(|| {
@@ -457,6 +462,39 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
         }
     }
     Ok(results)
+}
+
+fn flathub_collection(runner: &Runner, key: &str, page: usize) -> Result<Value> {
+    let url = format!("{FLATHUB_API}/collection/{key}?page={page}&per_page={PAGE_SIZE}");
+    Ok(serde_json::from_slice(&fetch_with_timeout(
+        runner,
+        &url,
+        None,
+        10,
+        8 * 1024 * 1024,
+    )?)?)
+}
+
+pub fn category_apps(
+    runner: &Runner,
+    category: &str,
+    installed: &BTreeSet<String>,
+) -> Vec<CatalogApp> {
+    let key = format!("category/{category}");
+    flathub_collection(runner, &key, 1)
+        .ok()
+        .into_iter()
+        .flat_map(|response| {
+            response["hits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(flathub_catalog_app)
+                .filter(|app| !installed.contains(&app.id))
+                .take(6)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
@@ -623,6 +661,20 @@ const APP_LINKS: [(&str, &str); 9] = [
     ("contact", "Contact"),
 ];
 
+fn search_rank(app: &CatalogApp, query: &str) -> u8 {
+    let name = app.name.to_lowercase();
+    let id = app.id.to_lowercase();
+    if name == query || id == query {
+        0
+    } else if name.starts_with(query) {
+        1
+    } else if name.contains(query) || id.contains(query) {
+        2
+    } else {
+        3
+    }
+}
+
 fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogPage> {
     let query = query.to_lowercase();
     let mut apps: Vec<_> = output
@@ -654,7 +706,7 @@ fn search_remote_list(output: &str, query: &str, page: usize) -> Result<CatalogP
                 })
         })
         .collect();
-    apps.sort_by_cached_key(|app| app.name.to_lowercase());
+    apps.sort_by_cached_key(|app| (search_rank(app, &query), app.name.to_lowercase()));
     let offset = page.saturating_sub(1) * PAGE_SIZE;
     let has_next = apps.len() > offset + PAGE_SIZE;
     Ok(CatalogPage {
@@ -831,6 +883,7 @@ pub fn screenshot_bytes(runner: &Runner, url: &str) -> Result<Vec<u8>> {
 
 fn flathub_icon_hd(url: &str) -> String {
     url.replace("/icons/128x128/", "/icons/128x128@2/")
+        .replace("/icons/64x64/", "/icons/128x128@2/")
 }
 
 pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Option<Vec<u8>> {
@@ -850,7 +903,9 @@ pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Opti
                 }
                 let normal = url.replace("/icons/128x128@2/", "/icons/128x128/");
                 if normal != *url {
-                    if let Some(icon) = get(&normal) {
+                    if let Some(icon) = get(&normal)
+                        .or_else(|| get(&normal.replace("/icons/128x128/", "/icons/64x64/")))
+                    {
                         return Some(icon);
                     }
                 }
@@ -868,20 +923,22 @@ pub fn catalog_icon_bytes(runner: &Runner, icon: &CatalogIcon, id: &str) -> Opti
             let hd = flathub_icon_hd(icon);
             get(&hd).or_else(|| (hd != icon).then(|| get(icon)).flatten())
         }
-        CatalogIcon::AppStream(directory) => ["128x128", "64x64"].iter().find_map(|size| {
-            let path = directory.join(size).join(format!("{id}.png"));
-            runner
-                .capture_bytes_limited(
-                    &[
-                        "cat".into(),
-                        "--".into(),
-                        path.to_string_lossy().into_owned(),
-                    ],
-                    false,
-                    256 * 1024,
-                )
-                .ok()
-        }),
+        CatalogIcon::AppStream(directory) => ["128x128@2", "128x128", "64x64@2", "64x64"]
+            .iter()
+            .find_map(|size| {
+                let path = directory.join(size).join(format!("{id}.png"));
+                runner
+                    .capture_bytes_limited(
+                        &[
+                            "cat".into(),
+                            "--".into(),
+                            path.to_string_lossy().into_owned(),
+                        ],
+                        false,
+                        256 * 1024,
+                    )
+                    .ok()
+            }),
     }
 }
 
