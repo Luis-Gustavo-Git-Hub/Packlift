@@ -1,4 +1,9 @@
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    sync::Arc,
+};
 
 use adw::prelude::*;
 use packlift::{
@@ -14,19 +19,20 @@ enum Source {
     Flatpak(&'static str),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Backend {
     PackageKit,
     Ostree,
     Apt,
     Dnf,
-    Flatpak(&'static str),
+    Flatpak(&'static str, Vec<String>),
 }
 
 struct Available {
     backend: Backend,
     available: bool,
     packages: Vec<String>,
+    failed_remotes: Vec<String>,
 }
 
 fn command(args: &[&str]) -> Vec<String> {
@@ -39,22 +45,7 @@ fn check(source: Source) -> Result<Available> {
     }
     let runner = Runner::new(None, Arc::new(|_| {}))?;
     let (backend, available, packages) = match source {
-        Source::Flatpak(scope) => {
-            let output = runner.capture(
-                &command(&[
-                    "flatpak",
-                    "remote-ls",
-                    scope,
-                    "--updates",
-                    "--columns=application",
-                ]),
-                false,
-            )?;
-            let mut packages: Vec<_> = output.split_whitespace().map(str::to_owned).collect();
-            packages.sort_unstable();
-            packages.dedup();
-            (Backend::Flatpak(scope), !packages.is_empty(), packages)
-        }
+        Source::Flatpak(scope) => return check_flatpaks(&runner, scope),
         Source::System => {
             let ostree = runner.available("rpm-ostree")
                 && runner
@@ -97,7 +88,72 @@ fn check(source: Source) -> Result<Available> {
         backend,
         available,
         packages,
+        failed_remotes: Vec::new(),
     })
+}
+
+fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
+    let installed = runner.capture(
+        &command(&["flatpak", "list", scope, "--columns=origin,ref"]),
+        false,
+    )?;
+    let mut origins = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for line in installed.lines() {
+        let mut columns = line.split_whitespace();
+        if let (Some(origin), Some(reference)) = (columns.next(), columns.next()) {
+            origins
+                .entry(origin)
+                .or_default()
+                .insert(flatpak_ref(reference));
+        }
+    }
+    let mut updates = BTreeSet::new();
+    let mut failed_remotes = Vec::new();
+    for (origin, installed) in origins {
+        match runner.capture(
+            &command(&[
+                "flatpak",
+                "remote-ls",
+                scope,
+                "--updates",
+                "--columns=ref",
+                "--",
+                origin,
+            ]),
+            false,
+        ) {
+            Ok(output) => {
+                updates.extend(
+                    output
+                        .split_whitespace()
+                        .map(flatpak_ref)
+                        .filter(|reference| installed.contains(reference))
+                        .map(str::to_owned),
+                );
+            }
+            Err(_) => failed_remotes.push(origin.to_owned()),
+        }
+    }
+    let packages = updates
+        .iter()
+        .filter_map(|reference| reference.split('/').next())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    Ok(Available {
+        available: !updates.is_empty(),
+        backend: Backend::Flatpak(scope, updates.into_iter().collect()),
+        packages,
+        failed_remotes,
+    })
+}
+
+fn flatpak_ref(reference: &str) -> &str {
+    reference
+        .strip_prefix("app/")
+        .or_else(|| reference.strip_prefix("runtime/"))
+        .unwrap_or(reference)
 }
 
 fn check_exit(runner: &Runner, args: &[&str], available: i32, current: i32) -> Result<bool> {
@@ -111,17 +167,20 @@ fn check_exit(runner: &Runner, args: &[&str], available: i32, current: i32) -> R
     }
 }
 
-fn apply(backend: Backend) -> Result<()> {
+fn apply(backend: &Backend) -> Result<()> {
     let _operation = operation(&packlift_data_dir())?;
     let runner = Runner::new(None, Arc::new(|_| {}))?;
-    let args: &[&str] = match backend {
-        Backend::PackageKit => &["pkcon", "--plain", "--noninteractive", "update"],
-        Backend::Ostree => &["rpm-ostree", "upgrade"],
-        Backend::Apt => &["pkexec", "apt-get", "-y", "upgrade"],
-        Backend::Dnf => &["pkexec", "dnf", "-y", "upgrade"],
-        Backend::Flatpak(scope) => &["flatpak", "update", scope, "--assumeyes"],
+    let mut args = match backend {
+        Backend::PackageKit => command(&["pkcon", "--plain", "--noninteractive", "update"]),
+        Backend::Ostree => command(&["rpm-ostree", "upgrade"]),
+        Backend::Apt => command(&["pkexec", "apt-get", "-y", "upgrade"]),
+        Backend::Dnf => command(&["pkexec", "dnf", "-y", "upgrade"]),
+        Backend::Flatpak(scope, _) => command(&["flatpak", "update", scope, "--assumeyes", "--"]),
     };
-    runner.run(&command(args), false, true, true)?;
+    if let Backend::Flatpak(_, refs) = backend {
+        args.extend(refs.iter().cloned());
+    }
+    runner.run(&args, false, true, true)?;
     Ok(())
 }
 
@@ -129,9 +188,10 @@ struct Section {
     source: Source,
     status: gtk::Label,
     details: gtk::Label,
+    warning: gtk::Label,
     update: gtk::Button,
     busy: Cell<bool>,
-    backend: Cell<Option<Backend>>,
+    backend: RefCell<Option<Backend>>,
 }
 
 impl Section {
@@ -150,6 +210,9 @@ impl Section {
         details.set_selectable(true);
         details.set_visible(false);
         group.append(&details);
+        let warning = home_label("", "dim-label");
+        warning.set_visible(false);
+        group.append(&warning);
         let update = text_button(tr("Update"));
         update.add_css_class("suggested-action");
         update.set_halign(gtk::Align::Start);
@@ -160,9 +223,10 @@ impl Section {
             source,
             status,
             details,
+            warning,
             update,
             busy: Cell::new(false),
-            backend: Cell::new(None),
+            backend: RefCell::new(None),
         });
         let weak = Rc::downgrade(&section);
         let app = window.application().map(|app| app.downgrade());
@@ -184,6 +248,7 @@ impl Section {
         }
         self.update.set_visible(false);
         self.details.set_visible(false);
+        self.warning.set_visible(false);
         self.status.set_text(tr("Checking for updates…"));
         let section = self.clone();
         glib::MainContext::default().spawn_local(async move {
@@ -192,11 +257,19 @@ impl Section {
             section.busy.set(false);
             match result {
                 Ok(Ok(result)) => {
-                    section
-                        .backend
-                        .set(result.available.then_some(result.backend));
+                    *section.backend.borrow_mut() = result.available.then_some(result.backend);
+                    let partial = !result.failed_remotes.is_empty();
+                    section.warning.set_visible(partial);
+                    if partial {
+                        section.warning.set_text(
+                            &tr("Could not check these Flatpak repositories: {repositories}")
+                                .replace("{repositories}", &result.failed_remotes.join(", ")),
+                        );
+                    }
                     section.status.set_text(if result.available {
                         tr("Updates available")
+                    } else if partial {
+                        tr("Update check incomplete")
                     } else {
                         tr("Up to date")
                     });
@@ -212,7 +285,7 @@ impl Section {
                     section.update.set_visible(result.available);
                 }
                 Ok(Err(error)) => {
-                    section.backend.set(None);
+                    *section.backend.borrow_mut() = None;
                     if matches!(error, PackliftError::HostAccessRequired) {
                         section
                             .status
@@ -229,7 +302,7 @@ impl Section {
     }
 
     fn start_update(self: &Rc<Self>, app: &gtk::Application) {
-        let Some(backend) = self.backend.get() else {
+        let Some(backend) = self.backend.borrow().clone() else {
             return;
         };
         if self.busy.replace(true) {
@@ -241,21 +314,20 @@ impl Section {
         let section = self.clone();
         glib::MainContext::default().spawn_local(async move {
             let _hold = hold;
-            let result = gio::spawn_blocking(move || apply(backend)).await;
+            let restart = matches!(backend, Backend::Ostree);
+            let result = gio::spawn_blocking(move || apply(&backend)).await;
             section.busy.set(false);
             section.update.set_sensitive(true);
             match result {
                 Ok(Ok(())) => {
-                    section.backend.set(None);
+                    *section.backend.borrow_mut() = None;
                     section.update.set_visible(false);
                     section.details.set_visible(false);
-                    section
-                        .status
-                        .set_text(if matches!(backend, Backend::Ostree) {
-                            tr("Updates prepared. Restart to finish.")
-                        } else {
-                            tr("Updates installed.")
-                        });
+                    section.status.set_text(if restart {
+                        tr("Updates prepared. Restart to finish.")
+                    } else {
+                        tr("Updates installed.")
+                    });
                 }
                 Ok(Err(error)) => section.status.set_text(&error.to_string()),
                 Err(_) => section
