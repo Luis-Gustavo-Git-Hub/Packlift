@@ -165,14 +165,7 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         .child(&catalog)
         .build();
     body.append(&scroll);
-    let nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    nav.set_halign(gtk::Align::Center);
-    let previous = text_button(tr("Previous"));
-    let next = text_button(tr("Next"));
-    let page_label = home_label("", "dim-label");
-    nav.append(&previous);
-    nav.append(&page_label);
-    nav.append(&next);
+    let (nav, previous, page_label, next) = store_pagination();
     body.append(&nav);
     let layout = adw::Clamp::builder()
         .maximum_size(1180)
@@ -668,6 +661,26 @@ impl StoreView {
     }
 }
 
+fn store_pagination() -> (gtk::Box, gtk::Button, gtk::Label, gtk::Button) {
+    let nav = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    nav.set_halign(gtk::Align::Center);
+    nav.add_css_class("packlift-store-pagination");
+    let previous = gtk::Button::from_icon_name("go-previous-symbolic");
+    let next = gtk::Button::from_icon_name("go-next-symbolic");
+    for (button, label) in [(&previous, tr("Previous")), (&next, tr("Next"))] {
+        button.add_css_class("flat");
+        button.set_tooltip_text(Some(label));
+        button.update_property(&[gtk::accessible::Property::Label(label)]);
+    }
+    let page = home_label("", "dim-label");
+    page.add_css_class("caption");
+    page.set_halign(gtk::Align::Center);
+    nav.append(&previous);
+    nav.append(&page);
+    nav.append(&next);
+    (nav, previous, page, next)
+}
+
 fn discovery_grid() -> gtk::FlowBox {
     gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -758,16 +771,9 @@ fn show_collection(
         .build();
     toolbar.set_content(Some(&scroll));
 
-    let nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    nav.set_halign(gtk::Align::Center);
+    let (nav, previous, page_label, next) = store_pagination();
     nav.set_margin_top(8);
     nav.set_margin_bottom(12);
-    let previous = text_button(tr("Previous"));
-    let next = text_button(tr("Next"));
-    let page_label = home_label("", "dim-label");
-    nav.append(&previous);
-    nav.append(&page_label);
-    nav.append(&next);
     toolbar.add_bottom_bar(&nav);
 
     let page = Rc::new(Cell::new(1usize));
@@ -1364,11 +1370,6 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
                         let rail = &rails[index % 2];
                         let tile =
                             suggested_app_card(&parent_for_cards, remote, &app, suggestion_color);
-                        for property in ["width-request", "height-request"] {
-                            rail.bind_property("width-request", &tile, property)
-                                .sync_create()
-                                .build();
-                        }
                         rail.append(&tile);
                     }
                     update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
@@ -1732,7 +1733,8 @@ fn detail_suggestion_layout(
 ) -> (adw::BreakpointBin, [gtk::Box; 2]) {
     let rails = std::array::from_fn(|_| {
         let rail = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        rail.set_size_request(154, -1);
+        rail.set_width_request(220);
+        rail.set_hexpand(false);
         rail.set_valign(gtk::Align::Start);
         rail.set_margin_top(18);
         rail.set_margin_start(12);
@@ -1761,37 +1763,29 @@ fn detail_suggestion_layout(
     row.append(&rails[0]);
     row.append(scroll);
     row.append(&rails[1]);
+    let layout = adw::Clamp::builder()
+        .maximum_size(1620)
+        .tightening_threshold(1480)
+        .child(&row)
+        .build();
     let responsive = adw::BreakpointBin::builder()
         .width_request(360)
         .height_request(300)
-        .child(&row)
+        .child(&layout)
         .build();
-    for (width, height, size) in [
-        (1320.0, 540.0, 154),
-        (1440.0, 666.0, 200),
-        (1540.0, 792.0, 242),
-        (1680.0, 918.0, 284),
-        (1800.0, 972.0, 302),
-    ] {
-        let condition = adw::BreakpointCondition::new_and(
-            adw::BreakpointCondition::new_length(
-                adw::BreakpointConditionLengthType::MinWidth,
-                width,
-                adw::LengthUnit::Px,
-            ),
-            adw::BreakpointCondition::new_length(
-                adw::BreakpointConditionLengthType::MinHeight,
-                height,
-                adw::LengthUnit::Px,
-            ),
-        );
-        let breakpoint = adw::Breakpoint::new(condition);
-        breakpoint.add_setters(&[
-            (&rails[0], "width-request", size),
-            (&rails[1], "width-request", size),
-        ]);
-        responsive.add_breakpoint(breakpoint);
-    }
+    let condition = adw::BreakpointCondition::new_and(
+        adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinWidth,
+            1320.0,
+            adw::LengthUnit::Px,
+        ),
+        adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinHeight,
+            420.0,
+            adw::LengthUnit::Px,
+        ),
+    );
+    responsive.add_breakpoint(adw::Breakpoint::new(condition));
     let (alternate, sidebars) = (inline.clone(), rails.clone());
     responsive.connect_current_breakpoint_notify(move |responsive| {
         update_suggestion_visibility(responsive, &alternate, &sidebars);
@@ -1820,26 +1814,35 @@ fn suggested_app_card(
 ) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("packlift-store-suggestion");
-    tint_app_card(&button, color);
-    button.set_size_request(154, 154);
-    button.set_halign(gtk::Align::Center);
-    button.set_valign(gtk::Align::Center);
+    button.add_css_class(&format!("color-{color}"));
+    button.set_size_request(150, 92);
     button.set_cursor_from_name(Some("pointer"));
     button.set_tooltip_text(Some(&app.name));
-    button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    content.set_halign(gtk::Align::Center);
+    button.update_property(&[
+        gtk::accessible::Property::Label(&app.name),
+        gtk::accessible::Property::Description(&app.summary),
+    ]);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     content.set_valign(gtk::Align::Center);
-    let icon = catalog_icon_frame(app, 58, 76);
-    icon.set_halign(gtk::Align::Center);
-    content.append(&icon);
+    content.append(&catalog_icon_frame(app, 36, 48));
+
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    labels.set_hexpand(true);
+    labels.set_valign(gtk::Align::Center);
     let title = home_label(&app.name, "heading");
-    title.set_justify(gtk::Justification::Center);
-    title.set_xalign(0.5);
-    title.set_lines(2);
-    title.set_max_width_chars(13);
+    title.set_lines(1);
+    title.set_max_width_chars(14);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    content.append(&title);
+    labels.append(&title);
+    if !app.summary.is_empty() && app.summary != app.id {
+        let summary = home_label(&app.summary, "dim-label");
+        summary.add_css_class("caption");
+        summary.set_lines(2);
+        summary.set_max_width_chars(14);
+        summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        labels.append(&summary);
+    }
+    content.append(&labels);
     button.set_child(Some(&content));
     let (window, app) = (window.clone(), app.clone());
     button.connect_clicked(move |_| {
@@ -1908,7 +1911,7 @@ pub(super) fn app_color_styles() -> String {
         .iter()
         .enumerate()
         .map(|(index, color)| {
-            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.78); }}\n")
+            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.78); }}\nbutton.packlift-store-suggestion.color-{index} {{ border-left-color: {color}; }}\n")
         })
         .collect()
 }

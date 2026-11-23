@@ -82,7 +82,11 @@ fn main() -> glib::ExitCode {
                  .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
                  .packlift-store-card-icon { border-radius: 12px; background: #303036; border: 1px solid #45454d; }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
-                 button.packlift-store-suggestion { padding: 10px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); }
+                 .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
+                 .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }
+                 .packlift-store-pagination > label { margin: 0 6px; }
+                 button.packlift-store-suggestion { padding: 10px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); border-left-width: 3px; }
+                 button.packlift-store-suggestion:hover { background: mix(@card_bg_color, @window_fg_color, 0.08); }
                  .packlift-store-tint .dim-label { opacity: 0.87; }
                  button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
                  button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",
