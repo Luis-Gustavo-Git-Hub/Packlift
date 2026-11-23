@@ -173,6 +173,16 @@ fn build_home(app: &adw::Application) {
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
+    if window.has_css_class("packlift-package-window") {
+        if let Some(parent) = window
+            .transient_for()
+            .and_downcast::<adw::ApplicationWindow>()
+        {
+            render_home(app, &parent);
+            window.close();
+            return;
+        }
+    }
     window.set_title(Some("Packlift"));
     window.set_widget_name("packlift-library");
     window.set_resizable(true);
@@ -297,7 +307,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
                     if let Some(window) = parent.upgrade() {
-                        review_package(&app, &window, &path);
+                        open_package_review(&app, Some(&window), &path);
                     }
                 }
             }
@@ -1017,18 +1027,34 @@ fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindo
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
-    let window = app
+    let parent = app
         .active_window()
         .and_downcast::<adw::ApplicationWindow>()
         .filter(|window| {
             window.widget_name() == "packlift-library" || window.widget_name() == "packlift-store"
         })
-        .filter(|window| !window.has_css_class("packlift-running-job"))
-        .unwrap_or_else(|| {
-            let window = adw::ApplicationWindow::new(app);
-            window.set_default_size(470, -1);
-            window
+        .filter(|window| !window.has_css_class("packlift-running-job"));
+    open_package_review(app, parent.as_ref(), path);
+}
+
+fn open_package_review(
+    app: &adw::Application,
+    parent: Option<&adw::ApplicationWindow>,
+    path: &Path,
+) {
+    let window = adw::ApplicationWindow::new(app);
+    window.set_default_size(470, -1);
+    if let Some(parent) = parent {
+        window.add_css_class("packlift-package-window");
+        window.set_transient_for(Some(parent));
+        parent.set_visible(false);
+        window.connect_close_request(|window| {
+            if let Some(parent) = window.transient_for() {
+                parent.present();
+            }
+            glib::Propagation::Proceed
         });
+    }
     review_package(app, &window, path);
 }
 
@@ -1036,7 +1062,20 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Review package"), "")));
-    let previous = back_to_previous(&toolbar, &header, window);
+    if window.transient_for().is_some() {
+        let review = window.downgrade();
+        page_navigation(
+            &toolbar,
+            &header,
+            tr("Back"),
+            "go-previous-symbolic",
+            move || {
+                if let Some(window) = review.upgrade() {
+                    window.close();
+                }
+            },
+        );
+    }
     toolbar.add_top_bar(&header);
     toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
 
@@ -1139,11 +1178,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
             let weak_window = window.downgrade();
             cancel.connect_clicked(move |_| {
                 if let Some(window) = weak_window.upgrade() {
-                    if let Some(page) = &previous {
-                        page.restore(&window);
-                    } else {
-                        window.close();
-                    }
+                    window.close();
                 }
             });
             actions.append(&cancel);
@@ -1745,7 +1780,7 @@ fn run_job_with_progress<F>(
                             if inline.is_some() && window.widget_name() != "packlift-library" => {}
                         Ok(None) => render_home(&app, &window),
                     }
-                    if compact.is_some() {
+                    if compact.is_some() && window.application().is_some() {
                         window.present();
                     }
                 }
