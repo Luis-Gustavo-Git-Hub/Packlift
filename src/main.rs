@@ -1,6 +1,7 @@
 mod flatpak_ui;
 mod i18n;
 mod store_ui;
+mod updates_ui;
 
 use adw::prelude::*;
 use i18n::tr;
@@ -85,6 +86,7 @@ fn main() -> glib::ExitCode {
                  button.packlift-showcase-card { padding: 14px; border-radius: 15px; border-color: alpha(white, 0.20); box-shadow: 0 2px 6px alpha(black, 0.17); }
                  button.packlift-showcase-card:hover { border-color: alpha(white, 0.56); }
                  .packlift-showcase-card .heading { font-size: 1.12em; }
+                 .packlift-update-section { padding: 12px; border-radius: 12px; background: @card_bg_color; }
                  .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
                  .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }
                  .packlift-store-pagination > label { margin: 0 6px; }
@@ -453,6 +455,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
+    updates_ui::attach(&toolbar, &header, window);
     window.set_content(Some(&toolbar));
     store.grab_focus();
 }

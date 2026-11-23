@@ -323,3 +323,18 @@ More|Mais|Más|Ещё|更多
 More in {category}|Mais em {category}|Más en {category}|Ещё в категории «{category}»|查看更多：{category}
 Keep app data|Manter dados do app|Conservar los datos de la aplicación|Сохранить данные приложения|保留应用数据
 Keep saved data and settings for a future installation.|Preserva os dados salvos e as configurações para uma instalação futura.|Conserva los datos guardados y la configuración para una instalación futura.|Сохраняет данные и настройки для будущей установки.|保留已保存的数据和设置，以便将来重新安装。
+Updates|Atualizações|Actualizaciones|Обновления|更新
+Update|Atualizar|Actualizar|Обновить|更新
+Check for updates|Verificar atualizações|Buscar actualizaciones|Проверить обновления|检查更新
+Waiting to check for updates.|Aguardando a verificação.|Esperando la comprobación.|Ожидание проверки обновлений.|等待检查更新。
+Checking for updates…|Verificando atualizações…|Buscando actualizaciones…|Проверка обновлений…|正在检查更新…
+Updates available|Atualizações disponíveis|Actualizaciones disponibles|Доступны обновления|有可用更新
+Up to date|Em dia|Al día|Обновления не требуются|已是最新
+And {count} more|E mais {count}|Y {count} más|И ещё {count}|还有 {count} 项
+Applying updates…|Aplicando atualizações…|Aplicando actualizaciones…|Установка обновлений…|正在应用更新…
+Updates installed.|Atualizações instaladas.|Actualizaciones instaladas.|Обновления установлены.|更新已安装。
+Updates prepared. Restart to finish.|Atualizações preparadas. Reinicie para concluir.|Actualizaciones preparadas. Reinicia para terminar.|Обновления подготовлены. Перезагрузите систему для завершения.|更新已准备就绪。重启以完成更新。
+Flatpaks for my account|Flatpaks da minha conta|Flatpaks de mi cuenta|Flatpak моей учётной записи|当前账户的 Flatpak
+System updates are unavailable on this distribution.|As atualizações do sistema estão indisponíveis nesta distribuição.|Las actualizaciones del sistema no están disponibles en esta distribución.|Обновления системы недоступны в этом дистрибутиве.|此发行版的系统更新不可用。
+Could not check for updates. See the Packlift log.|Não foi possível verificar as atualizações. Consulte o registro do Packlift.|No se pudieron buscar actualizaciones. Consulta el registro de Packlift.|Не удалось проверить обновления. См. журнал Packlift.|无法检查更新。请查看 Packlift 日志。
+System access is required to check for updates.|É preciso liberar o acesso ao sistema para verificar atualizações.|Se necesita acceso al sistema para buscar actualizaciones.|Для проверки обновлений требуется доступ к системе.|需要系统访问权限才能检查更新。

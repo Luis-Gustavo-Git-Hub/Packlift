@@ -173,6 +173,7 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         .child(&body)
         .build();
     toolbar.set_content(Some(&layout));
+    crate::updates_ui::attach(&toolbar, &header, window);
     let search_target = search.downgrade();
     page_shortcut(&toolbar, "<Control>f", move || {
         if let Some(search) = search_target.upgrade() {
@@ -783,6 +784,7 @@ fn show_collection(
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
+    crate::updates_ui::attach(&toolbar, &header, window);
 
     let (nav, previous, page_label, next) = store_pagination();
     nav.set_margin_top(8);
@@ -1179,6 +1181,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
         .build();
     let (suggestions_layout, rails) = detail_suggestion_layout(&scroll, &similar_section);
     toolbar.set_content(Some(&suggestions_layout));
+    crate::updates_ui::attach(&toolbar, &header, window);
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
     let installed = Rc::new(RefCell::new(Vec::new()));
