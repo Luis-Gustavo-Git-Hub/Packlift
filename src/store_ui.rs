@@ -718,9 +718,22 @@ fn load_discovery_grid(
                 return;
             }
             let tiles = discovery_grid();
+            let featured = collection == "mobile"
+                || collection == "game-launchers"
+                || collection.starts_with("category/Game");
+            if featured {
+                tiles.set_row_spacing(14);
+                tiles.set_column_spacing(14);
+            }
             for (position, app) in apps.into_iter().enumerate() {
                 let color = (color_offset * 7 + position * 5) % APP_COLORS.len();
-                tiles.append(&app_card(&window, remote.clone(), app, color));
+                tiles.append(&catalog_app_card(
+                    &window,
+                    remote.clone(),
+                    app,
+                    color,
+                    featured,
+                ));
             }
             panel.append(&tiles);
             let more = text_button(tr("More"));
@@ -1859,15 +1872,29 @@ fn app_card(
     app: CatalogApp,
     color: usize,
 ) -> gtk::Button {
+    catalog_app_card(window, remote, app, color, false)
+}
+
+fn catalog_app_card(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    remote: Remote,
+    app: CatalogApp,
+    color: usize,
+    featured: bool,
+) -> gtk::Button {
     let button = gtk::Button::builder().hexpand(true).build();
     button.add_css_class("packlift-store-card");
     tint_app_card(&button, color);
     button.set_widget_name(&app.id);
-    button.set_size_request(190, 76);
+    button.set_size_request(190, if featured { 110 } else { 76 });
+    if featured {
+        button.add_css_class("packlift-showcase-card");
+    }
     button.update_property(&[gtk::accessible::Property::Label(&app.name)]);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, if featured { 16 } else { 12 });
     content.set_valign(gtk::Align::Center);
-    content.append(&catalog_icon_frame(&app, 40, 52));
+    let (icon_size, frame_size) = if featured { (56, 70) } else { (40, 52) };
+    content.append(&catalog_icon_frame(&app, icon_size, frame_size));
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
     let name = home_label(&app.name, "heading");
@@ -1884,7 +1911,7 @@ fn app_card(
     );
     summary.set_lines(2);
     summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    summary.set_max_width_chars(25);
+    summary.set_max_width_chars(if featured { 23 } else { 25 });
     text.append(&name);
     text.append(&summary);
     content.append(&text);
