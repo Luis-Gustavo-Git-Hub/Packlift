@@ -160,13 +160,12 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     catalog.append(&categories);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
         .child(&catalog)
         .build();
     body.append(&scroll);
-    let (nav, previous, page_label, next) = store_pagination();
-    body.append(&nav);
+    let (_nav, previous, page_label, next) = store_pagination();
     let layout = adw::Clamp::builder()
         .maximum_size(1180)
         .tightening_threshold(1000)
@@ -780,63 +779,70 @@ fn show_collection(
         .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
         .child(&clamp)
         .build();
     toolbar.set_content(Some(&scroll));
     crate::updates_ui::attach(&toolbar, &header, window);
 
-    let (nav, previous, page_label, next) = store_pagination();
-    nav.set_margin_top(8);
-    nav.set_margin_bottom(12);
-    toolbar.add_bottom_bar(&nav);
-
     let page = Rc::new(Cell::new(1usize));
+    let has_next = Rc::new(Cell::new(true));
+    let busy = Rc::new(Cell::new(false));
     let load = Rc::new({
-        let (tiles, status, scroll, page_label, previous, next) = (
+        let (tiles, status, scroll) = (
             tiles.downgrade(),
             status.downgrade(),
             scroll.downgrade(),
-            page_label.downgrade(),
-            previous.downgrade(),
-            next.downgrade(),
         );
         let window = window.downgrade();
         let remote = remote.clone();
         let page = page.clone();
+        let has_next = has_next.clone();
+        let busy = busy.clone();
         move |number: usize| {
+            if busy.get() {
+                return;
+            }
+            if number > 1 && !has_next.get() {
+                return;
+            }
             let (
                 Some(tiles),
                 Some(status),
-                Some(scroll),
-                Some(page_label),
-                Some(previous),
-                Some(next),
+                Some(_scroll),
             ) = (
                 tiles.upgrade(),
                 status.upgrade(),
                 scroll.upgrade(),
-                page_label.upgrade(),
-                previous.upgrade(),
-                next.upgrade(),
             )
             else {
                 return;
             };
-            previous.set_sensitive(false);
-            next.set_sensitive(false);
-            status.set_visible(true);
-            status.set_text(tr("Searching the store…"));
-            let (window, remote, page) = (window.clone(), remote.clone(), page.clone());
+            busy.set(true);
+            if number == 1 {
+                status.set_visible(true);
+                status.set_text(tr("Searching the store…"));
+            }
+            let (window, remote, page, has_next, busy) = (
+                window.clone(),
+                remote.clone(),
+                page.clone(),
+                has_next.clone(),
+                busy.clone(),
+            );
             background(
                 move || {
                     worker().and_then(|runner| store::discovery_page(&runner, collection, number))
                 },
                 move |result| {
+                    busy.set(false);
                     match result {
                         Ok(result) => {
                             page.set(number);
-                            tiles.remove_all();
+                            has_next.set(result.has_next);
+                            if number == 1 {
+                                tiles.remove_all();
+                            }
                             for (position, app) in result.apps.into_iter().enumerate() {
                                 let color = (number + position * 5) % APP_COLORS.len();
                                 tiles.append(&app_card(&window, remote.clone(), app, color));
@@ -846,32 +852,26 @@ fn show_collection(
                             if empty {
                                 status.set_text(tr("No apps match this search."));
                             }
-                            page_label.set_text(
-                                &tr("Page {number}").replace("{number}", &number.to_string()),
-                            );
-                            next.set_sensitive(result.has_next);
-                            scroll.vadjustment().set_value(0.0);
                         }
                         Err(error) => {
-                            status.set_text(&error.to_string());
-                            next.set_sensitive(number > page.get());
+                            if number == 1 {
+                                status.set_text(&error.to_string());
+                            }
                         }
                     }
-                    previous.set_sensitive(page.get() > 1);
                 },
             );
         }
     });
-    for (button, forward) in [(&previous, false), (&next, true)] {
-        let (load, page) = (load.clone(), page.clone());
-        button.connect_clicked(move |_| {
-            load(if forward {
-                page.get() + 1
-            } else {
-                page.get().saturating_sub(1).max(1)
-            });
-        });
-    }
+
+    let vadjustment = scroll.vadjustment();
+    let load_more = load.clone();
+    let page_for_scroll = page.clone();
+    vadjustment.connect_value_changed(move |adj| {
+        if adj.upper() > adj.page_size() && adj.value() + adj.page_size() >= adj.upper() - 240.0 {
+            load_more(page_for_scroll.get() + 1);
+        }
+    });
     window.set_widget_name("packlift-store-collection");
     window.set_title(Some(title));
     window.set_content(Some(&toolbar));
