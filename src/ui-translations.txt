@@ -371,3 +371,9 @@ Applications|Aplicativos|Aplicaciones|Приложения|应用
 Architecture|Arquitetura|Arquitectura|Архитектура|架构
 Installed target|Destino da instalação|Destino de instalación|Место установки|安装目标
 Version|Versão|Versión|Версия|版本
+Runtime|Ambiente de execução|Entorno de ejecución|Среда выполнения|运行环境
+Manage permissions…|Gerenciar permissões…|Administrar permisos…|Управлять разрешениями…|管理权限…
+Review and change this app's sandbox permissions.|Veja e altere as permissões de isolamento deste aplicativo.|Consulta y cambia los permisos de aislamiento de esta aplicación.|Просматривайте и изменяйте разрешения изоляции этого приложения.|查看并更改此应用的沙盒权限。
+Packlift does not manage permissions for this installation type.|O Packlift não gerencia permissões para este tipo de instalação.|Packlift no administra permisos para este tipo de instalación.|Packlift не управляет разрешениями для этого типа установки.|Packlift 不管理此安装类型的权限。
+Installation scope and updates are handled by Flatpak.|O escopo da instalação e as atualizações são gerenciados pelo Flatpak.|Flatpak administra el alcance de instalación y las actualizaciones.|Область установки и обновления управляются Flatpak.|安装范围和更新由 Flatpak 管理。
+This app has no additional settings in Packlift.|Este aplicativo não tem outras configurações no Packlift.|Esta aplicación no tiene más ajustes en Packlift.|У этого приложения нет дополнительных настроек в Packlift.|此应用在 Packlift 中没有其他设置。
