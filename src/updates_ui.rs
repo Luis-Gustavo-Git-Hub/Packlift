@@ -18,7 +18,7 @@ use crate::{home_label, i18n::tr, text_button};
 #[derive(Clone, Copy)]
 enum Source {
     System,
-    Flatpak(&'static str),
+    Flatpaks,
 }
 
 #[derive(Clone)]
@@ -28,6 +28,7 @@ enum Backend {
     Apt,
     Dnf,
     Flatpak(&'static str, Vec<String>),
+    Flatpaks(Vec<(&'static str, Vec<String>)>),
 }
 
 struct Available {
@@ -114,8 +115,7 @@ fn apply_due_updates() -> Result<()> {
     let mut errors = Vec::new();
     for source in [
         Source::System,
-        Source::Flatpak("--user"),
-        Source::Flatpak("--system"),
+        Source::Flatpaks,
     ] {
         match check(source) {
             Ok(available) if available.available => {
@@ -179,7 +179,7 @@ fn check(source: Source) -> Result<Available> {
     }
     let runner = Runner::new(None, Arc::new(|_| {}))?;
     let (backend, available, packages) = match source {
-        Source::Flatpak(scope) => return check_flatpaks(&runner, scope),
+        Source::Flatpaks => return check_all_flatpaks(&runner),
         Source::System => {
             let ostree = runner.available("rpm-ostree")
                 && runner
@@ -283,6 +283,43 @@ fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
     })
 }
 
+fn check_all_flatpaks(runner: &Runner) -> Result<Available> {
+    let mut scopes = Vec::new();
+    let mut packages = BTreeSet::new();
+    let mut failed_remotes = Vec::new();
+    let mut errors = Vec::new();
+    for scope in ["--user", "--system"] {
+        match check_flatpaks(runner, scope) {
+            Ok(result) => {
+                packages.extend(result.packages);
+                failed_remotes.extend(
+                    result
+                        .failed_remotes
+                        .into_iter()
+                        .map(|remote| format!("{scope}: {remote}")),
+                );
+                if let Backend::Flatpak(scope, refs) = result.backend {
+                    scopes.push((scope, refs));
+                }
+            }
+            Err(error) => errors.push(format!("{scope}: {error}")),
+        }
+    }
+    failed_remotes.extend(errors);
+    if scopes.is_empty() {
+        return Err(PackliftError::Message(
+            failed_remotes.join("\n"),
+        ));
+    }
+    let available = scopes.iter().any(|(_, refs)| !refs.is_empty());
+    Ok(Available {
+        backend: Backend::Flatpaks(scopes),
+        available,
+        packages: packages.into_iter().collect(),
+        failed_remotes,
+    })
+}
+
 fn flatpak_ref(reference: &str) -> &str {
     reference
         .strip_prefix("app/")
@@ -304,17 +341,37 @@ fn check_exit(runner: &Runner, args: &[&str], available: i32, current: i32) -> R
 fn apply(backend: &Backend) -> Result<()> {
     let _operation = operation(&packlift_data_dir())?;
     let runner = Runner::new(None, Arc::new(|_| {}))?;
-    let mut args = match backend {
-        Backend::PackageKit => command(&["pkcon", "--plain", "--noninteractive", "update"]),
-        Backend::Ostree => command(&["rpm-ostree", "upgrade"]),
-        Backend::Apt => command(&["pkexec", "apt-get", "-y", "upgrade"]),
-        Backend::Dnf => command(&["pkexec", "dnf", "-y", "upgrade"]),
-        Backend::Flatpak(scope, _) => command(&["flatpak", "update", scope, "--assumeyes", "--"]),
-    };
-    if let Backend::Flatpak(_, refs) = backend {
-        args.extend(refs.iter().cloned());
+    match backend {
+        Backend::PackageKit => {
+            runner.run(
+                &command(&["pkcon", "--plain", "--noninteractive", "update"]),
+                false,
+                true,
+                true,
+            )?;
+        }
+        Backend::Ostree => {
+            runner.run(&command(&["rpm-ostree", "upgrade"]), false, true, true)?;
+        }
+        Backend::Apt => {
+            runner.run(&command(&["pkexec", "apt-get", "-y", "upgrade"]), false, true, true)?;
+        }
+        Backend::Dnf => {
+            runner.run(&command(&["pkexec", "dnf", "-y", "upgrade"]), false, true, true)?;
+        }
+        Backend::Flatpak(scope, refs) => {
+            let mut args = command(&["flatpak", "update", scope, "--assumeyes", "--"]);
+            args.extend(refs.iter().cloned());
+            runner.run(&args, false, true, true)?;
+        }
+        Backend::Flatpaks(scopes) => {
+            for (scope, refs) in scopes.iter().filter(|(_, refs)| !refs.is_empty()) {
+                let mut args = command(&["flatpak", "update", scope, "--assumeyes", "--"]);
+                args.extend(refs.iter().cloned());
+                runner.run(&args, false, true, true)?;
+            }
+        }
     }
-    runner.run(&args, false, true, true)?;
     Ok(())
 }
 
@@ -579,22 +636,14 @@ pub(super) fn attach(
         &sidebar,
         window,
     );
-    sidebar.append(&home_label(tr("Flatpak"), "title-3"));
-    let user_flatpaks = Section::new(
-        Source::Flatpak("--user"),
-        tr("User Flatpaks"),
-        "user-home-symbolic",
+    let flatpaks = Section::new(
+        Source::Flatpaks,
+        tr("Flatpak"),
+        "package-x-generic-symbolic",
         &sidebar,
         window,
     );
-    let system_flatpaks = Section::new(
-        Source::Flatpak("--system"),
-        tr("System Flatpaks"),
-        "computer-symbolic",
-        &sidebar,
-        window,
-    );
-    let sections = [system, user_flatpaks, system_flatpaks];
+    let sections = [system, flatpaks];
     frequency.connect_selected_notify(move |frequency| {
         let days = match frequency.selected() {
             1 => 7,

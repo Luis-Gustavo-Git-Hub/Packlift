@@ -218,7 +218,6 @@ Flatpak apps|Apps Flatpak|Aplicaciones Flatpak|Приложения Flatpak|Flat
 Other apps|Outros apps|Otras aplicaciones|Другие приложения|其他应用
 Filter by app type|Filtrar por tipo de app|Filtrar por tipo de aplicación|Фильтр по типу приложения|按应用类型筛选
 Try a different search or filter.|Tente outro termo de busca ou filtro.|Prueba otra búsqueda u otro filtro.|Попробуйте другой запрос или фильтр.|请尝试其他搜索词或筛选条件。
-User Flatpaks|Flatpaks da conta|Flatpaks de tu cuenta|Пользовательские Flatpak|用户 Flatpak
 System Flatpaks|Flatpaks do sistema|Flatpaks del sistema|Системные Flatpak|系统 Flatpak
 Windows apps|Apps Windows|Aplicaciones de Windows|Приложения Windows|Windows 应用
 Windows game shortcuts|Atalhos de jogos Windows|Accesos directos a juegos de Windows|Ярлыки игр Windows|Windows 游戏快捷方式
@@ -348,5 +347,4 @@ Weekly|Semanalmente|Semanalmente|Еженедельно|每周
 Monthly|Mensalmente|Mensualmente|Ежемесячно|每月
 Automatic update frequency|Frequência das atualizações automáticas|Frecuencia de actualización automática|Частота автоматического обновления|自动更新频率
 Linux system|Sistema Linux|Sistema Linux|Система Linux|Linux 系统
-User Flatpaks|Flatpaks do usuário|Flatpaks del usuario|Пользовательские Flatpak|用户 Flatpak
 Flatpak|Flatpak|Flatpak|Flatpak|Flatpak
