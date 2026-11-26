@@ -1022,10 +1022,10 @@ fn library_detail(
             let change = text_button(tr("Change runtime…"));
             let app = app.clone();
             let parent = window.downgrade();
-            let record = record.clone();
+            let change_record = record.clone();
             change.connect_clicked(move |_| {
                 if let Some(window) = parent.upgrade() {
-                    program_runtime_dialog(&app, &window, &record);
+                    program_runtime_dialog(&app, &window, &change_record);
                 }
             });
             actions.append(&change);
