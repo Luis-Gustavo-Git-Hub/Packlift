@@ -551,6 +551,7 @@ impl Section {
         self.update.set_visible(false);
         self.details.set_visible(false);
         self.warning.set_visible(false);
+        self.status.set_visible(true);
         self.status.set_text(tr("Checking for updates…"));
         let section = self.clone();
         glib::MainContext::default().spawn_local(async move {
@@ -577,9 +578,10 @@ impl Section {
                     } else if partial {
                         tr("Update check incomplete").to_owned()
                     } else {
-                        tr("Up to date").to_owned()
+                        String::new()
                     };
                     section.status.set_text(&status);
+                    section.status.set_visible(result.available || partial);
                     let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
                     if result.packages.len() > 8 {
                         lines.push(

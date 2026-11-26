@@ -328,7 +328,6 @@ Check for updates|Verificar atualizações|Buscar actualizaciones|Провери
 Waiting to check for updates.|Aguardando a verificação.|Esperando la comprobación.|Ожидание проверки обновлений.|等待检查更新。
 Checking for updates…|Verificando atualizações…|Buscando actualizaciones…|Проверка обновлений…|正在检查更新…
 Updates available|Atualizações disponíveis|Actualizaciones disponibles|Доступны обновления|有可用更新
-Up to date|Em dia|Al día|Обновления не требуются|已是最新
 Not checked yet|Ainda não verificado|Aún no se ha comprobado|Ещё не проверялось|尚未检查
 Last checked: {time}|Última verificação: {time}|Última comprobación: {time}|Последняя проверка: {time}|上次检查：{time}
 1 app needs updates|1 app precisa de atualização|1 aplicación necesita actualizarse|Требуется обновить 1 приложение|1 个应用需要更新
