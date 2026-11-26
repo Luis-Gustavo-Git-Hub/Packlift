@@ -535,12 +535,12 @@ impl StoreView {
             .column_spacing(10)
             .build();
         for (key, title, icon, style) in [
-            ("category/Graphics", "Create", "🖌️", "create"),
-            ("category/Office", "Work", "📋", "work"),
-            ("category/Game", "Play", "🎮", "play"),
-            ("category/Social", "Socialize", "💛", "socialize"),
-            ("category/Education", "Learn", "⛵", "learn"),
-            ("category/Development", "Develop", "💻", "develop"),
+            ("category/Graphics", "Create", "applications-graphics-symbolic", "create"),
+            ("category/Office", "Work", "x-office-document-symbolic", "work"),
+            ("category/Game", "Play", "applications-games-symbolic", "play"),
+            ("category/Social", "Socialize", "chat-message-new-symbolic", "socialize"),
+            ("category/Education", "Learn", "accessories-dictionary-symbolic", "learn"),
+            ("category/Development", "Develop", "applications-engineering-symbolic", "develop"),
         ] {
             category_tiles.append(&store_category_tile(
                 window,
@@ -778,10 +778,20 @@ fn store_category_tile(
     button.add_css_class(&format!("packlift-store-category-{style}"));
     button.set_hexpand(true);
     button.set_size_request(-1, 68);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     content.set_halign(gtk::Align::Center);
-    let icon = home_label(icon, "title-2");
-    content.append(&icon);
+    let icon_well = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    icon_well.add_css_class("packlift-store-category-icon-well");
+    icon_well.set_size_request(40, 40);
+    icon_well.set_halign(gtk::Align::Center);
+    icon_well.set_valign(gtk::Align::Center);
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_pixel_size(23);
+    image.set_hexpand(true);
+    image.set_vexpand(true);
+    image.add_css_class("packlift-store-category-icon");
+    icon_well.append(&image);
+    content.append(&icon_well);
     content.append(&home_label(tr(title), "heading"));
     button.set_child(Some(&content));
     let (window, remote) = (window.clone(), remote.clone());

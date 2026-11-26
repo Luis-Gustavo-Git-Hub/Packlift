@@ -98,6 +98,8 @@ fn main() -> glib::ExitCode {
                  button.packlift-store-suggestion:hover { background: mix(@card_bg_color, @window_fg_color, 0.08); }
                  button.packlift-store-category { padding: 12px; border: 0; border-radius: 12px; }
                  button.packlift-store-category:hover { border: 1px solid alpha(white, 0.42); }
+                 box.packlift-store-category-icon-well { background: alpha(white, 0.18); border: 1px solid alpha(white, 0.20); border-radius: 12px; }
+                 image.packlift-store-category-icon { color: inherit; }
                  button.packlift-store-category-create { color: white; background-image: linear-gradient(120deg, #a13eb2, #2858ae); }
                  button.packlift-store-category-work { color: #23364d; background-image: linear-gradient(120deg, #fff0b9, #f4d97c); }
                  button.packlift-store-category-play { color: white; background-image: linear-gradient(120deg, #f2a06f, #a832b8, #5333a3); }

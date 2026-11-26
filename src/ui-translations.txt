@@ -329,6 +329,13 @@ Waiting to check for updates.|Aguardando a verificação.|Esperando la comprobac
 Checking for updates…|Verificando atualizações…|Buscando actualizaciones…|Проверка обновлений…|正在检查更新…
 Updates available|Atualizações disponíveis|Actualizaciones disponibles|Доступны обновления|有可用更新
 Up to date|Em dia|Al día|Обновления не требуются|已是最新
+Not checked yet|Ainda não verificado|Aún no se ha comprobado|Ещё не проверялось|尚未检查
+Last checked: {time}|Última verificação: {time}|Última comprobación: {time}|Последняя проверка: {time}|上次检查：{time}
+1 app needs updates|1 app precisa de atualização|1 aplicación necesita actualizarse|Требуется обновить 1 приложение|1 个应用需要更新
+{count} apps need updates|{count} apps precisam de atualização|{count} aplicaciones necesitan actualizarse|Требуется обновить приложений: {count}|{count} 个应用需要更新
+1 runtime update available|1 atualização de runtime disponível|Hay 1 actualización de runtime disponible|Доступно 1 обновление среды выполнения|有 1 个运行时更新
+{count} runtime updates available|{count} atualizações de runtime disponíveis|Hay {count} actualizaciones de runtime disponibles|Доступно обновлений среды выполнения: {count}|有 {count} 个运行时更新
+{count} apps and {runtimes} runtime updates available|{count} apps e {runtimes} atualizações de runtime disponíveis|Hay {count} aplicaciones y {runtimes} actualizaciones de runtime disponibles|Доступно обновлений приложений: {count}, сред выполнения: {runtimes}|有 {count} 个应用和 {runtimes} 个运行时更新
 And {count} more|E mais {count}|Y {count} más|И ещё {count}|还有 {count} 项
 Applying updates…|Aplicando atualizações…|Aplicando actualizaciones…|Установка обновлений…|正在应用更新…
 Updates installed.|Atualizações instaladas.|Actualizaciones instaladas.|Обновления установлены.|更新已安装。

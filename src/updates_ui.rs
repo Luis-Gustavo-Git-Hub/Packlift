@@ -35,6 +35,7 @@ struct Available {
     backend: Backend,
     available: bool,
     packages: Vec<String>,
+    runtime_updates: usize,
     failed_remotes: Vec<String>,
 }
 
@@ -46,7 +47,9 @@ const UPDATE_INTERVAL_DAYS: [u64; 4] = [0, 1, 7, 30];
 
 thread_local! {
     static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
+    static AUTO_CHECK_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
     static AUTO_UPDATE_RUNNING: Cell<bool> = const { Cell::new(false) };
+    static UPDATE_SECTIONS: RefCell<Vec<std::rc::Weak<Section>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn now_epoch() -> u64 {
@@ -70,7 +73,15 @@ fn read_schedule() -> (u64, u64) {
     (days, last_run)
 }
 
-fn write_schedule(days: u64, last_run: u64) {
+fn update_state() -> serde_json::Value {
+    fs::read_to_string(schedule_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn save_update_state(value: serde_json::Value) {
     let path = schedule_path();
     if let Some(parent) = path.parent() {
         if fs::create_dir_all(parent).is_err() {
@@ -78,13 +89,79 @@ fn write_schedule(days: u64, last_run: u64) {
         }
     }
     let temporary = path.with_extension("json.tmp");
-    let contents = serde_json::json!({
-        "interval_days": days,
-        "last_auto_update": last_run,
-    });
-    if fs::write(&temporary, contents.to_string()).is_ok() {
+    if fs::write(&temporary, value.to_string()).is_ok() {
         let _ = fs::rename(temporary, path);
     }
+}
+
+fn write_schedule(days: u64, last_run: u64) {
+    let mut state = update_state();
+    state["interval_days"] = serde_json::json!(days);
+    state["last_auto_update"] = serde_json::json!(last_run);
+    save_update_state(state);
+}
+
+fn check_key(source: Source) -> &'static str {
+    match source {
+        Source::System => "last_checked_system",
+        Source::Flatpaks => "last_checked_flatpaks",
+    }
+}
+
+fn last_check_time(source: Source) -> String {
+    let timestamp = update_state()[check_key(source)].as_i64();
+    let formatted = timestamp
+        .and_then(|timestamp| glib::DateTime::from_unix_local(timestamp).ok())
+        .and_then(|date| date.format("%x %H:%M").ok())
+        .map(|date| date.to_string());
+    formatted.map_or_else(
+        || tr("Not checked yet").to_owned(),
+        |time| tr("Last checked: {time}").replace("{time}", &time),
+    )
+}
+
+fn record_last_check(source: Source, timestamp: u64) -> String {
+    let mut state = update_state();
+    state[check_key(source)] = serde_json::json!(timestamp);
+    save_update_state(state);
+    last_check_time(source)
+}
+
+fn format_flatpak_status(result: &Available) -> String {
+    let apps = result.packages.len();
+    match (apps, result.runtime_updates) {
+        (1, 0) => tr("1 app needs updates").to_owned(),
+        (count, 0) => tr("{count} apps need updates").replace("{count}", &count.to_string()),
+        (0, 1) => tr("1 runtime update available").to_owned(),
+        (0, runtimes) => tr("{count} runtime updates available").replace("{count}", &runtimes.to_string()),
+        (count, runtimes) => tr("{count} apps and {runtimes} runtime updates available")
+            .replace("{count}", &count.to_string())
+            .replace("{runtimes}", &runtimes.to_string()),
+    }
+}
+
+fn register_update_sections(sections: &[Rc<Section>]) {
+    UPDATE_SECTIONS.with_borrow_mut(|registered| {
+        registered.retain(|section| section.strong_count() > 0);
+        registered.extend(sections.iter().map(Rc::downgrade));
+    });
+}
+
+fn ensure_auto_check_timer() {
+    if AUTO_CHECK_TIMER_STARTED.with(|started| started.replace(true)) {
+        return;
+    }
+    glib::timeout_add_seconds_local(30 * 60, || {
+        let sections = UPDATE_SECTIONS.with_borrow_mut(|registered| {
+            let sections = registered.iter().filter_map(std::rc::Weak::upgrade).collect::<Vec<_>>();
+            registered.retain(|section| section.strong_count() > 0);
+            sections
+        });
+        for section in sections {
+            section.refresh();
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 fn distribution_identity() -> (String, String) {
@@ -222,6 +299,7 @@ fn check(source: Source) -> Result<Available> {
         backend,
         available,
         packages,
+        runtime_updates: 0,
         failed_remotes: Vec::new(),
     })
 }
@@ -242,6 +320,8 @@ fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
         }
     }
     let mut updates = BTreeSet::new();
+    let mut app_names = BTreeSet::new();
+    let mut runtime_updates = 0;
     let mut failed_remotes = Vec::new();
     for (origin, installed) in origins {
         match runner.capture(
@@ -257,28 +337,28 @@ fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
             false,
         ) {
             Ok(output) => {
-                updates.extend(
-                    output
-                        .split_whitespace()
-                        .map(flatpak_ref)
-                        .filter(|reference| installed.contains(reference))
-                        .map(str::to_owned),
-                );
+                for reference in output
+                    .split_whitespace()
+                    .filter(|reference| installed.contains(flatpak_ref(reference)))
+                {
+                    updates.insert(reference.to_owned());
+                    if let Some(app_ref) = reference.strip_prefix("app/") {
+                        if let Some(name) = app_ref.split('/').next() {
+                            app_names.insert(name.to_owned());
+                        }
+                    } else if reference.starts_with("runtime/") {
+                        runtime_updates += 1;
+                    }
+                }
             }
             Err(_) => failed_remotes.push(origin.to_owned()),
         }
     }
-    let packages = updates
-        .iter()
-        .filter_map(|reference| reference.split('/').next())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
     Ok(Available {
         available: !updates.is_empty(),
         backend: Backend::Flatpak(scope, updates.into_iter().collect()),
-        packages,
+        packages: app_names.into_iter().collect(),
+        runtime_updates,
         failed_remotes,
     })
 }
@@ -286,12 +366,14 @@ fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
 fn check_all_flatpaks(runner: &Runner) -> Result<Available> {
     let mut scopes = Vec::new();
     let mut packages = BTreeSet::new();
+    let mut runtime_updates = 0;
     let mut failed_remotes = Vec::new();
     let mut errors = Vec::new();
     for scope in ["--user", "--system"] {
         match check_flatpaks(runner, scope) {
             Ok(result) => {
                 packages.extend(result.packages);
+                runtime_updates += result.runtime_updates;
                 failed_remotes.extend(
                     result
                         .failed_remotes
@@ -316,6 +398,7 @@ fn check_all_flatpaks(runner: &Runner) -> Result<Available> {
         backend: Backend::Flatpaks(scopes),
         available,
         packages: packages.into_iter().collect(),
+        runtime_updates,
         failed_remotes,
     })
 }
@@ -360,15 +443,23 @@ fn apply(backend: &Backend) -> Result<()> {
             runner.run(&command(&["pkexec", "dnf", "-y", "upgrade"]), false, true, true)?;
         }
         Backend::Flatpak(scope, refs) => {
-            let mut args = command(&["flatpak", "update", scope, "--assumeyes", "--"]);
-            args.extend(refs.iter().cloned());
-            runner.run(&args, false, true, true)?;
+            if !refs.is_empty() {
+                runner.run(
+                    &command(&["flatpak", "update", scope, "--assumeyes"]),
+                    false,
+                    true,
+                    true,
+                )?;
+            }
         }
         Backend::Flatpaks(scopes) => {
             for (scope, refs) in scopes.iter().filter(|(_, refs)| !refs.is_empty()) {
-                let mut args = command(&["flatpak", "update", scope, "--assumeyes", "--"]);
-                args.extend(refs.iter().cloned());
-                runner.run(&args, false, true, true)?;
+                runner.run(
+                    &command(&["flatpak", "update", scope, "--assumeyes"]),
+                    false,
+                    true,
+                    true,
+                )?;
             }
         }
     }
@@ -378,6 +469,7 @@ fn apply(backend: &Backend) -> Result<()> {
 struct Section {
     source: Source,
     status: gtk::Label,
+    last_checked: gtk::Label,
     details: gtk::Label,
     warning: gtk::Label,
     update: gtk::Button,
@@ -407,6 +499,9 @@ impl Section {
         group.append(&heading);
         let status = home_label(tr("Waiting to check for updates."), "dim-label");
         group.append(&status);
+        let last_checked = home_label(&last_check_time(source), "dim-label");
+        last_checked.add_css_class("caption");
+        group.append(&last_checked);
         let details = home_label("", "caption");
         details.set_selectable(true);
         details.set_visible(false);
@@ -420,11 +515,15 @@ impl Section {
         update.set_hexpand(true);
         update.set_margin_top(4);
         update.set_visible(false);
+        if matches!(source, Source::Flatpaks) {
+            update.set_visible(false);
+        }
         group.append(&update);
         panel.append(&group);
         let section = Rc::new(Self {
             source,
             status,
+            last_checked,
             details,
             warning,
             update,
@@ -458,6 +557,8 @@ impl Section {
             let source = section.source;
             let result = gio::spawn_blocking(move || check(source)).await;
             section.busy.set(false);
+            let checked_at = record_last_check(source, now_epoch());
+            section.last_checked.set_text(&checked_at);
             match result {
                 Ok(Ok(result)) => {
                     *section.backend.borrow_mut() = result.available.then_some(result.backend);
@@ -469,13 +570,16 @@ impl Section {
                                 .replace("{repositories}", &result.failed_remotes.join(", ")),
                         );
                     }
-                    section.status.set_text(if result.available {
-                        tr("Updates available")
+                    let status = if result.available && matches!(section.source, Source::Flatpaks) {
+                        format_flatpak_status(&result)
+                    } else if result.available {
+                        tr("Updates available").to_owned()
                     } else if partial {
-                        tr("Update check incomplete")
+                        tr("Update check incomplete").to_owned()
                     } else {
-                        tr("Up to date")
-                    });
+                        tr("Up to date").to_owned()
+                    };
+                    section.status.set_text(&status);
                     let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
                     if result.packages.len() > 8 {
                         lines.push(
@@ -484,8 +588,8 @@ impl Section {
                         );
                     }
                     section.details.set_text(&lines.join("\n"));
-                    section.details.set_visible(!lines.is_empty());
-                    section.update.set_visible(result.available);
+                    section.details.set_visible(!lines.is_empty() && matches!(section.source, Source::System));
+                    section.update.set_visible(result.available && matches!(section.source, Source::System));
                 }
                 Ok(Err(error)) => {
                     *section.backend.borrow_mut() = None;
@@ -592,9 +696,6 @@ pub(super) fn attach(
     distro_name.set_hexpand(true);
     distro_name.set_valign(gtk::Align::Center);
     distribution.append(&distro_name);
-    let refresh = text_button(tr("Check for updates"));
-    refresh.add_css_class("suggested-action");
-    distribution.append(&refresh);
     distro_module.append(&distribution);
     let distro_icon = distro_icon.downgrade();
     let distro_name = distro_name.downgrade();
@@ -666,6 +767,8 @@ pub(super) fn attach(
         window,
     );
     let sections = [system, flatpaks];
+    register_update_sections(&sections);
+    ensure_auto_check_timer();
     let frequency_target = frequency.downgrade();
     automatic.connect_active_notify(move |automatic| {
         let Some(frequency) = frequency_target.upgrade() else {
@@ -705,8 +808,6 @@ pub(super) fn attach(
         ensure_auto_update_timer(&app);
     }
     refresh_all();
-    let manual = refresh_all.clone();
-    refresh.connect_clicked(move |_| manual());
     split.connect_show_sidebar_notify(move |split| {
         if split.shows_sidebar() {
             refresh_all();
