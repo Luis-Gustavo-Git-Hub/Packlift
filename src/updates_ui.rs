@@ -42,7 +42,7 @@ fn command(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
-const UPDATE_INTERVAL_DAYS: [u64; 3] = [1, 7, 30];
+const UPDATE_INTERVAL_DAYS: [u64; 4] = [0, 1, 7, 30];
 
 thread_local! {
     static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
@@ -158,7 +158,7 @@ fn ensure_auto_update_timer(app: &gtk::Application) {
             write_schedule(days, now);
             return glib::ControlFlow::Continue;
         }
-        if now.saturating_sub(last_run) < days.saturating_mul(24 * 60 * 60) {
+        if days == 0 || now.saturating_sub(last_run) < days.saturating_mul(24 * 60 * 60) {
             return glib::ControlFlow::Continue;
         }
         write_schedule(days, now);
@@ -394,7 +394,11 @@ impl Section {
         window: &adw::ApplicationWindow,
     ) -> Rc<Self> {
         let group = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        group.add_css_class("packlift-update-section");
+        group.add_css_class(if matches!(source, Source::System) {
+            "packlift-update-system"
+        } else {
+            "packlift-update-section"
+        });
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon = gtk::Image::from_icon_name(icon_name);
         icon.set_pixel_size(18);
@@ -549,8 +553,8 @@ pub(super) fn attach(
     let split = adw::OverlaySplitView::new();
     split.set_content(Some(&content));
     split.set_sidebar_position(gtk::PackType::End);
-    split.set_min_sidebar_width(330.0);
-    split.set_max_sidebar_width(440.0);
+    split.set_min_sidebar_width(390.0);
+    split.set_max_sidebar_width(520.0);
     split.set_collapsed(true);
     split.set_show_sidebar(false);
     toolbar.set_content(Some(&split));
@@ -574,15 +578,11 @@ pub(super) fn attach(
     sidebar.set_margin_bottom(16);
     sidebar.set_margin_start(16);
     sidebar.set_margin_end(16);
-    let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let title = home_label(tr("Updates"), "title-2");
-    title.set_hexpand(true);
-    title_row.append(&title);
-    let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
-    refresh.set_tooltip_text(Some(tr("Check for updates")));
-    refresh.update_property(&[gtk::accessible::Property::Label(tr("Check for updates"))]);
-    title_row.append(&refresh);
-    sidebar.append(&title_row);
+    sidebar.append(&title);
+
+    let distro_module = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    distro_module.add_css_class("packlift-update-module");
     let distribution = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     distribution.add_css_class("packlift-update-hero");
     let distro_icon = gtk::Image::from_icon_name("computer-symbolic");
@@ -592,7 +592,10 @@ pub(super) fn attach(
     distro_name.set_hexpand(true);
     distro_name.set_valign(gtk::Align::Center);
     distribution.append(&distro_name);
-    sidebar.append(&distribution);
+    let refresh = text_button(tr("Check for updates"));
+    refresh.add_css_class("suggested-action");
+    distribution.append(&refresh);
+    distro_module.append(&distribution);
     let distro_icon = distro_icon.downgrade();
     let distro_name = distro_name.downgrade();
     glib::MainContext::default().spawn_local(async move {
@@ -612,34 +615,49 @@ pub(super) fn attach(
         Source::System,
         tr("System"),
         "system-software-update-symbolic",
-        &sidebar,
+        &distro_module,
         window,
     );
-    sidebar.append(&home_label(tr("More options"), "title-3"));
+    distro_module.append(&home_label(tr("More options"), "title-3"));
+
     let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    preferences.add_css_class("packlift-update-section");
-    preferences.append(&home_label(tr("Automatic updates"), "heading"));
+    preferences.add_css_class("packlift-update-preferences");
+    let automatic_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let automatic_text = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let automatic_title = home_label(tr("Install updates automatically"), "heading");
+    automatic_text.append(&automatic_title);
     let helper = home_label(
         tr("Packlift checks when it opens and applies updates on this schedule while it is running."),
         "dim-label",
     );
     helper.set_wrap(true);
-    preferences.append(&helper);
-    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    automatic_text.append(&helper);
+    automatic_row.append(&automatic_text);
+    let automatic = gtk::Switch::new();
+    automatic.set_valign(gtk::Align::Center);
+    let (days, _) = read_schedule();
+    automatic.set_active(days > 0);
+    automatic.update_property(&[gtk::accessible::Property::Label(tr("Install updates automatically"))]);
+    automatic_row.append(&automatic);
+    preferences.append(&automatic_row);
+
+    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     frequency_row.append(&home_label(tr("Frequency"), ""));
     let frequency_model = gtk::StringList::new(&[&tr("Daily"), &tr("Weekly"), &tr("Monthly")]);
     let frequency = gtk::DropDown::new(Some(frequency_model), None::<gtk::Expression>);
     frequency.set_hexpand(true);
-    let (days, _) = read_schedule();
     frequency.set_selected(match days {
         7 => 1,
         30 => 2,
         _ => 0,
     });
+    frequency.set_sensitive(days > 0);
     frequency.update_property(&[gtk::accessible::Property::Label(tr("Automatic update frequency"))]);
     frequency_row.append(&frequency);
     preferences.append(&frequency_row);
-    sidebar.append(&preferences);
+    distro_module.append(&preferences);
+    sidebar.append(&distro_module);
+
     let flatpaks = Section::new(
         Source::Flatpaks,
         tr("Flatpak"),
@@ -648,13 +666,28 @@ pub(super) fn attach(
         window,
     );
     let sections = [system, flatpaks];
-    frequency.connect_selected_notify(move |frequency| {
-        let days = match frequency.selected() {
+    let frequency_target = frequency.downgrade();
+    automatic.connect_active_notify(move |automatic| {
+        let Some(frequency) = frequency_target.upgrade() else {
+            return;
+        };
+        frequency.set_sensitive(automatic.is_active());
+        let interval = match frequency.selected() {
             1 => 7,
             2 => 30,
             _ => 1,
         };
-        write_schedule(days, now_epoch());
+        write_schedule(if automatic.is_active() { interval } else { 0 }, now_epoch());
+    });
+    let automatic_target = automatic.downgrade();
+    frequency.connect_selected_notify(move |frequency| {
+        let interval = match frequency.selected() {
+            1 => 7,
+            2 => 30,
+            _ => 1,
+        };
+        let enabled = automatic_target.upgrade().is_some_and(|automatic| automatic.is_active());
+        write_schedule(if enabled { interval } else { 0 }, now_epoch());
     });
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
