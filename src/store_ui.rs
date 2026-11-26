@@ -526,6 +526,32 @@ impl StoreView {
             return;
         };
         let window = &self.window;
+        let category_tiles = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .min_children_per_line(1)
+            .max_children_per_line(3)
+            .homogeneous(true)
+            .row_spacing(10)
+            .column_spacing(10)
+            .build();
+        for (key, title, icon, style) in [
+            ("category/Graphics", "Create", "🖌️", "create"),
+            ("category/Office", "Work", "📋", "work"),
+            ("category/Game", "Play", "🎮", "play"),
+            ("category/Social", "Socialize", "💛", "socialize"),
+            ("category/Education", "Learn", "⛵", "learn"),
+            ("category/Development", "Develop", "💻", "develop"),
+        ] {
+            category_tiles.append(&store_category_tile(
+                window,
+                &remote,
+                key,
+                title,
+                icon,
+                style,
+            ));
+        }
+        self.categories.append(&category_tiles);
         for (index, (key, label)) in [
             ("category/Office", "Productivity"),
             ("daily", "App of the Day"),
@@ -737,6 +763,34 @@ fn discovery_grid() -> gtk::FlowBox {
         .row_spacing(10)
         .column_spacing(10)
         .build()
+}
+
+fn store_category_tile(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    remote: &Remote,
+    collection: &'static str,
+    title: &'static str,
+    icon: &str,
+    style: &str,
+) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("packlift-store-category");
+    button.add_css_class(&format!("packlift-store-category-{style}"));
+    button.set_hexpand(true);
+    button.set_size_request(-1, 68);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    content.set_halign(gtk::Align::Center);
+    let icon = home_label(icon, "title-2");
+    content.append(&icon);
+    content.append(&home_label(tr(title), "heading"));
+    button.set_child(Some(&content));
+    let (window, remote) = (window.clone(), remote.clone());
+    button.connect_clicked(move |_| {
+        if let Some(window) = window.upgrade() {
+            show_collection(&window, &remote, collection, tr(title));
+        }
+    });
+    button
 }
 
 fn load_discovery_grid(

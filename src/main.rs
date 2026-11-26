@@ -96,6 +96,14 @@ fn main() -> glib::ExitCode {
                  .packlift-store-pagination > label { margin: 0 6px; }
                  button.packlift-store-suggestion { padding: 10px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); border-left-width: 3px; }
                  button.packlift-store-suggestion:hover { background: mix(@card_bg_color, @window_fg_color, 0.08); }
+                 button.packlift-store-category { padding: 12px; border: 0; border-radius: 12px; }
+                 button.packlift-store-category:hover { border: 1px solid alpha(white, 0.42); }
+                 button.packlift-store-category-create { color: white; background-image: linear-gradient(120deg, #a13eb2, #2858ae); }
+                 button.packlift-store-category-work { color: #23364d; background-image: linear-gradient(120deg, #fff0b9, #f4d97c); }
+                 button.packlift-store-category-play { color: white; background-image: linear-gradient(120deg, #f2a06f, #a832b8, #5333a3); }
+                 button.packlift-store-category-socialize { color: white; background-image: linear-gradient(120deg, #dc2477, #e86b66); }
+                 button.packlift-store-category-learn { color: white; background-image: linear-gradient(120deg, #29c778, #138a64); }
+                 button.packlift-store-category-develop { color: white; background-image: linear-gradient(120deg, #55545f, #393840); }
                  .packlift-store-tint .dim-label { opacity: 0.87; }
                  button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
                  button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",

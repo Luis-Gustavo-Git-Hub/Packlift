@@ -350,3 +350,9 @@ Linux system|Sistema Linux|Sistema Linux|Система Linux|Linux 系统
 Flatpak|Flatpak|Flatpak|Flatpak|Flatpak
 More options|Mais opções|Más opciones|Дополнительные параметры|更多选项
 Install updates automatically|Instalar atualizações automaticamente|Instalar actualizaciones automáticamente|Устанавливать обновления автоматически|自动安装更新
+Create|Criar|Crear|Создавать|创作
+Work|Trabalhar|Trabajar|Работать|工作
+Play|Jogar|Jugar|Играть|娱乐
+Socialize|Socializar|Socializar|Общаться|社交
+Learn|Aprender|Aprender|Учиться|学习
+Develop|Desenvolver|Desarrollar|Разрабатывать|开发
