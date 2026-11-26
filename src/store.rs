@@ -147,14 +147,12 @@ fn flathub_remote(destination: Destination) -> Remote {
     }
 }
 
-pub fn catalog_remotes(runner: &Runner) -> Result<Vec<Remote>> {
+pub fn catalog_remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>> {
     if !host_access_available() {
         return Err(PackliftError::HostAccessRequired);
     }
-    let mut remotes = remotes(runner, Destination::User)
-        .unwrap_or_else(|_| vec![flathub_remote(Destination::User)]);
-    let system = configured_remotes(runner, Destination::System, false).unwrap_or_default();
-    remotes.extend(system.into_iter().filter(|remote| !remote.flathub));
+    let remotes = remotes(runner, destination)
+        .unwrap_or_else(|_| vec![flathub_remote(destination)]);
     Ok(remotes)
 }
 
@@ -186,6 +184,18 @@ impl CatalogSearch {
     pub fn exclude_installed(&mut self, installed: &BTreeSet<String>) {
         if self.is_explore() {
             self.excluded = installed.clone();
+        }
+    }
+
+    pub fn add_remotes(&mut self, remotes: &[Remote]) {
+        for remote in remotes {
+            if !self.remotes.iter().any(|current| {
+                current.destination == remote.destination
+                    && current.name == remote.name
+                    && current.url == remote.url
+            }) {
+                self.remotes.push(remote.clone());
+            }
         }
     }
 
@@ -441,27 +451,132 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
             has_next: response["totalPages"].as_u64().unwrap_or(0) > page as u64,
         });
     }
-    let output = runner.capture(
-        &[
-            "flatpak".into(),
-            "remote-ls".into(),
-            remote.destination.flag().into(),
-            "--app".into(),
-            "--columns=ref,name,description".into(),
-            "--".into(),
-            remote.name.clone(),
-        ],
-        false,
-    )?;
-    let mut results = search_remote_list(&output, query, page)?;
+    // Flatpak's remote-ls doesn't have a search option. Avoid enumerating a
+    // complete remote just to return a small first page; use its AppStream
+    // catalog when present and only fall back to remote-ls otherwise.
     if let Ok(Some(root)) = appstream_root(runner, remote) {
-        for app in &mut results.apps {
-            if let Some(arch) = app.reference.split('/').nth(2) {
-                app.icon = Some(CatalogIcon::AppStream(root.join(arch).join("active/icons")));
+        if let Some(mut results) = appstream_search(runner, &root, query, page).ok() {
+            for app in &mut results.apps {
+                if let Some(arch) = app.reference.split('/').nth(2) {
+                    app.icon = Some(CatalogIcon::AppStream(root.join(arch).join("active/icons")));
+                }
             }
+            return Ok(results);
         }
     }
+    let mut args = vec![
+        "flatpak".into(),
+        "remote-ls".into(),
+        remote.destination.flag().into(),
+        "--app".into(),
+        "--columns=ref,name,description".into(),
+    ];
+    args.extend(["--".into(), remote.name.clone()]);
+    let output = runner.capture(&args, false)?;
+    let results = search_remote_list(&output, query, page)?;
     Ok(results)
+}
+
+fn appstream_search(
+    runner: &Runner,
+    root: &std::path::Path,
+    query: &str,
+    page: usize,
+) -> Result<CatalogPage> {
+    let query = query.to_lowercase();
+    let mut seen = HashSet::new();
+    let mut matches = Vec::new();
+    for arch in ["x86_64", "aarch64", "i386", "arm"] {
+        let path = root.join(arch).join("active/appstream.xml.gz");
+        let bytes = match runner.capture_bytes_limited(
+            &["cat".into(), "--".into(), path.to_string_lossy().into_owned()],
+            false,
+            8 * 1024 * 1024,
+        ) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let mut xml = String::new();
+        flate2::read::GzDecoder::new(bytes.as_slice())
+            .take(32 * 1024 * 1024 + 1)
+            .read_to_string(&mut xml)?;
+        if xml.len() > 32 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(document) = roxmltree::Document::parse(&xml) else {
+            continue;
+        };
+        for component in document
+            .descendants()
+            .filter(|node| node.has_tag_name("component"))
+        {
+            if component.attribute("type").is_some_and(|kind| kind != "desktop") {
+                continue;
+            }
+            let Some(id) = component
+                .children()
+                .find(|node| node.has_tag_name("id"))
+                .and_then(|node| node.text())
+                .map(str::trim)
+                .filter(|id| valid_app_id(id))
+            else {
+                continue;
+            };
+            let reference = component
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name("bundle") && node.attribute("type") == Some("flatpak")
+                })
+                .and_then(|bundle| bundle.text())
+                .filter(|reference| {
+                    reference.starts_with(&format!("app/{id}/"))
+                        && reference
+                            .split('/')
+                            .all(|part| part.is_empty() || valid_path_component(part))
+                })
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("app/{id}/{arch}/stable"));
+            let name = component
+                .children()
+                .find(|node| node.has_tag_name("name"))
+                .and_then(|node| node.text())
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(id)
+                .trim()
+                .to_owned();
+            let summary = component
+                .children()
+                .find(|node| node.has_tag_name("summary"))
+                .and_then(|node| node.text())
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if !format!(
+                "{name} {id} {summary} {}",
+                reference.rsplit('/').next().unwrap_or_default()
+            )
+            .to_lowercase()
+            .contains(&query)
+                || !seen.insert(id.to_owned())
+            {
+                continue;
+            }
+            matches.push(CatalogApp {
+                id: id.into(),
+                name,
+                summary,
+                reference,
+                icon: None,
+            });
+        }
+    }
+    matches.sort_by_cached_key(|app| (search_rank(app, &query), app.name.to_lowercase()));
+    let start = page.saturating_sub(1) * PAGE_SIZE;
+    let has_next = matches.len() > start + PAGE_SIZE;
+    Ok(CatalogPage {
+        apps: matches.into_iter().skip(start).take(PAGE_SIZE).collect(),
+        has_next,
+    })
 }
 
 fn flathub_collection(runner: &Runner, key: &str, page: usize) -> Result<Value> {
@@ -555,7 +670,7 @@ pub fn suggested_apps(
         .map(|app| (remote.clone(), app))
         .collect();
     if apps.len() < SUGGESTION_LIMIT {
-        if let Ok(remotes) = catalog_remotes(runner) {
+        if let Ok(remotes) = catalog_remotes(runner, Destination::User) {
             let mut seen: HashSet<_> = apps.iter().map(|(_, app)| app.id.clone()).collect();
             if let Ok(page) = CatalogSearch::new(remotes, String::new()).page(runner, 1) {
                 let remaining = SUGGESTION_LIMIT - apps.len();
@@ -612,7 +727,8 @@ pub fn flathub_facts(runner: &Runner, app: &CatalogApp) -> FlathubFacts {
         None => summary_url,
     };
     let request = |url: &str| -> Option<Value> {
-        serde_json::from_slice(&fetch(runner, url, None).ok()?).ok()
+        let bytes = fetch_with_timeout(runner, url, None, 8, 2 * 1024 * 1024).ok()?;
+        serde_json::from_slice(&bytes).ok()
     };
     let (summary, stats) = thread::scope(|tasks| {
         let monthly = format!("{FLATHUB_API}/stats/{}", app.id);
@@ -737,10 +853,12 @@ pub fn app_details(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result
     if !remote.flathub {
         return local_app_details(runner, remote, app);
     }
-    let metadata: Value = serde_json::from_slice(&fetch(
+    let metadata: Value = serde_json::from_slice(&fetch_with_timeout(
         runner,
         &format!("{FLATHUB_API}/appstream/{}", app.id),
         None,
+        8,
+        4 * 1024 * 1024,
     )?)?;
     let screenshots = metadata["screenshots"]
         .as_array()

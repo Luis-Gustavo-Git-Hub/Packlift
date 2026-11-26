@@ -263,18 +263,14 @@ impl StoreView {
         self.set_status(tr("Loading repositories…"));
         let view = self.clone();
         background(
-            move || {
-                let remotes = worker().and_then(|runner| store::catalog_remotes(&runner))?;
-                let installed =
-                    crate::installer().and_then(|installer| installer.installed_flatpak_ids());
-                Ok::<_, packlift::core::PackliftError>((remotes, installed.ok()))
-            },
+            move || worker().and_then(|runner| store::catalog_remotes(&runner, Destination::User)),
             move |result| match result {
-                Ok((remotes, installed)) => {
-                    *view.remotes.borrow_mut() = remotes;
-                    *view.installed.borrow_mut() = installed;
+                Ok(user_remotes) => {
+                    *view.remotes.borrow_mut() = user_remotes;
                     view.load_categories();
                     view.new_search();
+                    view.load_installed();
+                    view.load_system_remotes();
                 }
                 Err(error) => {
                     view.set_status(&error.to_string());
@@ -284,37 +280,55 @@ impl StoreView {
         );
     }
 
-    fn refresh_explore(self: &Rc<Self>) {
-        if !self
-            .catalog_search
-            .borrow()
-            .as_ref()
-            .is_some_and(CatalogSearch::is_explore)
-        {
-            return;
-        }
+    fn load_installed(self: &Rc<Self>) {
         let view = self.clone();
         background(
             move || crate::installer().and_then(|installer| installer.installed_flatpak_ids()),
             move |result| {
-                if let Ok(installed) = result {
-                    let changed = view.installed.borrow().as_ref() != Some(&installed);
-                    let refresh = changed
-                        && !view.busy.get()
-                        && view
-                            .catalog_search
-                            .borrow()
-                            .as_ref()
-                            .is_some_and(CatalogSearch::is_explore);
-                    if refresh {
-                        if let Some(search) = view.catalog_search.borrow_mut().as_mut() {
-                            search.exclude_installed(&installed);
-                        }
+                let Ok(installed) = result else {
+                    return;
+                };
+                let changed = view.installed.borrow().as_ref() != Some(&installed);
+                *view.installed.borrow_mut() = Some(installed.clone());
+                if let Some(search) = view.catalog_search.borrow_mut().as_mut() {
+                    search.exclude_installed(&installed);
+                }
+                if changed
+                    && !view.busy.get()
+                    && view
+                        .catalog_search
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(CatalogSearch::is_explore)
+                {
+                    view.load_categories();
+                    view.load_catalog_page(view.page.get(), true);
+                }
+            },
+        );
+    }
+
+    fn load_system_remotes(self: &Rc<Self>) {
+        let view = self.clone();
+        background(
+            move || {
+                worker().and_then(|runner| store::catalog_remotes(&runner, Destination::System))
+            },
+            move |result| {
+                let Ok(system_remotes) = result else {
+                    return;
+                };
+                let remotes =
+                    merge_catalog_remotes(view.remotes.borrow().clone(), system_remotes);
+                let initial_len = view.remotes.borrow().len();
+                if remotes.len() != initial_len {
+                    *view.remotes.borrow_mut() = remotes;
+                    let remotes = view.remotes.borrow().clone();
+                    if let Some(search) = view.catalog_search.borrow_mut().as_mut() {
+                        search.add_remotes(&remotes);
                     }
-                    *view.installed.borrow_mut() = Some(installed);
-                    if refresh {
-                        view.load_categories();
-                        view.load_catalog_page(view.page.get(), true);
+                    if let Some(search) = view.explore_search.borrow_mut().as_mut() {
+                        search.add_remotes(&remotes);
                     }
                 }
             },
@@ -344,18 +358,9 @@ impl StoreView {
         .unwrap_or_else(|| CatalogSearch::new(self.remotes.borrow().clone(), query));
         if search.is_explore() {
             let installed = self.installed.borrow();
-            let Some(installed) = installed.as_ref() else {
-                self.catalog_search.borrow_mut().take();
-                self.feature.set_visible(false);
-                self.list.remove_all();
-                self.page_label.set_text("");
-                self.previous.set_sensitive(false);
-                self.next.set_sensitive(false);
-                self.set_status(tr("Could not check which Flatpaks are installed."));
-                self.set_busy(false);
-                return;
-            };
-            search.exclude_installed(installed);
+            if let Some(installed) = installed.as_ref() {
+                search.exclude_installed(installed);
+            }
         }
         self.list.set_visible(true);
         *self.catalog_search.borrow_mut() = Some(search);
@@ -384,6 +389,11 @@ impl StoreView {
                 (catalog_search, result)
             },
             move |(catalog_search, result)| {
+                let mut catalog_search = catalog_search;
+                catalog_search.add_remotes(&view.remotes.borrow());
+                if let Some(installed) = view.installed.borrow().as_ref() {
+                    catalog_search.exclude_installed(installed);
+                }
                 *view.catalog_search.borrow_mut() = Some(catalog_search);
                 if view.pending_search.get() {
                     view.new_search();
@@ -1033,11 +1043,60 @@ fn advance_banner(carousel: &adw::Carousel, step: i64) {
 }
 
 fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, color: usize) {
+    let loading_name = format!("packlift-store-loading-{}", app.id);
+    window.set_widget_name(&loading_name);
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
     back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_halign(gtk::Align::Center);
+    body.set_valign(gtk::Align::Center);
+    body.set_hexpand(true);
+    body.set_vexpand(true);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(36, 36);
+    spinner.start();
+    spinner.set_halign(gtk::Align::Center);
+    body.append(&spinner);
+    let title = home_label(&app.name, "title-3");
+    title.set_halign(gtk::Align::Center);
+    body.append(&title);
+    let status = home_label(tr("Loading app information…"), "dim-label");
+    status.set_halign(gtk::Align::Center);
+    body.append(&status);
+    toolbar.set_content(Some(&body));
+    crate::updates_ui::attach(&toolbar, &header, window);
+    window.set_title(Some(&app.name));
+    window.set_content(Some(&toolbar));
+    window.present();
+
+    let window = window.downgrade();
+    let remote = remote.clone();
+    let app = app.clone();
+    let (detail_remote, detail_app) = (remote.clone(), app.clone());
+    background(
+        move || worker().and_then(|runner| store::app_details(&runner, &detail_remote, &detail_app)),
+        move |details| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            if window.widget_name() == loading_name.as_str() {
+                show_app_details(&window, &remote, &app, color, details);
+            }
+        },
+    );
+}
+
+fn show_app_details(
+    window: &adw::ApplicationWindow,
+    remote: &Remote,
+    app: &CatalogApp,
+    color: usize,
+    details_result: std::result::Result<store::AppDetails, packlift::core::PackliftError>,
+) {
+    window.set_widget_name("packlift-store-details");
     let body = gtk::Box::new(gtk::Orientation::Vertical, 24);
     body.set_margin_start(20);
     body.set_margin_end(20);
@@ -1057,7 +1116,8 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
         title.append(&home_label(&app.summary, "dim-label"));
     }
     let developer = home_label("", "dim-label");
-    developer.set_visible(false);
+    // Reserve the author line before metadata arrives so the hero stays put.
+    developer.set_size_request(-1, 20);
     title.append(&developer);
     identity.append(&title);
     let install_controls = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1116,12 +1176,16 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
         .row_spacing(8)
         .build();
     facts.set_vexpand(false);
-    facts.set_visible(false);
+    // Keep room for two rows of facts while repository data is loading.
+    facts.set_size_request(-1, 112);
+    facts.set_visible(true);
     hero.append(&facts);
     body.append(&hero);
 
     let gallery = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let gallery_status = home_label(tr("Loading screenshots…"), "dim-label");
+    gallery_status.set_size_request(-1, 280);
+    gallery_status.set_valign(gtk::Align::Center);
     gallery.append(&gallery_status);
     body.append(&gallery);
 
@@ -1344,123 +1408,115 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
             },
         );
     }
-    let source = remote.clone();
     let catalog_source = remote.clone();
-    let selected = app.clone();
     let id = app.id.clone();
     let parent = window.downgrade();
+    let category = details_result
+        .as_ref()
+        .ok()
+        .and_then(|details| details.category.clone());
+    let (parent_for_cards, id) = (parent.clone(), id);
     background(
-        move || worker().and_then(|runner| store::app_details(&runner, &source, &selected)),
-        move |result| {
-            let category = result
-                .as_ref()
-                .ok()
-                .and_then(|details| details.category.clone());
-            let (parent_for_cards, id) = (parent.clone(), id);
-            background(
-                move || {
-                    worker()
-                        .map(|runner| {
-                            store::suggested_apps(
-                                &runner,
-                                &catalog_source,
-                                &id,
-                                category.as_deref(),
-                            )
-                        })
-                        .unwrap_or_default()
-                },
-                move |apps| {
-                    for (index, (remote, app)) in apps.into_iter().enumerate() {
-                        let palette = color / HUE_COUNT * HUE_COUNT;
-                        let suggestion_color = palette + (color + index + 1) % HUE_COUNT;
-                        let child = gtk::FlowBoxChild::new();
-                        child.set_focusable(false);
-                        child.set_child(Some(&suggested_app_card(
-                            &parent_for_cards,
-                            remote.clone(),
-                            &app,
-                            suggestion_color,
-                        )));
-                        similar.append(&child);
-                        let rail = &rails[index % 2];
-                        let tile =
-                            suggested_app_card(&parent_for_cards, remote, &app, suggestion_color);
-                        rail.append(&tile);
-                    }
-                    update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
-                },
-            );
-            match result {
-                Ok(details) => {
-                    developer.set_text(&details.developer);
-                    developer.set_visible(!details.developer.is_empty());
-                    if !details.license.is_empty() {
-                        let value = match details.free_software {
-                            Some(true) => tr("Free software"),
-                            Some(false) => tr("Proprietary software"),
-                            None => &details.license,
-                        };
-                        let license = store_fact(
-                            "text-x-generic-symbolic",
-                            tr("License"),
-                            value,
-                            tr("The license defines how you may use, modify, and share this app."),
-                            Some(&details.license),
-                        );
-                        facts.append(&license);
-                        facts.set_visible(true);
-                    }
-                    if let Some(adaptive) = details.adaptive {
-                        facts.append(&store_fact(
-                            if adaptive {
-                                "phone-symbolic"
-                            } else {
-                                "computer-symbolic"
-                            },
-                            tr("Device support"),
-                            if adaptive {
-                                tr("Adaptive")
-                            } else {
-                                tr("Desktop")
-                            },
-                            if adaptive {
-                                tr("This app adapts to smaller screens, such as phones.")
-                            } else {
-                                tr("This app is designed primarily for desktop screens.")
-                            },
-                            None,
-                        ));
-                        facts.set_visible(true);
-                    }
-                    if let Some(age) = details.age {
-                        facts.append(&store_fact(
-                            "avatar-default-symbolic",
-                            tr("Age rating"),
-                            &format!("{age}+"),
-                            tr("Minimum recommended age based on the app’s content rating."),
-                            None,
-                        ));
-                        facts.set_visible(true);
-                    }
-                    if !details.description.is_empty() {
-                        description.set_text(&details.description);
-                        description.set_visible(true);
-                    }
-                    show_release_history(&releases, details.releases);
-                    show_detail_links(&links_section, &links, &parent, details.links);
-                    if details.screenshots.is_empty() {
-                        gallery_status
-                            .set_text(tr("No screenshots are available from this repository."));
-                    } else {
-                        gallery.remove(&gallery_status);
-                        bind_gallery(&gallery, details.screenshots);
-                    }
-                }
-                Err(_) => gallery_status.set_text(tr("Screenshots could not be loaded.")),
+        move || {
+            worker()
+                .map(|runner| {
+                    store::suggested_apps(
+                        &runner,
+                        &catalog_source,
+                        &id,
+                        category.as_deref(),
+                    )
+                })
+                .unwrap_or_default()
+        },
+        move |apps| {
+            for (index, (remote, app)) in apps.into_iter().enumerate() {
+                let palette = color / HUE_COUNT * HUE_COUNT;
+                let suggestion_color = palette + (color + index + 1) % HUE_COUNT;
+                let child = gtk::FlowBoxChild::new();
+                child.set_focusable(false);
+                child.set_child(Some(&suggested_app_card(
+                    &parent_for_cards,
+                    remote.clone(),
+                    &app,
+                    suggestion_color,
+                )));
+                similar.append(&child);
+                let rail = &rails[index % 2];
+                let tile = suggested_app_card(&parent_for_cards, remote, &app, suggestion_color);
+                rail.append(&tile);
             }
+            update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
         },
     );
+    match details_result {
+        Ok(details) => {
+            developer.set_text(&details.developer);
+            developer.set_visible(!details.developer.is_empty());
+            if !details.license.is_empty() {
+                let value = match details.free_software {
+                    Some(true) => tr("Free software"),
+                    Some(false) => tr("Proprietary software"),
+                    None => &details.license,
+                };
+                let license = store_fact(
+                    "text-x-generic-symbolic",
+                    tr("License"),
+                    value,
+                    tr("The license defines how you may use, modify, and share this app."),
+                    Some(&details.license),
+                );
+                facts.append(&license);
+                facts.set_visible(true);
+            }
+            if let Some(adaptive) = details.adaptive {
+                facts.append(&store_fact(
+                    if adaptive {
+                        "phone-symbolic"
+                    } else {
+                        "computer-symbolic"
+                    },
+                    tr("Device support"),
+                    if adaptive {
+                        tr("Adaptive")
+                    } else {
+                        tr("Desktop")
+                    },
+                    if adaptive {
+                        tr("This app adapts to smaller screens, such as phones.")
+                    } else {
+                        tr("This app is designed primarily for desktop screens.")
+                    },
+                    None,
+                ));
+                facts.set_visible(true);
+            }
+            if let Some(age) = details.age {
+                facts.append(&store_fact(
+                    "avatar-default-symbolic",
+                    tr("Age rating"),
+                    &format!("{age}+"),
+                    tr("Minimum recommended age based on the app’s content rating."),
+                    None,
+                ));
+                facts.set_visible(true);
+            }
+            if !details.description.is_empty() {
+                description.set_text(&details.description);
+                description.set_visible(true);
+            }
+            show_release_history(&releases, details.releases);
+            show_detail_links(&links_section, &links, &parent, details.links);
+            if details.screenshots.is_empty() {
+                gallery_status
+                    .set_text(tr("No screenshots are available from this repository."));
+            } else {
+                gallery.remove(&gallery_status);
+                bind_gallery(&gallery, details.screenshots);
+            }
+        }
+        Err(_) => gallery_status.set_text(tr("App information could not be loaded.")),
+    }
     window.set_content(Some(&toolbar));
     window.present();
 }
@@ -1595,6 +1651,21 @@ fn show_detail_links(
 }
 
 type StoreChoice = (Remote, CatalogApp);
+
+fn merge_catalog_remotes(user: Vec<Remote>, system: Vec<Remote>) -> Vec<Remote> {
+    let mut remotes = user;
+    for remote in system {
+        if !remotes.iter().any(|existing| {
+            existing.destination == remote.destination
+                && existing.name == remote.name
+                && existing.url == remote.url
+        }) {
+            remotes.push(remote);
+        }
+    }
+    remotes.sort_by_cached_key(|remote| (!remote.flathub, remote.title.to_lowercase()));
+    remotes
+}
 
 fn load_detail_sources(
     remote: &Remote,
@@ -2600,8 +2671,12 @@ fn screenshot_frame(shot: &Screenshot, single: bool) -> gtk::Box {
     caption.add_css_class("dim-label");
     if single {
         caption.set_wrap(true);
+        caption.set_lines(2);
+        caption.set_size_request(-1, 40);
     } else {
         caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        caption.set_lines(1);
+        caption.set_size_request(-1, 20);
         caption.set_max_width_chars(22);
         caption.set_tooltip_text((!shot.caption.is_empty()).then_some(shot.caption.as_str()));
     }
@@ -2620,7 +2695,6 @@ fn screenshot_frame(shot: &Screenshot, single: bool) -> gtk::Box {
         if let Some(texture) = texture {
             picture.set_paintable(Some(texture));
             caption.set_text(&text);
-            caption.set_visible(!text.is_empty());
         } else {
             caption.set_text(tr("Screenshots could not be loaded."));
         }
