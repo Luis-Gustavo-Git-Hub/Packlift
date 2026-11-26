@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::{
     back_to_previous, home_label, i18n::tr, page_navigation, page_shortcut, render_home,
-    run_job_with_progress, show_host_access_dialog, text_button,
+    run_job_with_progress, show_host_access_dialog, text_button, PageReturn,
 };
 
 struct StoreView {
@@ -1085,7 +1085,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Store"), "")));
-    back_to_previous(&toolbar, &header, window);
+    let previous = back_to_previous(&toolbar, &header, window);
     toolbar.add_top_bar(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_halign(gtk::Align::Center);
@@ -1120,7 +1120,7 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
                 return;
             };
             if window.widget_name() == loading_name.as_str() {
-                show_app_details(&window, &remote, &app, color, details);
+                show_app_details(&window, &remote, &app, color, details, previous);
             }
         },
     );
@@ -1130,11 +1130,25 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
 fn detail_page_toolbar(
     window: &adw::ApplicationWindow,
     title: &str,
+    previous: Option<PageReturn>,
 ) -> (adw::ToolbarView, adw::HeaderBar) {
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
-    back_to_previous(&toolbar, &header, window);
+    if let Some(previous) = previous {
+        let owner = window.downgrade();
+        page_navigation(
+            &toolbar,
+            &header,
+            tr("Back"),
+            "go-previous-symbolic",
+            move || {
+                if let Some(window) = owner.upgrade() {
+                    previous.restore(&window);
+                }
+            },
+        );
+    }
     toolbar.add_top_bar(&header);
     (toolbar, header)
 }
@@ -1145,6 +1159,7 @@ fn show_app_details(
     app: &CatalogApp,
     color: usize,
     details_result: std::result::Result<store::AppDetails, packlift::core::PackliftError>,
+    previous: Option<PageReturn>,
 ) {
     window.set_widget_name("packlift-store-details");
     let body = gtk::Box::new(gtk::Orientation::Vertical, 24);
@@ -1293,7 +1308,7 @@ fn show_app_details(
         .hexpand(true)
         .child(&layout)
         .build();
-    let (toolbar, header) = detail_page_toolbar(window, &app.name);
+    let (toolbar, header) = detail_page_toolbar(window, &app.name, previous);
     let (suggestions_layout, rails) = detail_suggestion_layout(&scroll, &similar_section);
     toolbar.set_content(Some(&suggestions_layout));
     crate::updates_ui::attach(&toolbar, &header, window);
