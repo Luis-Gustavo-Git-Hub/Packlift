@@ -1,8 +1,10 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
+    fs,
     rc::Rc,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use adw::prelude::*;
@@ -37,6 +39,138 @@ struct Available {
 
 fn command(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+const UPDATE_INTERVAL_DAYS: [u64; 3] = [1, 7, 30];
+
+thread_local! {
+    static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
+    static AUTO_UPDATE_RUNNING: Cell<bool> = const { Cell::new(false) };
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn schedule_path() -> std::path::PathBuf {
+    packlift_data_dir().join("updates.json")
+}
+
+fn read_schedule() -> (u64, u64) {
+    let contents = fs::read_to_string(schedule_path()).unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
+    let days = value["interval_days"]
+        .as_u64()
+        .filter(|days| UPDATE_INTERVAL_DAYS.contains(days))
+        .unwrap_or(1);
+    let last_run = value["last_auto_update"].as_u64().unwrap_or(0);
+    (days, last_run)
+}
+
+fn write_schedule(days: u64, last_run: u64) {
+    let path = schedule_path();
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let temporary = path.with_extension("json.tmp");
+    let contents = serde_json::json!({
+        "interval_days": days,
+        "last_auto_update": last_run,
+    });
+    if fs::write(&temporary, contents.to_string()).is_ok() {
+        let _ = fs::rename(temporary, path);
+    }
+}
+
+fn distribution_identity() -> (String, String) {
+    let result = Runner::new(None, Arc::new(|_| {}))
+        .and_then(|runner| runner.capture(&command(&["cat", "/etc/os-release"]), false));
+    let Ok(contents) = result else {
+        return (tr("Linux system").to_owned(), "computer-symbolic".to_owned());
+    };
+    let values: BTreeMap<_, _> = contents
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key, value.trim_matches('"')))
+        .collect();
+    let name = values
+        .get("PRETTY_NAME")
+        .copied()
+        .unwrap_or("Linux system")
+        .to_owned();
+    let candidate = values
+        .get("LOGO")
+        .map(|logo| (*logo).to_owned())
+        .or_else(|| values.get("ID").map(|id| format!("distributor-logo-{id}")))
+        .unwrap_or_else(|| "computer-symbolic".to_owned());
+    (name, candidate)
+}
+
+fn apply_due_updates() -> Result<()> {
+    let mut errors = Vec::new();
+    for source in [
+        Source::System,
+        Source::Flatpak("--user"),
+        Source::Flatpak("--system"),
+    ] {
+        match check(source) {
+            Ok(available) if available.available => {
+                if let Err(error) = apply(&available.backend) {
+                    errors.push(error.to_string());
+                }
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(PackliftError::Message(errors.join("\n")))
+    }
+}
+
+fn ensure_auto_update_timer(app: &gtk::Application) {
+    let started = AUTO_UPDATE_TIMER_STARTED.with(|started| started.replace(true));
+    if started {
+        return;
+    }
+    let (days, last_run) = read_schedule();
+    if last_run == 0 {
+        // The update sections check immediately; start the automatic schedule from now.
+        write_schedule(days, now_epoch());
+    }
+    let app = app.downgrade();
+    glib::timeout_add_seconds_local(60, move || {
+        let Some(app) = app.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if !host_access_available() || AUTO_UPDATE_RUNNING.with(Cell::get) {
+            return glib::ControlFlow::Continue;
+        }
+        let (days, last_run) = read_schedule();
+        let now = now_epoch();
+        if last_run == 0 {
+            write_schedule(days, now);
+            return glib::ControlFlow::Continue;
+        }
+        if now.saturating_sub(last_run) < days.saturating_mul(24 * 60 * 60) {
+            return glib::ControlFlow::Continue;
+        }
+        write_schedule(days, now);
+        AUTO_UPDATE_RUNNING.with(|running| running.set(true));
+        let hold = app.hold();
+        glib::MainContext::default().spawn_local(async move {
+            let _hold = hold;
+            let _ = gio::spawn_blocking(apply_due_updates).await;
+            AUTO_UPDATE_RUNNING.with(|running| running.set(false));
+        });
+        glib::ControlFlow::Continue
+    });
 }
 
 fn check(source: Source) -> Result<Available> {
@@ -198,12 +332,18 @@ impl Section {
     fn new(
         source: Source,
         title: &str,
+        icon_name: &str,
         panel: &gtk::Box,
         window: &adw::ApplicationWindow,
     ) -> Rc<Self> {
         let group = gtk::Box::new(gtk::Orientation::Vertical, 8);
         group.add_css_class("packlift-update-section");
-        group.append(&home_label(title, "heading"));
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let icon = gtk::Image::from_icon_name(icon_name);
+        icon.set_pixel_size(18);
+        heading.append(&icon);
+        heading.append(&home_label(title, "heading"));
+        group.append(&heading);
         let status = home_label(tr("Waiting to check for updates."), "dim-label");
         group.append(&status);
         let details = home_label("", "caption");
@@ -384,21 +524,85 @@ pub(super) fn attach(
     refresh.update_property(&[gtk::accessible::Property::Label(tr("Check for updates"))]);
     title_row.append(&refresh);
     sidebar.append(&title_row);
-    let sections = [
-        Section::new(Source::System, tr("System"), &sidebar, window),
-        Section::new(
-            Source::Flatpak("--user"),
-            tr("Flatpaks for my account"),
-            &sidebar,
-            window,
-        ),
-        Section::new(
-            Source::Flatpak("--system"),
-            tr("System Flatpaks"),
-            &sidebar,
-            window,
-        ),
-    ];
+    let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    preferences.add_css_class("packlift-update-section");
+    preferences.append(&home_label(tr("Automatic updates"), "heading"));
+    let helper = home_label(
+        tr("Packlift checks when it opens and applies updates on this schedule while it is running."),
+        "dim-label",
+    );
+    helper.set_wrap(true);
+    preferences.append(&helper);
+    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    frequency_row.append(&home_label(tr("Frequency"), ""));
+    let frequency_model = gtk::StringList::new(&[&tr("Daily"), &tr("Weekly"), &tr("Monthly")]);
+    let frequency = gtk::DropDown::new(Some(frequency_model), None::<gtk::Expression>);
+    frequency.set_hexpand(true);
+    let (days, _) = read_schedule();
+    frequency.set_selected(match days {
+        7 => 1,
+        30 => 2,
+        _ => 0,
+    });
+    frequency.update_property(&[gtk::accessible::Property::Label(tr("Automatic update frequency"))]);
+    frequency_row.append(&frequency);
+    preferences.append(&frequency_row);
+    sidebar.append(&preferences);
+    let distribution = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let distro_icon = gtk::Image::from_icon_name("computer-symbolic");
+    distro_icon.set_pixel_size(32);
+    distribution.append(&distro_icon);
+    let distro_name = home_label(tr("Linux system"), "title-3");
+    distro_name.set_hexpand(true);
+    distro_name.set_valign(gtk::Align::Center);
+    distribution.append(&distro_name);
+    sidebar.append(&distribution);
+    let distro_icon = distro_icon.downgrade();
+    let distro_name = distro_name.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        if let Ok((name, icon)) = gio::spawn_blocking(distribution_identity).await {
+            if let Some(label) = distro_name.upgrade() {
+                label.set_text(&name);
+            }
+            if let Some(image) = distro_icon.upgrade() {
+                let icon = gtk::gdk::Display::default()
+                    .filter(|display| gtk::IconTheme::for_display(display).has_icon(&icon))
+                    .map_or("computer-symbolic", |_| icon.as_str());
+                image.set_icon_name(Some(icon));
+            }
+        }
+    });
+    let system = Section::new(
+        Source::System,
+        tr("System"),
+        "system-software-update-symbolic",
+        &sidebar,
+        window,
+    );
+    sidebar.append(&home_label(tr("Flatpak"), "title-3"));
+    let user_flatpaks = Section::new(
+        Source::Flatpak("--user"),
+        tr("User Flatpaks"),
+        "user-home-symbolic",
+        &sidebar,
+        window,
+    );
+    let system_flatpaks = Section::new(
+        Source::Flatpak("--system"),
+        tr("System Flatpaks"),
+        "computer-symbolic",
+        &sidebar,
+        window,
+    );
+    let sections = [system, user_flatpaks, system_flatpaks];
+    frequency.connect_selected_notify(move |frequency| {
+        let days = match frequency.selected() {
+            1 => 7,
+            2 => 30,
+            _ => 1,
+        };
+        write_schedule(days, now_epoch());
+    });
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)
@@ -411,6 +615,10 @@ pub(super) fn attach(
             section.refresh();
         }
     };
+    if let Some(app) = window.application() {
+        ensure_auto_update_timer(&app);
+    }
+    refresh_all();
     let manual = refresh_all.clone();
     refresh.connect_clicked(move |_| manual());
     split.connect_show_sidebar_notify(move |split| {

@@ -340,3 +340,13 @@ Could not check for updates. See the Packlift log.|Não foi possível verificar 
 System access is required to check for updates.|É preciso liberar o acesso ao sistema para verificar atualizações.|Se necesita acceso al sistema para buscar actualizaciones.|Для проверки обновлений требуется доступ к системе.|需要系统访问权限才能检查更新。
 Update check incomplete|Verificação incompleta|Comprobación incompleta|Проверка обновлений не завершена|更新检查未完成
 Could not check these Flatpak repositories: {repositories}|Não foi possível consultar estas origens Flatpak: {repositories}|No se pudieron consultar estos repositorios Flatpak: {repositories}|Не удалось проверить репозитории Flatpak: {repositories}|无法检查这些 Flatpak 软件源：{repositories}
+Automatic updates|Atualizações automáticas|Actualizaciones automáticas|Автоматические обновления|自动更新
+Packlift checks when it opens and applies updates on this schedule while it is running.|O Packlift verifica atualizações ao abrir e as instala neste intervalo enquanto estiver em execução.|Packlift busca actualizaciones al abrirse y las instala con este intervalo mientras está en ejecución.|Packlift проверяет обновления при запуске и устанавливает их по этому графику, пока приложение работает.|Packlift 会在启动时检查更新，并在运行期间按此计划安装更新。
+Frequency|Frequência|Frecuencia|Частота|频率
+Daily|Diariamente|Diariamente|Ежедневно|每天
+Weekly|Semanalmente|Semanalmente|Еженедельно|每周
+Monthly|Mensalmente|Mensualmente|Ежемесячно|每月
+Automatic update frequency|Frequência das atualizações automáticas|Frecuencia de actualización automática|Частота автоматического обновления|自动更新频率
+Linux system|Sistema Linux|Sistema Linux|Система Linux|Linux 系统
+User Flatpaks|Flatpaks do usuário|Flatpaks del usuario|Пользовательские Flatpak|用户 Flatpak
+Flatpak|Flatpak|Flatpak|Flatpak|Flatpak
