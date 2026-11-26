@@ -1461,6 +1461,9 @@ fi"#
             let offset = appimage_offset(&package.path)?.ok_or_else(|| {
                 PackliftError::Message("Sandbox mode requires a type 2 AppImage.".into())
             })?;
+            let image = directory.join("program.AppImage");
+            fs::copy(&package.path, &image)?;
+            fs::set_permissions(&image, fs::Permissions::from_mode(0o700))?;
             let payload = directory.join("payload");
             self.runner.run(
                 &[
@@ -3027,7 +3030,7 @@ fn short_hash(value: &str) -> Result<String> {
     Ok(sha256_bytes(value.as_bytes())?[..20].to_owned())
 }
 
-fn appimage_offset(path: &Path) -> Result<Option<u64>> {
+pub fn appimage_offset(path: &Path) -> Result<Option<u64>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = fs::File::open(path)?;
     let mut header = [0_u8; 64];

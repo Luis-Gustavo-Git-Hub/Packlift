@@ -218,7 +218,6 @@ Flatpak apps|Apps Flatpak|Aplicaciones Flatpak|Приложения Flatpak|Flat
 Other apps|Outros apps|Otras aplicaciones|Другие приложения|其他应用
 Filter by app type|Filtrar por tipo de app|Filtrar por tipo de aplicación|Фильтр по типу приложения|按应用类型筛选
 Try a different search or filter.|Tente outro termo de busca ou filtro.|Prueba otra búsqueda u otro filtro.|Попробуйте другой запрос или фильтр.|请尝试其他搜索词或筛选条件。
-User Flatpaks|Flatpaks da conta|Flatpaks de tu cuenta|Пользовательские Flatpak|用户 Flatpak
 System Flatpaks|Flatpaks do sistema|Flatpaks del sistema|Системные Flatpak|系统 Flatpak
 Windows apps|Apps Windows|Aplicaciones de Windows|Приложения Windows|Windows 应用
 Windows game shortcuts|Atalhos de jogos Windows|Accesos directos a juegos de Windows|Ярлыки игр Windows|Windows 游戏快捷方式
@@ -329,14 +328,42 @@ Check for updates|Verificar atualizações|Buscar actualizaciones|Провери
 Waiting to check for updates.|Aguardando a verificação.|Esperando la comprobación.|Ожидание проверки обновлений.|等待检查更新。
 Checking for updates…|Verificando atualizações…|Buscando actualizaciones…|Проверка обновлений…|正在检查更新…
 Updates available|Atualizações disponíveis|Actualizaciones disponibles|Доступны обновления|有可用更新
-Up to date|Em dia|Al día|Обновления не требуются|已是最新
+Not checked yet|Ainda não verificado|Aún no se ha comprobado|Ещё не проверялось|尚未检查
+Last checked: {time}|Última verificação: {time}|Última comprobación: {time}|Последняя проверка: {time}|上次检查：{time}
+1 app needs updates|1 app precisa de atualização|1 aplicación necesita actualizarse|Требуется обновить 1 приложение|1 个应用需要更新
+{count} apps need updates|{count} apps precisam de atualização|{count} aplicaciones necesitan actualizarse|Требуется обновить приложений: {count}|{count} 个应用需要更新
+1 runtime update available|1 atualização de runtime disponível|Hay 1 actualización de runtime disponible|Доступно 1 обновление среды выполнения|有 1 个运行时更新
+{count} runtime updates available|{count} atualizações de runtime disponíveis|Hay {count} actualizaciones de runtime disponibles|Доступно обновлений среды выполнения: {count}|有 {count} 个运行时更新
+{count} apps and {runtimes} runtime updates available|{count} apps e {runtimes} atualizações de runtime disponíveis|Hay {count} aplicaciones y {runtimes} actualizaciones de runtime disponibles|Доступно обновлений приложений: {count}, сред выполнения: {runtimes}|有 {count} 个应用和 {runtimes} 个运行时更新
 And {count} more|E mais {count}|Y {count} más|И ещё {count}|还有 {count} 项
 Applying updates…|Aplicando atualizações…|Aplicando actualizaciones…|Установка обновлений…|正在应用更新…
 Updates installed.|Atualizações instaladas.|Actualizaciones instaladas.|Обновления установлены.|更新已安装。
-Updates prepared. Restart to finish.|Atualizações preparadas. Reinicie para concluir.|Actualizaciones preparadas. Reinicia para terminar.|Обновления подготовлены. Перезагрузите систему для завершения.|更新已准备就绪。重启以完成更新。
 Flatpaks for my account|Flatpaks da minha conta|Flatpaks de mi cuenta|Flatpak моей учётной записи|当前账户的 Flatpak
-System updates are unavailable on this distribution.|As atualizações do sistema estão indisponíveis nesta distribuição.|Las actualizaciones del sistema no están disponibles en esta distribución.|Обновления системы недоступны в этом дистрибутиве.|此发行版的系统更新不可用。
 Could not check for updates. See the Packlift log.|Não foi possível verificar as atualizações. Consulte o registro do Packlift.|No se pudieron buscar actualizaciones. Consulta el registro de Packlift.|Не удалось проверить обновления. См. журнал Packlift.|无法检查更新。请查看 Packlift 日志。
-System access is required to check for updates.|É preciso liberar o acesso ao sistema para verificar atualizações.|Se necesita acceso al sistema para buscar actualizaciones.|Для проверки обновлений требуется доступ к системе.|需要系统访问权限才能检查更新。
 Update check incomplete|Verificação incompleta|Comprobación incompleta|Проверка обновлений не завершена|更新检查未完成
-Could not check these Flatpak repositories: {repositories}|Não foi possível consultar estas origens Flatpak: {repositories}|No se pudieron consultar estos repositorios Flatpak: {repositories}|Не удалось проверить репозитории Flatpak: {repositories}|无法检查这些 Flatpak 软件源：{repositories}
+Some Flatpak repositories could not be checked.|Não foi possível consultar algumas origens Flatpak.|No se pudieron comprobar algunos repositorios Flatpak.|Не удалось проверить некоторые репозитории Flatpak.|无法检查部分 Flatpak 软件源。
+AppImages|AppImages|AppImages|AppImage|AppImage
+AppImage update support is unavailable.|O suporte a atualizações de AppImage não está disponível.|La compatibilidad con actualizaciones de AppImage no está disponible.|Поддержка обновлений AppImage недоступна.|AppImage 更新支持不可用。
+Some AppImages could not be checked.|Não foi possível verificar alguns AppImages.|No se pudieron comprobar algunas AppImages.|Не удалось проверить некоторые AppImage.|无法检查部分 AppImage。
+1 AppImage update available|Há atualização para 1 AppImage|Hay una actualización disponible para 1 AppImage|Доступно обновление для 1 AppImage|有 1 个 AppImage 更新
+{count} AppImage updates available|Há atualizações para {count} AppImages|Hay actualizaciones disponibles para {count} AppImages|Доступны обновления для AppImage: {count}|有 {count} 个 AppImage 更新
+{count} AppImages do not support automatic updates.|{count} AppImages não oferecem atualizações automáticas.|{count} AppImages no admiten actualizaciones automáticas.|{count} AppImage не поддерживают автоматические обновления.|{count} 个 AppImage 不支持自动更新。
+No AppImages with automatic update support were found.|Nenhum AppImage com suporte a atualização automática foi encontrado.|No se encontraron AppImages con soporte para actualizaciones automáticas.|Не найдено AppImage с поддержкой автоматических обновлений.|未找到支持自动更新的 AppImage。
+All supported AppImages are up to date.|Todos os AppImages compatíveis estão atualizados.|Todos los AppImages compatibles están actualizados.|Все поддерживаемые AppImage обновлены.|所有受支持的 AppImage 均为最新。
+Automatic updates|Atualizações automáticas|Actualizaciones automáticas|Автоматические обновления|自动更新
+Packlift checks when it opens and applies updates on this schedule while it is running.|O Packlift verifica atualizações ao abrir e as instala neste intervalo enquanto estiver em execução.|Packlift busca actualizaciones al abrirse y las instala con este intervalo mientras está en ejecución.|Packlift проверяет обновления при запуске и устанавливает их по этому графику, пока приложение работает.|Packlift 会在启动时检查更新，并在运行期间按此计划安装更新。
+Frequency|Frequência|Frecuencia|Частота|频率
+Daily|Diariamente|Diariamente|Ежедневно|每天
+Weekly|Semanalmente|Semanalmente|Еженедельно|每周
+Monthly|Mensalmente|Mensualmente|Ежемесячно|每月
+Automatic update frequency|Frequência das atualizações automáticas|Frecuencia de actualización automática|Частота автоматического обновления|自动更新频率
+Linux distribution|Distribuição Linux|Distribución de Linux|Дистрибутив Linux|Linux 发行版
+Flatpak|Flatpak|Flatpak|Flatpak|Flatpak
+More options|Mais opções|Más opciones|Дополнительные параметры|更多选项
+Install updates automatically|Instalar atualizações automaticamente|Instalar actualizaciones automáticamente|Устанавливать обновления автоматически|自动安装更新
+Create|Criar|Crear|Создавать|创作
+Work|Trabalhar|Trabajar|Работать|工作
+Play|Jogar|Jugar|Играть|娱乐
+Socialize|Socializar|Socializar|Общаться|社交
+Learn|Aprender|Aprender|Учиться|学习
+Develop|Desenvolver|Desarrollar|Разрабатывать|开发
