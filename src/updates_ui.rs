@@ -501,7 +501,6 @@ impl Section {
         group.append(&status);
         let last_checked = home_label(&last_check_time(source), "dim-label");
         last_checked.add_css_class("caption");
-        group.append(&last_checked);
         let details = home_label("", "caption");
         details.set_selectable(true);
         details.set_visible(false);
@@ -515,10 +514,18 @@ impl Section {
         update.set_hexpand(true);
         update.set_margin_top(4);
         update.set_visible(false);
-        if matches!(source, Source::Flatpaks) {
-            update.set_visible(false);
+        if matches!(source, Source::System) {
+            last_checked.set_hexpand(true);
+            update.set_halign(gtk::Align::End);
+            update.set_hexpand(false);
+            let activity = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            activity.append(&last_checked);
+            activity.append(&update);
+            panel.append(&activity);
+        } else {
+            group.append(&last_checked);
+            group.append(&update);
         }
-        group.append(&update);
         panel.append(&group);
         let section = Rc::new(Self {
             source,
@@ -552,6 +559,7 @@ impl Section {
         self.details.set_visible(false);
         self.warning.set_visible(false);
         self.status.set_visible(true);
+        self.last_checked.set_visible(true);
         self.status.set_text(tr("Checking for updates…"));
         let section = self.clone();
         glib::MainContext::default().spawn_local(async move {
@@ -566,10 +574,7 @@ impl Section {
                     let partial = !result.failed_remotes.is_empty();
                     section.warning.set_visible(partial);
                     if partial {
-                        section.warning.set_text(
-                            &tr("Could not check these Flatpak repositories: {repositories}")
-                                .replace("{repositories}", &result.failed_remotes.join(", ")),
-                        );
+                        section.warning.set_text(tr("Some Flatpak repositories could not be checked."));
                     }
                     let status = if result.available && matches!(section.source, Source::Flatpaks) {
                         format_flatpak_status(&result)
@@ -591,10 +596,14 @@ impl Section {
                     }
                     section.details.set_text(&lines.join("\n"));
                     section.details.set_visible(!lines.is_empty() && matches!(section.source, Source::System));
-                    section.update.set_visible(result.available && matches!(section.source, Source::System));
+                    let is_system = matches!(section.source, Source::System);
+                    section.update.set_visible(result.available && is_system);
+                    section.last_checked.set_visible(!result.available || !is_system);
                 }
                 Ok(Err(error)) => {
                     *section.backend.borrow_mut() = None;
+                    section.update.set_visible(false);
+                    section.last_checked.set_visible(true);
                     if matches!(error, PackliftError::HostAccessRequired) {
                         section
                             .status
@@ -632,11 +641,12 @@ impl Section {
                     *section.backend.borrow_mut() = None;
                     section.update.set_visible(false);
                     section.details.set_visible(false);
-                    section.status.set_text(if restart {
-                        tr("Updates prepared. Restart to finish.")
+                    if restart {
+                        section.last_checked.set_visible(true);
+                        section.status.set_text(tr("Updates prepared. Restart to finish."));
                     } else {
-                        tr("Updates installed.")
-                    });
+                        section.refresh();
+                    }
                 }
                 Ok(Err(error)) => section.status.set_text(&error.to_string()),
                 Err(_) => section
