@@ -94,7 +94,7 @@ fn main() -> glib::ExitCode {
                  .packlift-update-section { padding: 18px; border-radius: 14px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  .packlift-update-flatpak { padding: 18px; border-radius: 16px; background-image: linear-gradient(135deg, alpha(#4a90d9, 0.18), alpha(@card_bg_color, 0.98) 62%); border: 1px solid alpha(#4a90d9, 0.42); }
                  .packlift-flatpak-update-icon { padding: 3px; border-radius: 11px; }
-                 .packlift-library-sidebar { padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.035); }
+                 .packlift-library-sidebar { padding: 6px; border-radius: 0 12px 12px 0; background: alpha(@window_fg_color, 0.035); }
                  .packlift-library-details { padding: 34px; }
                  .packlift-library-detail-hero { padding: 18px; border-radius: 14px; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.16), alpha(@card_bg_color, 0.96) 70%); border: 1px solid alpha(@accent_bg_color, 0.24); }
                  .packlift-library-detail-row { padding: 12px 14px; border-radius: 9px; background: @card_bg_color; }
@@ -291,11 +291,11 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     header.pack_end(&menu);
     toolbar.add_top_bar(&header);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    content.set_margin_top(22);
-    content.set_margin_bottom(24);
-    content.set_margin_start(22);
-    content.set_margin_end(22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    content.set_margin_top(8);
+    content.set_margin_bottom(0);
+    content.set_margin_start(0);
+    content.set_margin_end(0);
 
     let open = text_button(tr("Choose package…"));
     open.add_css_class("suggested-action");
@@ -435,6 +435,8 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             library.append(&split);
 
             let detail_target = details.downgrade();
+            let detail_app = app.clone();
+            let detail_window = window.downgrade();
             let selected_rows = rows.clone();
             list.connect_row_selected(move |_, selected| {
                 let Some(selected) = selected else {
@@ -448,13 +450,20 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 else {
                     return;
                 };
-                let Some(details) = detail_target.upgrade() else {
+                let (Some(details), Some(window)) =
+                    (detail_target.upgrade(), detail_window.upgrade())
+                else {
                     return;
                 };
                 while let Some(child) = details.first_child() {
                     details.remove(&child);
                 }
-                details.append(&library_detail(record));
+                let detail = library_detail(record, &detail_app, &window);
+                let clamp = adw::Clamp::builder()
+                    .maximum_size(1000)
+                    .child(&detail)
+                    .build();
+                details.append(&clamp);
             });
             if let Some((first, _, _)) = rows.first() {
                 list.select_row(Some(first));
@@ -498,15 +507,10 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     }
     content.append(&library);
 
-    let clamp = adw::Clamp::builder()
-        .maximum_size(1240)
-        .tightening_threshold(900)
-        .child(&content)
-        .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)
-        .child(&clamp)
+        .child(&content)
         .build();
     toolbar.set_content(Some(&scroll));
     updates_ui::attach(&toolbar, &header, window);
@@ -921,8 +925,12 @@ fn library_row(
     row
 }
 
-fn library_detail(record: &Value) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
+fn library_detail(
+    record: &Value,
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
     content.add_css_class("packlift-library-detail-content");
     content.set_hexpand(true);
 
@@ -971,19 +979,122 @@ fn library_detail(record: &Value) -> gtk::Box {
         let Some(value) = value.filter(|value| !value.is_empty()) else {
             continue;
         };
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-        row.add_css_class("packlift-library-detail-row");
-        let key = home_label(label, "dim-label");
-        key.set_size_request(130, -1);
-        key.set_valign(gtk::Align::Start);
-        let value = home_label(value, "");
-        value.set_selectable(true);
-        value.set_hexpand(true);
-        row.append(&key);
-        row.append(&value);
-        content.append(&row);
+        content.append(&library_detail_row(label, value));
     }
+
+    content.append(&home_label(tr("Permissions"), "title-3"));
+    let permissions = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    permissions.add_css_class("packlift-library-detail-row");
+    if method == "flatpak" {
+        permissions.append(&home_label(
+            tr("Review and change this app's sandbox permissions."),
+            "dim-label",
+        ));
+        let current = home_label(tr("Loading permissions…"), "dim-label");
+        current.set_selectable(true);
+        permissions.append(&current);
+        let current_target = current.downgrade();
+        let reference = record["target"].as_str().unwrap_or_default().to_owned();
+        let installation = record["flatpak_scope"].as_str().unwrap_or("user").to_owned();
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || {
+                flatpak_ui::permission_summary(&reference, &installation)
+            })
+            .await;
+            if let Some(current) = current_target.upgrade() {
+                match result {
+                    Ok(Ok(text)) => current.set_text(&text),
+                    Ok(Err(error)) => current.set_text(&error.to_string()),
+                    Err(_) => current.set_text(tr("Could not load permissions.")),
+                }
+            }
+        });
+        let manage = text_button(tr("Manage permissions…"));
+        manage.add_css_class("suggested-action");
+        manage.set_halign(gtk::Align::Start);
+        let parent = window.downgrade();
+        let record = record.clone();
+        manage.connect_clicked(move |_| {
+            if let Some(window) = parent.upgrade() {
+                flatpak_ui::show(&window, &record);
+            }
+        });
+        permissions.append(&manage);
+    } else {
+        permissions.append(&home_label(
+            tr("Packlift does not manage permissions for this installation type."),
+            "dim-label",
+        ));
+    }
+    content.append(&permissions);
+
+    content.append(&home_label(tr("Settings"), "title-3"));
+    let settings = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    settings.add_css_class("packlift-library-detail-row");
+    match method {
+        "wine" => {
+            settings.append(&library_detail_row(
+                tr("Runtime"),
+                &program_runtime_label(record),
+            ));
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let change = text_button(tr("Change runtime…"));
+            let app = app.clone();
+            let parent = window.downgrade();
+            let change_record = record.clone();
+            change.connect_clicked(move |_| {
+                if let Some(window) = parent.upgrade() {
+                    program_runtime_dialog(&app, &window, &change_record);
+                }
+            });
+            actions.append(&change);
+            let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
+            let open = text_button(tr("Open prefix folder"));
+            let parent = window.downgrade();
+            open.connect_clicked(move |_| {
+                if let Some(window) = parent.upgrade() {
+                    open_prefix_folder(&window, &runtime);
+                }
+            });
+            actions.append(&open);
+            settings.append(&actions);
+        }
+        "toolbox" => {
+            let container = record["container"]
+                .as_str()
+                .unwrap_or(tr("Container"))
+                .trim_start_matches("flatapk-");
+            settings.append(&library_detail_row(tr("Container"), container));
+        }
+        "flatpak" => {
+            settings.append(&home_label(
+                tr("Installation scope and updates are handled by Flatpak."),
+                "dim-label",
+            ));
+        }
+        _ => {
+            settings.append(&home_label(
+                tr("This app has no additional settings in Packlift."),
+                "dim-label",
+            ));
+        }
+    }
+    content.append(&settings);
     content
+}
+
+fn library_detail_row(label: &str, value: &str) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    row.add_css_class("packlift-library-detail-row");
+    let key = home_label(label, "dim-label");
+    key.set_size_request(130, -1);
+    key.set_valign(gtk::Align::Start);
+    let value = home_label(value, "");
+    value.set_selectable(true);
+    value.set_hexpand(true);
+    row.append(&key);
+    row.append(&value);
+    row
 }
 
 fn flatpak_delete_data_option() -> (gtk::Box, gtk::CheckButton) {
