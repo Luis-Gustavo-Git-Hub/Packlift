@@ -94,6 +94,10 @@ fn main() -> glib::ExitCode {
                  .packlift-update-section { padding: 18px; border-radius: 14px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  .packlift-update-flatpak { padding: 18px; border-radius: 16px; background-image: linear-gradient(135deg, alpha(#4a90d9, 0.18), alpha(@card_bg_color, 0.98) 62%); border: 1px solid alpha(#4a90d9, 0.42); }
                  .packlift-flatpak-update-icon { padding: 3px; border-radius: 11px; }
+                 .packlift-library-sidebar { padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.035); }
+                 .packlift-library-details { padding: 34px; }
+                 .packlift-library-detail-hero { padding: 18px; border-radius: 14px; background-image: linear-gradient(120deg, alpha(@accent_bg_color, 0.16), alpha(@card_bg_color, 0.96) 70%); border: 1px solid alpha(@accent_bg_color, 0.24); }
+                 .packlift-library-detail-row { padding: 12px 14px; border-radius: 9px; background: @card_bg_color; }
                  .packlift-update-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(115deg, alpha(@accent_bg_color, 0.24), alpha(@accent_bg_color, 0.08)); border: 1px solid alpha(@accent_bg_color, 0.34); }
                  .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
                  .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }
@@ -188,7 +192,7 @@ fn build_home(app: &adw::Application) {
     }
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
-    window.set_default_size(720, 540);
+    window.set_default_size(1120, 760);
     if host_access_available() {
         store_ui::show(app, &window);
     } else {
@@ -293,30 +297,8 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     content.set_margin_start(22);
     content.set_margin_end(22);
 
-    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 18);
-    hero.add_css_class("packlift-home-hero");
-    let package_icon = gtk::Image::from_icon_name("package-x-generic-symbolic");
-    package_icon.set_pixel_size(38);
-    package_icon.set_valign(gtk::Align::Start);
-    package_icon.add_css_class("packlift-home-icon");
-    hero.append(&package_icon);
-
-    let intro = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    intro.set_hexpand(true);
-    let title = home_label(tr("Add a program or game"), "title-2");
-    intro.append(&title);
-    intro.append(&home_label(
-        if host_access {
-            tr("Choose a Linux package, AppImage, Windows installer or game executable.")
-        } else {
-            tr("Add a compatible type 2 AppImage or Linux TAR archive to this library.")
-        },
-        "dim-label",
-    ));
     let open = text_button(tr("Choose package…"));
     open.add_css_class("suggested-action");
-    open.set_halign(gtk::Align::Start);
-    open.set_margin_top(4);
     let parent = window.downgrade();
     let application = app.clone();
     open.connect_clicked(move |_| {
@@ -338,9 +320,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             }
         });
     });
-    intro.append(&open);
-    hero.append(&intro);
-    content.append(&hero);
+    header.pack_start(&open);
 
     if !host_access && !cfg!(feature = "sandbox-only") {
         let access = adw::ActionRow::builder()
@@ -368,13 +348,15 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     }
 
     let library = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    library.append(&home_label(tr("Your library"), "title-2"));
     match installer().and_then(|manager| manager.library_apps()) {
-        Ok(records) if records.is_empty() => library.append(&library_status(
-            "folder-symbolic",
-            tr("Your library is empty"),
-            tr("Choose a package above to add your first program or game."),
-        )),
+        Ok(records) if records.is_empty() => {
+            library.append(&home_label(tr("Your library"), "title-2"));
+            library.append(&library_status(
+                "folder-symbolic",
+                tr("Your library is empty"),
+                tr("Choose a package above to add your first program or game."),
+            ));
+        }
         Ok(mut records) => {
             records
                 .sort_by_cached_key(|record| record["name"].as_str().unwrap_or("").to_lowercase());
@@ -390,16 +372,14 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             search.update_property(&[gtk::accessible::Property::Label(tr(
                 "Search programs and games",
             ))]);
-            let filters = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let filters = gtk::Box::new(gtk::Orientation::Vertical, 8);
             filters.append(&search);
             let labels: Vec<_> = LIBRARY_FILTERS.iter().map(|(label, _)| tr(label)).collect();
             let scope = gtk::DropDown::from_strings(&labels);
             scope.update_property(&[gtk::accessible::Property::Label(tr("Filter by app type"))]);
             filters.append(&scope);
-            library.append(&filters);
-
             let list = gtk::ListBox::new();
-            list.set_selection_mode(gtk::SelectionMode::None);
+            list.set_selection_mode(gtk::SelectionMode::Single);
             list.add_css_class("boxed-list");
             let rows: Vec<_> = records
                 .into_iter()
@@ -412,18 +392,74 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                         record["target"].as_str().unwrap_or_default()
                     )
                     .to_lowercase();
+                    row.set_activatable(true);
                     list.append(&row);
                     (row, searchable, record)
                 })
                 .collect();
-            library.append(&list);
+            let rows = Rc::new(rows);
             let empty = library_status(
                 "system-search-symbolic",
                 tr("No matches"),
                 tr("Try a different search or filter."),
             );
             empty.set_visible(false);
-            library.append(&empty);
+            let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 10);
+            sidebar.set_size_request(290, -1);
+            sidebar.add_css_class("packlift-library-sidebar");
+            let sidebar_title = home_label(tr("Applications"), "title-3");
+            sidebar.append(&sidebar_title);
+            sidebar.append(&filters);
+            let list_scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .vexpand(true)
+                .child(&list)
+                .build();
+            sidebar.append(&list_scroll);
+            sidebar.append(&empty);
+
+            let details = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            details.set_hexpand(true);
+            details.set_vexpand(true);
+            details.set_valign(gtk::Align::Start);
+            details.add_css_class("packlift-library-details");
+            let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+            split.set_start_child(Some(&sidebar));
+            split.set_end_child(Some(&details));
+            split.set_position(310);
+            split.set_resize_start_child(false);
+            split.set_shrink_start_child(false);
+            split.set_vexpand(true);
+            split.set_size_request(-1, 480);
+            library.append(&split);
+
+            let detail_target = details.downgrade();
+            let selected_rows = rows.clone();
+            list.connect_row_selected(move |_, selected| {
+                let Some(selected) = selected else {
+                    return;
+                };
+                let index = selected.index();
+                let Some(record) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| selected_rows.get(index))
+                    .map(|(_, _, record)| record)
+                else {
+                    return;
+                };
+                let Some(details) = detail_target.upgrade() else {
+                    return;
+                };
+                while let Some(child) = details.first_child() {
+                    details.remove(&child);
+                }
+                details.append(&library_detail(record));
+            });
+            if let Some((first, _, _)) = rows.first() {
+                list.select_row(Some(first));
+            }
+
             let update_filter = Rc::new(move |query: &str, scope: u32| {
                 let query = query.trim().to_lowercase();
                 let filter = LIBRARY_FILTERS
@@ -431,7 +467,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                     .unwrap_or(&LIBRARY_FILTERS[0])
                     .1;
                 let mut matches = false;
-                for (row, searchable, record) in &rows {
+                for (row, searchable, record) in rows.iter() {
                     let visible = searchable.contains(&query) && filter(record);
                     row.set_visible(visible);
                     matches |= visible;
@@ -463,8 +499,8 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     content.append(&library);
 
     let clamp = adw::Clamp::builder()
-        .maximum_size(760)
-        .tightening_threshold(560)
+        .maximum_size(1240)
+        .tightening_threshold(900)
         .child(&content)
         .build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -883,6 +919,71 @@ fn library_row(
     });
     row.add_suffix(&menu);
     row
+}
+
+fn library_detail(record: &Value) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    content.add_css_class("packlift-library-detail-content");
+    content.set_hexpand(true);
+
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
+    let method = record["method"].as_str().unwrap_or("local");
+    let game = record["game_shortcut"].as_bool() == Some(true);
+    let description = match method {
+        "flatpak" => flatpak_scope_label(record),
+        "wine" if game => tr("Game shortcut").to_owned(),
+        "wine" => tr("Windows program").to_owned(),
+        "toolbox" => tr("Toolbx container").to_owned(),
+        "native" => tr("Installed on this system").to_owned(),
+        _ if record["sandbox_only"].as_bool() == Some(true) => {
+            tr("Sandbox application").to_owned()
+        }
+        _ => tr("Local Linux application").to_owned(),
+    };
+
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 20);
+    hero.add_css_class("packlift-library-detail-hero");
+    hero.set_valign(gtk::Align::Center);
+    let icon = record_image(record, 92);
+    icon.set_valign(gtk::Align::Center);
+    hero.append(&icon);
+    let identity = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    identity.set_valign(gtk::Align::Center);
+    identity.set_hexpand(true);
+    identity.append(&home_label(name, "title-1"));
+    identity.append(&home_label(&description, "dim-label"));
+    hero.append(&identity);
+    content.append(&hero);
+
+    content.append(&home_label(tr("Details"), "title-3"));
+    let fields = [
+        (
+            tr("Application ID"),
+            record["flatpak_app_id"]
+                .as_str()
+                .or_else(|| record["id"].as_str()),
+        ),
+        (tr("Version"), record["version"].as_str()),
+        (tr("Architecture"), record["architecture"].as_str()),
+        (tr("Installed target"), record["target"].as_str()),
+    ];
+    for (label, value) in fields {
+        let Some(value) = value.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        row.add_css_class("packlift-library-detail-row");
+        let key = home_label(label, "dim-label");
+        key.set_size_request(130, -1);
+        key.set_valign(gtk::Align::Start);
+        let value = home_label(value, "");
+        value.set_selectable(true);
+        value.set_hexpand(true);
+        row.append(&key);
+        row.append(&value);
+        content.append(&row);
+    }
+    content
 }
 
 fn flatpak_delete_data_option() -> (gtk::Box, gtk::CheckButton) {

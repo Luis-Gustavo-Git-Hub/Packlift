@@ -367,3 +367,7 @@ Play|Jogar|Jugar|Играть|娱乐
 Socialize|Socializar|Socializar|Общаться|社交
 Learn|Aprender|Aprender|Учиться|学习
 Develop|Desenvolver|Desarrollar|Разрабатывать|开发
+Applications|Aplicativos|Aplicaciones|Приложения|应用
+Architecture|Arquitetura|Arquitectura|Архитектура|架构
+Installed target|Destino da instalação|Destino de instalación|Место установки|安装目标
+Version|Versão|Versión|Версия|版本
