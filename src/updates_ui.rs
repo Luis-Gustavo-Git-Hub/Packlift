@@ -453,7 +453,7 @@ fn apply(backend: &Backend) -> Result<()> {
             }
         }
         Backend::Flatpaks(scopes) => {
-            for (scope, refs) in scopes.iter().filter(|(_, refs)| !refs.is_empty()) {
+            for (scope, _) in scopes.iter().filter(|(_, refs)| !refs.is_empty()) {
                 runner.run(
                     &command(&["flatpak", "update", scope, "--assumeyes"]),
                     false,
@@ -561,7 +561,7 @@ impl Section {
             section.last_checked.set_text(&checked_at);
             match result {
                 Ok(Ok(result)) => {
-                    *section.backend.borrow_mut() = result.available.then_some(result.backend);
+                    *section.backend.borrow_mut() = result.available.then_some(result.backend.clone());
                     let partial = !result.failed_remotes.is_empty();
                     section.warning.set_visible(partial);
                     if partial {
