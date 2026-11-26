@@ -335,6 +335,43 @@ impl StoreView {
         );
     }
 
+    fn refresh_explore(self: &Rc<Self>) {
+        if !self
+            .catalog_search
+            .borrow()
+            .as_ref()
+            .is_some_and(CatalogSearch::is_explore)
+        {
+            return;
+        }
+        let view = self.clone();
+        background(
+            move || crate::installer().and_then(|installer| installer.installed_flatpak_ids()),
+            move |result| {
+                if let Ok(installed) = result {
+                    let changed = view.installed.borrow().as_ref() != Some(&installed);
+                    let refresh = changed
+                        && !view.busy.get()
+                        && view
+                            .catalog_search
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(CatalogSearch::is_explore);
+                    if refresh {
+                        if let Some(search) = view.catalog_search.borrow_mut().as_mut() {
+                            search.exclude_installed(&installed);
+                        }
+                    }
+                    *view.installed.borrow_mut() = Some(installed);
+                    if refresh {
+                        view.load_categories();
+                        view.load_catalog_page(view.page.get(), true);
+                    }
+                }
+            },
+        );
+    }
+
     fn new_search(self: &Rc<Self>) {
         self.search_for(self.search.text().trim().to_owned());
     }
@@ -1089,6 +1126,19 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     );
 }
 
+
+fn detail_page_toolbar(
+    window: &adw::ApplicationWindow,
+    title: &str,
+) -> (adw::ToolbarView, adw::HeaderBar) {
+    let toolbar = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
+    back_to_previous(&toolbar, &header, window);
+    toolbar.add_top_bar(&header);
+    (toolbar, header)
+}
+
 fn show_app_details(
     window: &adw::ApplicationWindow,
     remote: &Remote,
@@ -1243,6 +1293,7 @@ fn show_app_details(
         .hexpand(true)
         .child(&layout)
         .build();
+    let (toolbar, header) = detail_page_toolbar(window, &app.name);
     let (suggestions_layout, rails) = detail_suggestion_layout(&scroll, &similar_section);
     toolbar.set_content(Some(&suggestions_layout));
     crate::updates_ui::attach(&toolbar, &header, window);
