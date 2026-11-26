@@ -1,5 +1,8 @@
 mod flatpak_ui;
+mod flathub_account;
 mod i18n;
+mod operations_ui;
+mod search_provider;
 mod store_ui;
 mod updates_ui;
 
@@ -165,6 +168,7 @@ fn main() -> glib::ExitCode {
         });
     });
     app.add_action(&open_flatpak);
+    app.connect_startup(search_provider::register);
     app.connect_activate(build_home);
     app.connect_open(|app, files, _hint| {
         for file in files {
@@ -348,7 +352,47 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     }
 
     let library = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    match installer().and_then(|manager| manager.library_apps()) {
+    let loading = library_status("system-search-symbolic", tr("Loading library…"), "");
+    let spinner = gtk::Spinner::new();
+    spinner.start();
+    library.append(&loading);
+    library.append(&spinner);
+    let (owner, target, view) = (window.downgrade(), library.downgrade(), toolbar.downgrade());
+    let application = app.clone();
+    glib::MainContext::default().spawn_local(async move {
+        let worker = gio::spawn_blocking(|| installer().and_then(|manager| manager.library_apps()));
+        let records = worker.await.unwrap_or_else(|_| {
+            Err(PackliftError::Message(tr("Could not load your library").into()))
+        });
+        let (Some(window), Some(library), Some(toolbar)) =
+            (owner.upgrade(), target.upgrade(), view.upgrade())
+        else { return; };
+        while let Some(child) = library.first_child() {
+            library.remove(&child);
+        }
+        populate_library(&application, &window, &toolbar, &library, records);
+    });
+    content.append(&library);
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .child(&content)
+        .build();
+    toolbar.set_content(Some(&scroll));
+    updates_ui::attach(&toolbar, &header, window);
+    window.set_content(Some(&toolbar));
+    store.grab_focus();
+}
+
+fn populate_library(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    toolbar: &adw::ToolbarView,
+    library: &gtk::Box,
+    records: Result<Vec<Value>>,
+) {
+    match records {
         Ok(records) if records.is_empty() => {
             library.append(&home_label(tr("Your library"), "title-2"));
             library.append(&library_status(
@@ -364,7 +408,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             search.set_placeholder_text(Some(tr("Search programs and games")));
             search.set_hexpand(true);
             let search_focus = search.downgrade();
-            page_shortcut(&toolbar, "<Control>f", move || {
+            page_shortcut(toolbar, "<Control>f", move || {
                 if let Some(search) = search_focus.upgrade() {
                     search.grab_focus();
                 }
@@ -384,7 +428,7 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             let rows: Vec<_> = records
                 .into_iter()
                 .map(|record| {
-                    let row = library_row(app, window, &record);
+                    let row = library_row(&record);
                     let searchable = format!(
                         "{} {} {}",
                         row.title(),
@@ -426,7 +470,11 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             details.add_css_class("packlift-library-details");
             let split = gtk::Paned::new(gtk::Orientation::Horizontal);
             split.set_start_child(Some(&sidebar));
-            split.set_end_child(Some(&details));
+            let detail_scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .child(&details)
+                .build();
+            split.set_end_child(Some(&detail_scroll));
             split.set_position(310);
             split.set_resize_start_child(false);
             split.set_shrink_start_child(false);
@@ -437,8 +485,16 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             let detail_target = details.downgrade();
             let detail_app = app.clone();
             let detail_window = window.downgrade();
-            let selected_rows = rows.clone();
+            let selected_rows = rows.iter().map(|(_, _, record)| record.clone()).collect::<Vec<_>>();
+            let scroll = detail_scroll.downgrade();
             list.connect_row_selected(move |_, selected| {
+                let Some(details) = detail_target.upgrade() else { return; };
+                while let Some(child) = details.first_child() {
+                    details.remove(&child);
+                }
+                if let Some(scroll) = scroll.upgrade() {
+                    scroll.vadjustment().set_value(0.0);
+                }
                 let Some(selected) = selected else {
                     return;
                 };
@@ -446,18 +502,10 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 let Some(record) = usize::try_from(index)
                     .ok()
                     .and_then(|index| selected_rows.get(index))
-                    .map(|(_, _, record)| record)
                 else {
                     return;
                 };
-                let (Some(details), Some(window)) =
-                    (detail_target.upgrade(), detail_window.upgrade())
-                else {
-                    return;
-                };
-                while let Some(child) = details.first_child() {
-                    details.remove(&child);
-                }
+                let Some(window) = detail_window.upgrade() else { return; };
                 let detail = library_detail(record, &detail_app, &window);
                 let clamp = adw::Clamp::builder()
                     .maximum_size(1000)
@@ -469,7 +517,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 list.select_row(Some(first));
             }
 
+            let list_ref = list.downgrade();
             let update_filter = Rc::new(move |query: &str, scope: u32| {
+                let Some(list) = list_ref.upgrade() else { return; };
                 let query = query.trim().to_lowercase();
                 let filter = LIBRARY_FILTERS
                     .get(scope as usize)
@@ -483,6 +533,9 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
                 }
                 list.set_visible(matches);
                 empty.set_visible(!matches);
+                if !list.selected_row().is_some_and(|row| row.is_visible()) {
+                    list.select_row(rows.iter().find(|(row, _, _)| row.is_visible()).map(|(row, _, _)| row.upcast_ref::<gtk::ListBoxRow>()));
+                }
             });
             let search_filter = update_filter.clone();
             let scope_ref = scope.downgrade();
@@ -505,18 +558,8 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
             &error.to_string(),
         )),
     }
-    content.append(&library);
-
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::External)
-        .child(&content)
-        .build();
-    toolbar.set_content(Some(&scroll));
-    updates_ui::attach(&toolbar, &header, window);
-    window.set_content(Some(&toolbar));
-    store.grab_focus();
 }
+
 
 #[derive(Clone)]
 struct PageReturn {
@@ -705,11 +748,7 @@ fn add_menu_item(
     actions.append(&item);
 }
 
-fn library_row(
-    app: &adw::Application,
-    window: &adw::ApplicationWindow,
-    record: &Value,
-) -> adw::ActionRow {
+fn library_row(record: &Value) -> adw::ActionRow {
     let name = record["name"].as_str().unwrap_or(tr("Program"));
     let game = record["game_shortcut"].as_bool() == Some(true);
     let method = record["method"].as_str().unwrap_or("local");
@@ -750,6 +789,18 @@ fn library_row(
         .build();
     row.add_prefix(&record_image(record, 42));
 
+    row
+}
+
+fn library_actions(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    record: &Value,
+) -> gtk::Box {
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
+    let game = record["game_shortcut"].as_bool() == Some(true);
+    let method = record["method"].as_str().unwrap_or("local");
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     if record["exports"][0]["argv"].is_array() {
         let launch = gtk::Button::with_label(tr("Open"));
         launch.set_valign(gtk::Align::Center);
@@ -786,7 +837,8 @@ fn library_row(
                 glib::ControlFlow::Break
             });
         });
-        row.add_suffix(&launch);
+        launch.add_css_class("suggested-action");
+        buttons.append(&launch);
     }
 
     let (menu, popover, actions) = action_menu(
@@ -794,15 +846,6 @@ fn library_row(
         "view-more-symbolic",
     );
     menu.set_valign(gtk::Align::Center);
-    if method == "flatpak" {
-        let parent = window.downgrade();
-        let record = record.clone();
-        add_menu_item(&popover, &actions, tr("Permissions…"), move || {
-            if let Some(window) = parent.upgrade() {
-                flatpak_ui::show(&window, &record);
-            }
-        });
-    }
     if method == "wine" {
         let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
         let parent = window.downgrade();
@@ -907,7 +950,7 @@ fn library_row(
             run_job(
                 &app,
                 &window,
-                tr("Removing from your library"),
+                &format!("{} · {}", tr("Removing from your library"), record["name"].as_str().unwrap_or(tr("Program"))),
                 move |logger| {
                     let manager = installer_with_output(logger)?;
                     if delete_data {
@@ -921,8 +964,8 @@ fn library_row(
         });
         dialog.present();
     });
-    row.add_suffix(&menu);
-    row
+    buttons.append(&menu);
+    buttons
 }
 
 fn library_detail(
@@ -960,6 +1003,7 @@ fn library_detail(
     identity.set_hexpand(true);
     identity.append(&home_label(name, "title-1"));
     identity.append(&home_label(&description, "dim-label"));
+    identity.append(&library_actions(app, window, record));
     hero.append(&identity);
     content.append(&hero);
 
@@ -992,22 +1036,33 @@ fn library_detail(
         ));
         let current = home_label(tr("Loading permissions…"), "dim-label");
         current.set_selectable(true);
-        permissions.append(&current);
+        current.add_css_class("monospace");
+        let permissions_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(112)
+            .max_content_height(112)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&current)
+            .build();
+        permissions.append(&permissions_scroll);
+
         let current_target = current.downgrade();
         let reference = record["target"].as_str().unwrap_or_default().to_owned();
         let installation = record["flatpak_scope"].as_str().unwrap_or("user").to_owned();
-        glib::MainContext::default().spawn_local(async move {
-            let result = gio::spawn_blocking(move || {
-                flatpak_ui::permission_summary(&reference, &installation)
-            })
-            .await;
-            if let Some(current) = current_target.upgrade() {
-                match result {
-                    Ok(Ok(text)) => current.set_text(&text),
-                    Ok(Err(error)) => current.set_text(&error.to_string()),
-                    Err(_) => current.set_text(tr("Could not load permissions.")),
+        content.connect_map(move |_| {
+            let (reference, installation, target) =
+                (reference.clone(), installation.clone(), current_target.clone());
+            glib::MainContext::default().spawn_local(async move {
+                let result = gio::spawn_blocking(move || {
+                    flatpak_ui::permission_summary(&reference, &installation)
+                }).await;
+                if let Some(current) = target.upgrade() {
+                    match result {
+                        Ok(Ok(text)) => current.set_text(&text),
+                        Ok(Err(error)) => current.set_text(&error.to_string()),
+                        Err(_) => current.set_text(tr("Could not load permissions.")),
+                    }
                 }
-            }
+            });
         });
         let manage = text_button(tr("Manage permissions…"));
         manage.add_css_class("suggested-action");
@@ -1591,6 +1646,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     scroll.set_max_content_height(480);
     scroll.set_child(Some(&body));
     toolbar.set_content(Some(&scroll));
+    operations_ui::attach_button(&header);
     window.set_widget_name("packlift-package-review");
     window.set_title(Some(tr("Review package")));
     window.set_content(Some(&toolbar));
@@ -1808,6 +1864,7 @@ fn choose_windows_action(
     });
     body.append(&cancel);
     toolbar.set_content(Some(&body));
+    operations_ui::attach_button(&header);
     parent.set_content(Some(&toolbar));
     add.grab_focus();
 }
@@ -1855,180 +1912,69 @@ fn run_job_with_progress<F>(
 ) where
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
-    if window.has_css_class("packlift-running-job") {
+    let library = window.widget_name() == "packlift-library";
+    if operations_ui::has_active_title(title)
+        || inline.map_or_else(
+            || !library && window.has_css_class("packlift-running-job"),
+            gtk::prelude::WidgetExt::is_visible,
+        )
+    {
         return;
     }
-    window.add_css_class("packlift-running-job");
-    let body = gtk::Box::new(
-        gtk::Orientation::Vertical,
-        if inline.is_some() { 4 } else { 8 },
-    );
-    if inline.is_none() {
-        body.add_css_class("packlift-progress");
-        let heading = gtk::Label::new(Some(title));
-        heading.set_wrap(true);
-        heading.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        heading.add_css_class("title-2");
-        heading.set_max_width_chars(28);
-        body.append(&heading);
-    }
-    let stage = gtk::Label::new(Some(tr("Working…")));
-    stage.set_wrap(true);
-    stage.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    stage.set_xalign(0.0);
-    stage.add_css_class("dim-label");
-    stage.set_hexpand(true);
-    if inline.is_some() {
-        stage.set_wrap(false);
-        stage.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        stage.set_max_width_chars(16);
-        stage.add_css_class("caption");
-        body.append(&stage);
-    } else {
-        let status = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let spinner = gtk::Spinner::new();
-        spinner.start();
-        status.append(&spinner);
-        status.append(&stage);
-        body.append(&status);
-    }
-    let progress = gtk::ProgressBar::new();
-    progress.update_property(&[gtk::accessible::Property::Label(title)]);
-    progress.set_show_text(false);
-    progress.set_fraction(0.08);
-    body.append(&progress);
-    let compact = if let Some(slot) = inline {
-        slot.append(&body);
+    let is_inline = inline.is_some();
+    if let Some(slot) = inline {
+        slot.append(&home_label(tr("In the operations queue"), "caption"));
         slot.set_visible(true);
-        None
-    } else {
-        stage.set_max_width_chars(28);
-        let progress_window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .title(title)
-            .default_width(300)
-            .decorated(false)
-            .deletable(false)
-            .resizable(false)
-            .child(&body)
-            .build();
-        progress_window.add_css_class("packlift-progress-window");
-        progress_window.connect_close_request(|_| glib::Propagation::Stop);
-        window.set_visible(false);
-        progress_window.present();
-        Some(progress_window)
-    };
-    let inline = inline.map(ObjectExt::downgrade);
-    stage.announce(title, gtk::AccessibleAnnouncementPriority::Low);
-
-    enum JobEvent {
-        Progress(&'static str, f64),
-        Finished(Result<Option<Value>>),
+    } else if !library {
+        window.add_css_class("packlift-running-job");
     }
-    let (sender, receiver) = std::sync::mpsc::channel::<JobEvent>();
-    thread::spawn(move || {
-        let log_sender = sender.clone();
-        let logger: LogHandler = Arc::new(move |line| {
-            let (stage, fraction) = installation_stage(line);
-            if stage != tr("Working…") {
-                let _ = log_sender.send(JobEvent::Progress(stage, fraction));
+
+    let inline = inline.map(ObjectExt::downgrade);
+    let owner = window.downgrade();
+    let original = window.content().map(|content| content.downgrade());
+    let application = app.clone();
+    let completed_owner = owner.clone();
+    operations_ui::submit(app.upcast_ref(), title, task, move |result| {
+        let window = completed_owner.upgrade().filter(|window| window.application().is_some());
+        if let Ok(Some(record)) = &result {
+            if record["method"] == "flatpak" && record["flatpak_already_installed"] != true {
+                notify_flatpak_installed(&application, record);
             }
-        });
-        let _ = sender.send(JobEvent::Finished(task(logger)));
-    });
-    let app = app.clone();
-    let weak_window = window.downgrade();
-    glib::timeout_add_local(Duration::from_millis(120), move || loop {
-        let event = match receiver.try_recv() {
-            Ok(event) => event,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => JobEvent::Finished(Err(
-                PackliftError::Message(tr("The operation ended unexpectedly.").into()),
-            )),
-        };
-        match event {
-            JobEvent::Progress(label, fraction) => {
-                if stage.text().as_str() != label {
-                    stage.set_text(label);
-                    stage.set_tooltip_text(Some(label));
-                    stage.announce(label, gtk::AccessibleAnnouncementPriority::Low);
-                }
-                progress.set_fraction(progress.fraction().max(fraction));
+        }
+        let Some(window) = window else { return; };
+        let still_here = original.as_ref().and_then(glib::WeakRef::upgrade) == window.content();
+        match result {
+            Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
+                choose_installed_executable(&application, &window, *package, runtime);
             }
-            JobEvent::Finished(result) => {
-                if let Ok(Some(record)) = &result {
-                    if record["method"] == "flatpak" {
-                        if record["flatpak_already_installed"].as_bool() != Some(true) {
-                            notify_flatpak_installed(&app, record);
-                        }
-                        if record["flatpak_app_id"].as_str() == Some(APP_ID) {
-                            for window in app.windows() {
-                                window.destroy();
-                            }
-                            app.quit();
-                            return glib::ControlFlow::Break;
-                        }
-                    }
-                }
-                progress.set_fraction(if result.is_ok() { 1.0 } else { 0.0 });
-                if let Some(slot) = inline.as_ref().and_then(glib::WeakRef::upgrade) {
-                    slot.remove(&body);
-                    slot.set_visible(false);
-                }
-                if let Some(progress_window) = &compact {
-                    progress_window.destroy();
-                }
-                if let Some(window) = weak_window.upgrade() {
-                    window.remove_css_class("packlift-running-job");
-                    match result {
-                        Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
-                            choose_installed_executable(&app, &window, *package, runtime);
-                        }
-                        Err(PackliftError::ExecutableSelectionFailed {
-                            package,
-                            runtime,
-                            reason,
-                        }) => {
-                            choose_installed_executable(&app, &window, *package, runtime);
-                            show_error(&window, &reason);
-                        }
-                        Err(error) => show_error(&window, &error.to_string()),
-                        Ok(Some(record)) => {
-                            for other in app
-                                .windows()
-                                .into_iter()
-                                .filter_map(|other| other.downcast::<adw::ApplicationWindow>().ok())
-                            {
-                                if other != window
-                                    && other.widget_name() == "packlift-library"
-                                    && other
-                                        .content()
-                                        .is_some_and(|content| content.is::<adw::ToolbarView>())
-                                {
-                                    render_home(&app, &other);
-                                }
-                            }
-                            if record["method"] == "flatpak" {
-                                let page = window.widget_name();
-                                if page == "packlift-library"
-                                    || (inline.is_none() && page != "packlift-store-details")
-                                {
-                                    render_home(&app, &window);
-                                }
-                            } else {
-                                show_success(&app, &window, &record);
-                            }
-                        }
-                        Ok(None)
-                            if inline.is_some() && window.widget_name() != "packlift-library" => {}
-                        Ok(None) => render_home(&app, &window),
-                    }
-                    if compact.is_some() && window.application().is_some() {
-                        window.present();
-                    }
-                }
-                return glib::ControlFlow::Break;
+            Err(PackliftError::ExecutableSelectionFailed { package, runtime, reason }) => {
+                choose_installed_executable(&application, &window, *package, runtime);
+                show_error(&window, &reason);
             }
+            Err(error) if !is_inline && still_here => show_error(&window, &error.to_string()),
+            Ok(Some(record)) if record["method"] != "flatpak" && still_here => {
+                show_success(&application, &window, &record);
+            }
+            Ok(_) => {
+                if window.widget_name() == "packlift-library"
+                    || (still_here && window.has_css_class("packlift-package-window"))
+                {
+                    render_home(&application, &window);
+                }
+            }
+            Err(_) => {}
+        }
+    }, move || {
+        if let Some(window) = owner.upgrade() {
+            if !is_inline && !library {
+                window.remove_css_class("packlift-running-job");
+            }
+        }
+        if let Some(slot) = inline.and_then(|slot| slot.upgrade()) {
+            if let Some(child) = slot.first_child() {
+                slot.remove(&child);
+            }
+            slot.set_visible(false);
         }
     });
 }
@@ -2099,6 +2045,7 @@ fn choose_installed_executable(
     });
     body.append(&actions);
     toolbar.set_content(Some(&body));
+    operations_ui::attach_button(&header);
     window.set_content(Some(&toolbar));
     choose.grab_focus();
 }

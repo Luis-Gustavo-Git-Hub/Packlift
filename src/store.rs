@@ -51,13 +51,13 @@ impl Remote {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CatalogIcon {
     Flathub(Option<String>),
     AppStream(PathBuf),
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatalogApp {
     pub id: String,
     pub name: String,
@@ -76,7 +76,7 @@ pub struct StorePage {
     pub has_next: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AppDetails {
     pub developer: String,
     pub license: String,
@@ -90,6 +90,7 @@ pub struct AppDetails {
     pub age: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct Release {
     pub version: String,
     pub notes: String,
@@ -97,6 +98,7 @@ pub struct Release {
     pub timestamp: Option<i64>,
 }
 
+#[derive(Clone)]
 pub struct Screenshot {
     pub url: String,
     pub large_url: String,
@@ -137,7 +139,7 @@ pub fn remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>>
     Ok(remotes)
 }
 
-fn flathub_remote(destination: Destination) -> Remote {
+pub fn flathub_remote(destination: Destination) -> Remote {
     Remote {
         name: String::new(),
         title: "Flathub".into(),
@@ -636,6 +638,18 @@ fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
     )?)?)
 }
 
+pub fn desktop_search(runner: &Runner, query: &str) -> Result<Vec<CatalogApp>> {
+    let body = json!({"query": query, "page": 1, "hits_per_page": 8}).to_string();
+    let response: Value = serde_json::from_slice(&fetch_with_timeout(
+        runner,
+        &format!("{FLATHUB_API}/search"),
+        Some(&body),
+        5,
+        512 * 1024,
+    )?)?;
+    Ok(response["hits"].as_array().into_iter().flatten().filter_map(flathub_catalog_app).take(8).collect())
+}
+
 fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
     let id = hit["app_id"].as_str().filter(|id| valid_app_id(id))?;
     let name = hit["name"]
@@ -709,7 +723,7 @@ pub fn similar_apps(runner: &Runner, id: &str, category: &str) -> Result<Vec<Cat
         .collect())
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FlathubFacts {
     pub download_size: Option<u64>,
     pub installs_last_month: Option<u64>,

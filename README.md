@@ -79,7 +79,7 @@ Packlift calculates the SHA-256 digest of the package prepared for installation 
 
 ## Development
 
-Packlift's application and installer are written in Rust. To build locally, install Rust 1.85 or later, GTK 4.10 or later, libadwaita 1.4 or later, and the package inspection tools used by the formats you want to work with.
+Packlift's application and installer are written in Rust. To build locally, install Rust 1.85 or later, GTK 4.14 or later, libadwaita 1.4 or later, WebKitGTK 6.0, libsoup 3, and the package inspection tools used by the formats you want to work with.
 
 ```sh
 cargo build --locked --features gui

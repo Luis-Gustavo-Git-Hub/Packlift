@@ -4,18 +4,18 @@ use std::{
     fs,
     rc::Rc,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use adw::prelude::*;
 use packlift::{
     core::{PackliftError, Result},
-    system::{host_access_available, operation, packlift_data_dir, Runner},
+    system::{host_access_available, operation, packlift_data_dir, LogHandler, Runner},
 };
 
-use crate::{home_label, i18n::tr, text_button};
+use crate::{home_label, i18n::tr, operations_ui, text_button};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Source {
     Flatpaks,
     AppImages,
@@ -38,6 +38,14 @@ struct Available {
     supported: usize,
 }
 
+type CheckResult = std::result::Result<Available, String>;
+
+#[derive(Default)]
+struct CheckState {
+    cached: Option<(Instant, Rc<CheckResult>, String)>,
+    waiting: Vec<std::rc::Weak<Section>>,
+}
+
 fn command(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
@@ -48,6 +56,7 @@ thread_local! {
     static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
     static AUTO_CHECK_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
     static AUTO_UPDATE_RUNNING: Cell<bool> = const { Cell::new(false) };
+    static CHECKS: RefCell<BTreeMap<Source, CheckState>> = const { RefCell::new(BTreeMap::new()) };
     static UPDATE_SECTIONS: RefCell<Vec<std::rc::Weak<Section>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -151,16 +160,22 @@ fn ensure_auto_check_timer() {
         return;
     }
     glib::timeout_add_seconds_local(30 * 60, || {
-        let sections = UPDATE_SECTIONS.with_borrow_mut(|registered| {
-            let sections = registered.iter().filter_map(std::rc::Weak::upgrade).collect::<Vec<_>>();
-            registered.retain(|section| section.strong_count() > 0);
-            sections
-        });
-        for section in sections {
-            section.refresh();
-        }
+        refresh_visible_sections();
         glib::ControlFlow::Continue
     });
+}
+
+fn refresh_visible_sections() {
+    let sections = UPDATE_SECTIONS.with_borrow_mut(|registered| {
+        let sections = registered.iter().filter_map(std::rc::Weak::upgrade).collect::<Vec<_>>();
+        registered.retain(|section| section.strong_count() > 0);
+        sections
+    });
+    for section in sections {
+        if section.status.root().is_some() {
+            section.refresh();
+        }
+    }
 }
 
 fn distribution_identity() -> (String, String) {
@@ -187,7 +202,7 @@ fn distribution_identity() -> (String, String) {
     (name, candidate)
 }
 
-fn apply_due_updates() -> Result<()> {
+fn apply_due_updates(log: LogHandler) -> Result<()> {
     let mut errors = Vec::new();
     let sources = if host_access_available() {
         vec![Source::Flatpaks, Source::AppImages]
@@ -197,7 +212,7 @@ fn apply_due_updates() -> Result<()> {
     for source in sources {
         match check(source) {
             Ok(available) if available.available => {
-                if let Err(error) = apply(&available.backend) {
+                if let Err(error) = apply(&available.backend, log.clone()) {
                     errors.push(error.to_string());
                 }
             }
@@ -241,12 +256,20 @@ fn ensure_auto_update_timer(app: &gtk::Application) {
         }
         write_schedule(days, now);
         AUTO_UPDATE_RUNNING.with(|running| running.set(true));
-        let hold = app.hold();
-        glib::MainContext::default().spawn_local(async move {
-            let _hold = hold;
-            let _ = gio::spawn_blocking(apply_due_updates).await;
-            AUTO_UPDATE_RUNNING.with(|running| running.set(false));
-        });
+        operations_ui::submit(
+            &app,
+            tr("Automatic updates"),
+            |log| apply_due_updates(log).map(|_| None),
+            |_| {
+                CHECKS.with_borrow_mut(|checks| {
+                    for state in checks.values_mut() {
+                        state.cached = None;
+                    }
+                });
+                refresh_visible_sections();
+            },
+            || AUTO_UPDATE_RUNNING.with(|running| running.set(false)),
+        );
         glib::ControlFlow::Continue
     });
 }
@@ -488,9 +511,9 @@ fn flatpak_ref(reference: &str) -> &str {
         .unwrap_or(reference)
 }
 
-fn apply(backend: &Backend) -> Result<()> {
+fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
     let _operation = operation(&packlift_data_dir())?;
-    let runner = Runner::new(None, Arc::new(|_| {}))?;
+    let runner = Runner::new(None, log)?;
     match backend {
         Backend::Flatpak(scope, refs) => {
             if !refs.is_empty() {
@@ -695,23 +718,53 @@ impl Section {
         self.status.set_visible(true);
         self.last_checked.set_visible(true);
         self.status.set_text(tr("Checking for updates…"));
-        let section = self.clone();
-        glib::MainContext::default().spawn_local(async move {
-            let source = section.source;
-            let result = gio::spawn_blocking(move || check(source)).await;
-            section.busy.set(false);
-            let checked_at = record_last_check(source, now_epoch());
-            section.last_checked.set_text(&checked_at);
-            match result {
-                Ok(Ok(result)) => {
-                    *section.backend.borrow_mut() = result.available.then_some(result.backend.clone());
+        let source = self.source;
+        let (cached, should_check) = CHECKS.with_borrow_mut(|checks| {
+            let state = checks.entry(source).or_default();
+            if let Some((time, result, checked_at)) = &state.cached {
+                if time.elapsed() < Duration::from_secs(29 * 60) {
+                    return (Some((result.clone(), checked_at.clone())), false);
+                }
+            }
+            let should_check = state.waiting.is_empty();
+            state.waiting.push(Rc::downgrade(self));
+            (None, should_check)
+        });
+        if let Some((result, checked_at)) = cached {
+            self.show_result(&result, &checked_at);
+        }
+        if should_check {
+            glib::MainContext::default().spawn_local(async move {
+                let result = gio::spawn_blocking(move || check(source)).await
+                    .map_err(|_| tr("Could not check for updates. See the Packlift log.").to_owned())
+                    .and_then(|result| result.map_err(|error| error.to_string()));
+                let checked_at = record_last_check(source, now_epoch());
+                let result = Rc::new(result);
+                let waiting = CHECKS.with_borrow_mut(|checks| {
+                    let state = checks.entry(source).or_default();
+                    state.cached = Some((Instant::now(), result.clone(), checked_at.clone()));
+                    std::mem::take(&mut state.waiting)
+                });
+                for section in waiting.into_iter().filter_map(|section| section.upgrade()) {
+                    section.show_result(&result, &checked_at);
+                }
+            });
+        }
+    }
+
+    fn show_result(&self, result: &CheckResult, checked_at: &str) {
+        self.busy.set(false);
+        self.last_checked.set_text(checked_at);
+        match result {
+            Ok(result) => {
+                    *self.backend.borrow_mut() = result.available.then_some(result.backend.clone());
                     let partial = !result.failed_remotes.is_empty();
-                    let unsupported = matches!(section.source, Source::AppImages)
+                    let unsupported = matches!(self.source, Source::AppImages)
                         && result.unsupported > 0;
-                    section.warning.set_visible(partial || unsupported);
+                    self.warning.set_visible(partial || unsupported);
                     let mut warnings = Vec::new();
                     if partial {
-                        warnings.push(if matches!(section.source, Source::Flatpaks) {
+                        warnings.push(if matches!(self.source, Source::Flatpaks) {
                             tr("Some Flatpak repositories could not be checked.").to_owned()
                         } else {
                             tr("Some AppImages could not be checked.").to_owned()
@@ -723,11 +776,11 @@ impl Section {
                                 .replace("{count}", &result.unsupported.to_string()),
                         );
                     }
-                    section.warning.set_text(&warnings.join("\n"));
-                    let status = if result.available && matches!(section.source, Source::Flatpaks) {
-                        format_flatpak_status(&result)
+                    self.warning.set_text(&warnings.join("\n"));
+                    let status = if result.available && matches!(self.source, Source::Flatpaks) {
+                        format_flatpak_status(result)
                     } else if result.available {
-                        match section.source {
+                        match self.source {
                             Source::AppImages => {
                                 let count = result.packages.len();
                                 let label = if count == 1 {
@@ -742,20 +795,20 @@ impl Section {
                         }
                     } else if partial {
                         tr("Update check incomplete").to_owned()
-                    } else if matches!(section.source, Source::AppImages)
+                    } else if matches!(self.source, Source::AppImages)
                         && result.supported > 0
                     {
                         tr("All supported AppImages are up to date.").to_owned()
-                    } else if matches!(section.source, Source::AppImages) {
+                    } else if matches!(self.source, Source::AppImages) {
                         tr("No AppImages with automatic update support were found.").to_owned()
                     } else {
                         String::new()
                     };
-                    section.status.set_text(&status);
-                    section.status.set_visible(
+                    self.status.set_text(&status);
+                    self.status.set_visible(
                         result.available
                             || partial
-                            || matches!(section.source, Source::AppImages),
+                            || matches!(self.source, Source::AppImages),
                     );
                     let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
                     if result.packages.len() > 8 {
@@ -764,29 +817,29 @@ impl Section {
                                 .replace("{count}", &(result.packages.len() - 8).to_string()),
                         );
                     }
-                    section.details.set_text(&lines.join("\n"));
-                    section.details.set_visible(
-                        !lines.is_empty() && matches!(section.source, Source::AppImages),
+                    self.details.set_text(&lines.join("\n"));
+                    self.details.set_visible(
+                        !lines.is_empty() && matches!(self.source, Source::AppImages),
                     );
-                    section.update.set_visible(
-                        result.available && matches!(section.source, Source::AppImages),
+                    self.update.set_visible(
+                        result.available && matches!(self.source, Source::AppImages),
                     );
-                    section.last_checked.set_visible(true);
+                    self.last_checked.set_visible(true);
                 }
-                Ok(Err(error)) => {
-                    *section.backend.borrow_mut() = None;
-                    section.update.set_visible(false);
-                    section.last_checked.set_visible(true);
-                    section.status.set_text(&error.to_string());
-                }
-                Err(_) => section
-                    .status
-                    .set_text(tr("Could not check for updates. See the Packlift log.")),
+            Err(error) => {
+                *self.backend.borrow_mut() = None;
+                self.update.set_visible(false);
+                self.last_checked.set_visible(true);
+                self.status.set_text(error);
             }
-        });
+        }
     }
 
     fn start_update(self: &Rc<Self>, app: &gtk::Application) {
+        let title = tr("Updating AppImages");
+        if operations_ui::has_active_title(title) {
+            return;
+        }
         let Some(backend) = self.backend.borrow().clone() else {
             return;
         };
@@ -795,26 +848,35 @@ impl Section {
         }
         self.status.set_text(tr("Applying updates…"));
         self.update.set_sensitive(false);
-        let hold = app.hold();
-        let section = self.clone();
-        glib::MainContext::default().spawn_local(async move {
-            let _hold = hold;
-            let result = gio::spawn_blocking(move || apply(&backend)).await;
-            section.busy.set(false);
-            section.update.set_sensitive(true);
-            match result {
-                Ok(Ok(())) => {
-                    *section.backend.borrow_mut() = None;
-                    section.update.set_visible(false);
-                    section.details.set_visible(false);
-                    section.refresh();
+        let completed = self.clone();
+        let released = self.clone();
+        operations_ui::submit(
+            app,
+            title,
+            move |log| apply(&backend, log).map(|_| None),
+            move |result| {
+                if let Err(error) = result {
+                    completed.status.set_text(&error.to_string());
+                } else {
+                    *completed.backend.borrow_mut() = None;
+                    CHECKS.with_borrow_mut(|checks| {
+                        if let Some(state) = checks.get_mut(&completed.source) {
+                            state.cached = None;
+                        }
+                    });
                 }
-                Ok(Err(error)) => section.status.set_text(&error.to_string()),
-                Err(_) => section
-                    .status
-                    .set_text(tr("The operation ended unexpectedly.")),
-            }
-        });
+            },
+            move || {
+                released.busy.set(false);
+                released.update.set_sensitive(true);
+                if released.backend.borrow().is_none() {
+                    released.refresh();
+                    refresh_visible_sections();
+                } else if released.status.text() == tr("Applying updates…") {
+                    released.refresh();
+                }
+            },
+        );
     }
 }
 
@@ -834,21 +896,77 @@ pub(super) fn attach(
     split.set_max_sidebar_width(520.0);
     split.set_collapsed(true);
     split.set_show_sidebar(false);
-    toolbar.set_content(Some(&split));
+    if window.widget_name() == "packlift-library" {
+        let responsive = adw::BreakpointBin::builder()
+            .width_request(360)
+            .height_request(300)
+            .child(&split)
+            .build();
+        let wide = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MinWidth,
+            1200.0,
+            adw::LengthUnit::Px,
+        ));
+        wide.add_setters(&[(&split, "collapsed", false)]);
+        responsive.add_breakpoint(wide);
+        toolbar.set_content(Some(&responsive));
+    } else {
+        toolbar.set_content(Some(&split));
+    }
 
-    let button = gtk::ToggleButton::new();
-    button.set_child(Some(
-        &adw::ButtonContent::builder()
-            .icon_name("software-update-available-symbolic")
-            .label(tr("Updates"))
-            .build(),
-    ));
-    header.pack_end(&button);
-    button
-        .bind_property("active", &split, "show-sidebar")
-        .bidirectional()
-        .sync_create()
+    let pages = gtk::Stack::new();
+    let updates = gtk::ToggleButton::new();
+    updates.set_child(Some(&adw::ButtonContent::builder()
+        .icon_name("software-update-available-symbolic")
+        .label(tr("Updates"))
+        .build()));
+    let operations_label = adw::ButtonContent::builder()
+        .icon_name("view-list-symbolic")
+        .label(tr("Operations"))
         .build();
+    let operations = gtk::ToggleButton::new();
+    operations.set_child(Some(&operations_label));
+    header.pack_end(&updates);
+    header.pack_end(&operations);
+    let weak_label = operations_label.downgrade();
+    operations_ui::observe(&operations, move || {
+        if let Some(label) = weak_label.upgrade() {
+            let count = operations_ui::active_count();
+            label.set_label(&if count == 0 {
+                tr("Operations").to_owned()
+            } else {
+                format!("{} ({count})", tr("Operations"))
+            });
+        }
+    });
+    if operations_ui::active_count() > 0 {
+        operations_label.set_label(&format!("{} ({})", tr("Operations"), operations_ui::active_count()));
+    }
+
+    for (button, name) in [(&updates, "updates"), (&operations, "operations")] {
+        let panel = split.downgrade();
+        let stack = pages.downgrade();
+        button.connect_clicked(move |_| {
+            let (Some(panel), Some(stack)) = (panel.upgrade(), stack.upgrade()) else { return; };
+            let was_open = panel.shows_sidebar()
+                && stack.visible_child_name().as_deref() == Some(name);
+            stack.set_visible_child_name(name);
+            panel.set_show_sidebar(!was_open);
+            // Keep the toggles in sync when switching from one panel to the other.
+            panel.notify("show-sidebar");
+        });
+    }
+    let (update_button, operation_button, stack) = (
+        updates.downgrade(), operations.downgrade(), pages.downgrade(),
+    );
+    split.connect_show_sidebar_notify(move |panel| {
+        let (Some(updates), Some(operations), Some(stack)) =
+            (update_button.upgrade(), operation_button.upgrade(), stack.upgrade())
+        else { return; };
+        let selected = stack.visible_child_name();
+        updates.set_active(panel.shows_sidebar() && selected.as_deref() == Some("updates"));
+        operations.set_active(panel.shows_sidebar() && selected.as_deref() == Some("operations"));
+    });
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
     sidebar.set_margin_top(16);
@@ -968,7 +1086,20 @@ pub(super) fn attach(
         .vscrollbar_policy(gtk::PolicyType::External)
         .child(&sidebar)
         .build();
-    split.set_sidebar(Some(&scroll));
+    pages.add_named(&scroll, Some("updates"));
+    let activity = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    activity.set_margin_top(16);
+    activity.set_margin_bottom(16);
+    activity.set_margin_start(16);
+    activity.set_margin_end(16);
+    activity.append(&home_label(tr("Operations"), "title-2"));
+    activity.append(&operations_ui::panel());
+    let activity_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&activity)
+        .build();
+    pages.add_named(&activity_scroll, Some("operations"));
+    split.set_sidebar(Some(&pages));
 
     let refresh_all = move || {
         for section in &sections {
@@ -978,9 +1109,9 @@ pub(super) fn attach(
     if let Some(app) = window.application() {
         ensure_auto_update_timer(&app);
     }
-    refresh_all();
-    split.connect_show_sidebar_notify(move |split| {
-        if split.shows_sidebar() {
+    let checked = Cell::new(false);
+    toolbar.connect_map(move |_| {
+        if !checked.replace(true) {
             refresh_all();
         }
     });

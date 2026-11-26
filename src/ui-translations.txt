@@ -378,3 +378,27 @@ Packlift does not manage permissions for this installation type.|O Packlift não
 Installation scope and updates are handled by Flatpak.|O escopo da instalação e as atualizações são gerenciados pelo Flatpak.|Flatpak administra el alcance de instalación y las actualizaciones.|Область установки и обновления управляются Flatpak.|安装范围和更新由 Flatpak 管理。
 This app has no additional settings in Packlift.|Este aplicativo não tem outras configurações no Packlift.|Esta aplicación no tiene más ajustes en Packlift.|У этого приложения нет дополнительных настроек в Packlift.|此应用在 Packlift 中没有其他设置。
 Loading permissions…|Carregando permissões…|Cargando permisos…|Загрузка разрешений…|正在加载权限…
+Operations|Operações|||
+No recent operations|Nenhuma operação recente|||
+Queued|Na fila|||
+Completed|Concluído|||
+Failed|Falhou|||
+Canceled|Cancelado|||
+In the operations queue|Na fila de operações|||
+Updating AppImages|Atualizando AppImages|||
+Loading library…|Carregando biblioteca…|||
+Favorites|Favoritos|||
+Remove from favorites|Remover dos favoritos|||
+Add to favorites|Adicionar aos favoritos|||
+Saved on this device|Salvos neste dispositivo|||
+No favorites yet|Nenhum favorito ainda|||
+Flathub favorites|Favoritos do Flathub|||
+Sign in to Flathub|Entrar no Flathub|||
+Sign out|Sair da conta|||
+Sign in to view and manage your Flathub favorites.|Entre para ver e gerenciar seus favoritos do Flathub.|||
+Loading favorites…|Carregando favoritos…|||
+Connect favorites|Conectar favoritos|||
+Remove from Flathub favorites|Remover dos favoritos do Flathub|||
+Add to Flathub favorites|Adicionar aos favoritos do Flathub|||
+Your Flathub session expired. Sign in again.|Sua sessão do Flathub expirou. Entre novamente.|||
+Could not connect to Flathub. Try again.|Não foi possível conectar ao Flathub. Tente novamente.|||

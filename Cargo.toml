@@ -16,7 +16,7 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:adw", "dep:gio", "dep:glib", "dep:gtk"]
+gui = ["dep:adw", "dep:gio", "dep:glib", "dep:gtk", "dep:soup3", "dep:webkit6"]
 
 sandbox-only = []
 
@@ -25,6 +25,8 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_4"], optional =
 gio = { version = "0.20", optional = true }
 glib = { version = "0.20", optional = true }
 gtk = { package = "gtk4", version = "0.9", features = ["v4_14"], optional = true }
+soup3 = { version = "0.7", optional = true }
+webkit6 = { version = "0.4", optional = true }
 regex = "1.11"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
