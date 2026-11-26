@@ -990,6 +990,25 @@ fn library_detail(
             tr("Review and change this app's sandbox permissions."),
             "dim-label",
         ));
+        let current = home_label(tr("Loading permissions…"), "dim-label");
+        current.set_selectable(true);
+        permissions.append(&current);
+        let current_target = current.downgrade();
+        let reference = record["target"].as_str().unwrap_or_default().to_owned();
+        let installation = record["flatpak_scope"].as_str().unwrap_or("user").to_owned();
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || {
+                flatpak_ui::permission_summary(&reference, &installation)
+            })
+            .await;
+            if let Some(current) = current_target.upgrade() {
+                match result {
+                    Ok(Ok(text)) => current.set_text(&text),
+                    Ok(Err(error)) => current.set_text(&error.to_string()),
+                    Err(_) => current.set_text(tr("Could not load permissions.")),
+                }
+            }
+        });
         let manage = text_button(tr("Manage permissions…"));
         manage.add_css_class("suggested-action");
         manage.set_halign(gtk::Align::Start);
