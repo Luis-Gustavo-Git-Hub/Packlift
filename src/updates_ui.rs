@@ -634,7 +634,12 @@ impl Section {
             icon.add_css_class("packlift-flatpak-update-icon");
         }
         heading.append(&icon);
-        heading.append(&home_label(title, "heading"));
+        let heading_title = home_label(title, "heading");
+        if matches!(source, Source::Flatpaks) {
+            heading_title.set_wrap(false);
+            heading_title.set_single_line_mode(true);
+        }
+        heading.append(&heading_title);
         group.append(&heading);
         let status = home_label(tr("Waiting to check for updates."), "dim-label");
         group.append(&status);
