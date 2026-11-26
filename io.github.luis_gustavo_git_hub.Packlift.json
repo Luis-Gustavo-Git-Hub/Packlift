@@ -10,6 +10,7 @@
     "--socket=fallback-x11",
     "--socket=pulseaudio",
     "--device=dri",
+    "--share=network",
     "--filesystem=home",
     "--filesystem=xdg-data/applications:create",
     "--filesystem=xdg-data/icons:create"
@@ -55,6 +56,55 @@
           "url": "https://codeload.github.com/facebook/zstd/tar.gz/refs/tags/v1.5.7",
           "archive-type": "tar-gzip",
           "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"
+        }
+      ]
+    },
+    {
+      "name": "appimageupdate-x86_64",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 appimageupdate-x86_64-linux /app/bin/appimageupdate"
+      ],
+      "only-arches": [
+        "x86_64"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://github.com/pkgforge-dev/AppImageUpdate/releases/download/0.4.1/appimageupdate-x86_64-linux",
+          "sha256": "6bdaad9a3bcb0dd0cee345b89b24efb94c09c05e5c30ca88dadc1556344c5b18",
+          "dest-filename": "appimageupdate-x86_64-linux"
+        }
+      ]
+    },
+    {
+      "name": "appimageupdate-aarch64",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 appimageupdate-aarch64-linux /app/bin/appimageupdate"
+      ],
+      "only-arches": [
+        "aarch64"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://github.com/pkgforge-dev/AppImageUpdate/releases/download/0.4.1/appimageupdate-aarch64-linux",
+          "sha256": "b26a110337002cb19afc84824912821548e3c621228321a81e968cce7682b5d0",
+          "dest-filename": "appimageupdate-aarch64-linux"
+        }
+      ]
+    },
+    {
+      "name": "appimageupdate-license",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm644 AppImageUpdate-LICENSE /app/share/licenses/io.github.luis_gustavo_git_hub.Packlift/AppImageUpdate-LICENSE"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "path": "data/AppImageUpdate-LICENSE"
         }
       ]
     },
@@ -166,7 +216,8 @@
         "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.service /app/share/dbus-1/services/io.github.luis_gustavo_git_hub.Packlift.service",
         "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml /app/share/metainfo/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml",
         "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.xml /app/share/mime/packages/io.github.luis_gustavo_git_hub.Packlift.xml",
-        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.png /app/share/icons/hicolor/256x256/apps/io.github.luis_gustavo_git_hub.Packlift.png"
+        "install -Dm644 data/io.github.luis_gustavo_git_hub.Packlift.png /app/share/icons/hicolor/256x256/apps/io.github.luis_gustavo_git_hub.Packlift.png",
+        "install -Dm644 data/flatpak-logo.svg /app/share/icons/hicolor/scalable/apps/packlift-flatpak.svg"
       ],
       "sources": [
         {

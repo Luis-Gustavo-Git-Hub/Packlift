@@ -17,18 +17,15 @@ use crate::{home_label, i18n::tr, text_button};
 
 #[derive(Clone, Copy)]
 enum Source {
-    System,
     Flatpaks,
+    AppImages,
 }
 
 #[derive(Clone)]
 enum Backend {
-    PackageKit,
-    Ostree,
-    Apt,
-    Dnf,
     Flatpak(&'static str, Vec<String>),
     Flatpaks(Vec<(&'static str, Vec<String>)>),
+    AppImages(String, Vec<(std::path::PathBuf, bool)>),
 }
 
 struct Available {
@@ -37,6 +34,8 @@ struct Available {
     packages: Vec<String>,
     runtime_updates: usize,
     failed_remotes: Vec<String>,
+    unsupported: usize,
+    supported: usize,
 }
 
 fn command(args: &[&str]) -> Vec<String> {
@@ -103,8 +102,8 @@ fn write_schedule(days: u64, last_run: u64) {
 
 fn check_key(source: Source) -> &'static str {
     match source {
-        Source::System => "last_checked_system",
         Source::Flatpaks => "last_checked_flatpaks",
+        Source::AppImages => "last_checked_appimages",
     }
 }
 
@@ -168,7 +167,7 @@ fn distribution_identity() -> (String, String) {
     let result = Runner::new(None, Arc::new(|_| {}))
         .and_then(|runner| runner.capture(&command(&["cat", "/etc/os-release"]), false));
     let Ok(contents) = result else {
-        return (tr("Linux system").to_owned(), "computer-symbolic".to_owned());
+        return (tr("Linux distribution").to_owned(), "computer-symbolic".to_owned());
     };
     let values: BTreeMap<_, _> = contents
         .lines()
@@ -178,7 +177,7 @@ fn distribution_identity() -> (String, String) {
     let name = values
         .get("PRETTY_NAME")
         .copied()
-        .unwrap_or("Linux system")
+        .unwrap_or("Linux distribution")
         .to_owned();
     let candidate = values
         .get("LOGO")
@@ -190,10 +189,12 @@ fn distribution_identity() -> (String, String) {
 
 fn apply_due_updates() -> Result<()> {
     let mut errors = Vec::new();
-    for source in [
-        Source::System,
-        Source::Flatpaks,
-    ] {
+    let sources = if host_access_available() {
+        vec![Source::Flatpaks, Source::AppImages]
+    } else {
+        vec![Source::AppImages]
+    };
+    for source in sources {
         match check(source) {
             Ok(available) if available.available => {
                 if let Err(error) = apply(&available.backend) {
@@ -226,7 +227,7 @@ fn ensure_auto_update_timer(app: &gtk::Application) {
         let Some(app) = app.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if !host_access_available() || AUTO_UPDATE_RUNNING.with(Cell::get) {
+        if AUTO_UPDATE_RUNNING.with(Cell::get) {
             return glib::ControlFlow::Continue;
         }
         let (days, last_run) = read_schedule();
@@ -251,56 +252,129 @@ fn ensure_auto_update_timer(app: &gtk::Application) {
 }
 
 fn check(source: Source) -> Result<Available> {
-    if !host_access_available() {
-        return Err(PackliftError::HostAccessRequired);
-    }
     let runner = Runner::new(None, Arc::new(|_| {}))?;
-    let (backend, available, packages) = match source {
-        Source::Flatpaks => return check_all_flatpaks(&runner),
-        Source::System => {
-            let ostree = runner.available("rpm-ostree")
-                && runner
-                    .run(
-                        &command(&["test", "-e", "/run/ostree-booted"]),
-                        false,
-                        true,
-                        false,
-                    )?
-                    .status
-                    .success();
-            if ostree {
-                let available = check_exit(&runner, &["rpm-ostree", "upgrade", "--check"], 0, 77)?;
-                (Backend::Ostree, available, Vec::new())
-            } else if runner.available("pkcon") {
-                let available = check_exit(&runner, &["pkcon", "--plain", "get-updates"], 0, 5)?;
-                (Backend::PackageKit, available, Vec::new())
-            } else if runner.available("apt-get") && runner.available("pkexec") {
-                let output = runner.capture(
-                    &command(&["env", "LC_ALL=C", "apt-get", "-s", "upgrade"]),
-                    false,
-                )?;
-                let packages: Vec<_> = output
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("Inst ")?.split_whitespace().next())
-                    .map(str::to_owned)
-                    .collect();
-                (Backend::Apt, !packages.is_empty(), packages)
-            } else if runner.available("dnf") && runner.available("pkexec") {
-                let available = check_exit(&runner, &["dnf", "check-update"], 100, 0)?;
-                (Backend::Dnf, available, Vec::new())
-            } else {
-                return Err(PackliftError::Message(
-                    tr("System updates are unavailable on this distribution.").into(),
-                ));
+    match source {
+        Source::Flatpaks => check_all_flatpaks(&runner),
+        Source::AppImages => check_appimages(&runner),
+    }
+}
+
+fn appimage_updater(runner: &Runner) -> Option<(&'static str, bool)> {
+    if runner.sandbox {
+        return std::path::Path::new("/app/bin/appimageupdate")
+            .is_file()
+            .then_some(("/app/bin/appimageupdate", true));
+    }
+    if runner.available("appimageupdate") {
+        Some(("appimageupdate", false))
+    } else if runner.available("appimageupdatetool") {
+        Some(("appimageupdatetool", false))
+    } else {
+        None
+    }
+}
+
+fn check_appimages(runner: &Runner) -> Result<Available> {
+    use packlift::system::Registry;
+    let Some((updater, local)) = appimage_updater(runner) else {
+        return Err(PackliftError::Message(
+            tr("AppImage update support is unavailable.").into(),
+        ));
+    };
+    let data = packlift_data_dir();
+    let registry = Registry::new(&data)?;
+    let mut updates = Vec::new();
+    let mut names = Vec::new();
+    let mut failed = Vec::new();
+    let mut unsupported = 0;
+    let mut supported = 0;
+
+    for app in registry.apps()? {
+        if app["method"] != "local" {
+            continue;
+        }
+        let Some(id) = app["id"].as_str() else {
+            continue;
+        };
+        let path = data.join("installed").join(id).join("program.AppImage");
+        if !path.is_file() {
+            let sandbox_only = app["sandbox_only"].as_bool() == Some(true);
+            let migrated = sandbox_only
+                && app["source"]
+                    .as_str()
+                    .map(|source| std::path::Path::new(source))
+                    .filter(|source| source.is_file())
+                    .is_some_and(|source| fs::copy(source, &path).is_ok());
+            if !migrated {
+                unsupported += if sandbox_only { 1 } else { 0 };
+                continue;
             }
         }
-    };
+        let path_text = path.to_string_lossy().into_owned();
+        let describe = runner.capture(
+            &command(&[updater, "--describe", "--", &path_text]),
+            local,
+        )?;
+        if !describe.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix("Update info:")
+                .is_some_and(|info| !info.trim().is_empty())
+        })
+        {
+            unsupported += 1;
+            continue;
+        }
+        supported += 1;
+
+        runner.write(&format!("Checking AppImage updates for {}", path.display()));
+        let result = std::process::Command::new(updater)
+            .args(["--check-for-update", "--", path_text.as_str()])
+            .output()?;
+        let diagnostic = String::from_utf8_lossy(&result.stderr);
+        for line in String::from_utf8_lossy(&result.stdout)
+            .lines()
+            .chain(diagnostic.lines())
+        {
+            runner.write(line);
+        }
+        if diagnostic.contains("Error:") {
+            failed.push(format!(
+                "{}: {}",
+                app["name"].as_str().unwrap_or("AppImage"),
+                diagnostic.trim()
+            ));
+            continue;
+        }
+        match result.status.code() {
+            Some(0) => {}
+            Some(1) => {
+                updates.push((path, app["sandbox_only"].as_bool() == Some(true)));
+                names.push(
+                    app["name"]
+                        .as_str()
+                        .unwrap_or("AppImage")
+                        .to_owned(),
+                );
+            }
+            _ => {
+                let detail = diagnostic.lines().last().unwrap_or("").trim().to_owned();
+                failed.push(if detail.is_empty() {
+                    app["name"].as_str().unwrap_or("AppImage").to_owned()
+                } else {
+                    format!("{}: {detail}", app["name"].as_str().unwrap_or("AppImage"))
+                });
+            }
+        }
+    }
+
     Ok(Available {
-        backend,
-        available,
-        packages,
+        backend: Backend::AppImages(updater.to_owned(), updates),
+        available: !names.is_empty(),
+        packages: names,
         runtime_updates: 0,
-        failed_remotes: Vec::new(),
+        failed_remotes: failed,
+        unsupported,
+        supported,
     })
 }
 
@@ -360,6 +434,8 @@ fn check_flatpaks(runner: &Runner, scope: &'static str) -> Result<Available> {
         packages: app_names.into_iter().collect(),
         runtime_updates,
         failed_remotes,
+        unsupported: 0,
+        supported: 0,
     })
 }
 
@@ -400,6 +476,8 @@ fn check_all_flatpaks(runner: &Runner) -> Result<Available> {
         packages: packages.into_iter().collect(),
         runtime_updates,
         failed_remotes,
+        unsupported: 0,
+        supported: 0,
     })
 }
 
@@ -410,38 +488,10 @@ fn flatpak_ref(reference: &str) -> &str {
         .unwrap_or(reference)
 }
 
-fn check_exit(runner: &Runner, args: &[&str], available: i32, current: i32) -> Result<bool> {
-    let result = runner.run(&command(args), false, true, false)?;
-    match result.status.code() {
-        Some(code) if code == available => Ok(true),
-        Some(code) if code == current => Ok(false),
-        _ => Err(PackliftError::Message(
-            tr("Could not check for updates. See the Packlift log.").into(),
-        )),
-    }
-}
-
 fn apply(backend: &Backend) -> Result<()> {
     let _operation = operation(&packlift_data_dir())?;
     let runner = Runner::new(None, Arc::new(|_| {}))?;
     match backend {
-        Backend::PackageKit => {
-            runner.run(
-                &command(&["pkcon", "--plain", "--noninteractive", "update"]),
-                false,
-                true,
-                true,
-            )?;
-        }
-        Backend::Ostree => {
-            runner.run(&command(&["rpm-ostree", "upgrade"]), false, true, true)?;
-        }
-        Backend::Apt => {
-            runner.run(&command(&["pkexec", "apt-get", "-y", "upgrade"]), false, true, true)?;
-        }
-        Backend::Dnf => {
-            runner.run(&command(&["pkexec", "dnf", "-y", "upgrade"]), false, true, true)?;
-        }
         Backend::Flatpak(scope, refs) => {
             if !refs.is_empty() {
                 runner.run(
@@ -462,8 +512,95 @@ fn apply(backend: &Backend) -> Result<()> {
                 )?;
             }
         }
+        Backend::AppImages(updater, paths) => {
+            for (path, sandbox_only) in paths {
+                let path_text = path.to_string_lossy().into_owned();
+                let result = runner.run(
+                    &command(&[updater, "--overwrite", "--", &path_text]),
+                    true,
+                    true,
+                    false,
+                )?;
+                if !result.status.success() {
+                    return Err(PackliftError::Message(format!(
+                        "{} could not be updated. See the Packlift log.",
+                        path.file_name().and_then(|name| name.to_str()).unwrap_or("AppImage")
+                    )));
+                }
+                if *sandbox_only {
+                    if let Err(error) = refresh_sandbox_appimage(&runner, path) {
+                        restore_appimage_backup(path);
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn refresh_sandbox_appimage(runner: &Runner, image: &std::path::Path) -> Result<()> {
+    use std::fs;
+
+    let directory = image.parent().ok_or_else(|| {
+        PackliftError::Message("The AppImage installation directory is missing.".into())
+    })?;
+    let payload = directory.join("payload");
+    let replacement = directory.join("payload.update");
+    let backup = directory.join("payload.old");
+    if replacement.exists() {
+        fs::remove_dir_all(&replacement)?;
+    }
+    let offset = packlift::installer::appimage_offset(image)?.ok_or_else(|| {
+        PackliftError::Message("The updated file is not a supported type 2 AppImage.".into())
+    })?;
+    let offset_text = offset.to_string();
+    let replacement_text = replacement.to_string_lossy().into_owned();
+    let image_text = image.to_string_lossy().into_owned();
+    runner.run(
+        &command(&[
+            "unsquashfs",
+            "-no-progress",
+            "-o",
+            &offset_text,
+            "-d",
+            &replacement_text,
+            &image_text,
+        ]),
+        true,
+        true,
+        true,
+    )?;
+    let canonical_replacement = fs::canonicalize(&replacement)?;
+    let app_run = fs::canonicalize(replacement.join("AppRun")).map_err(|_| {
+        PackliftError::Message("The updated AppImage has no usable AppRun entry.".into())
+    })?;
+    if !app_run.starts_with(&canonical_replacement) || !app_run.is_file() {
+        fs::remove_dir_all(&replacement)?;
+        return Err(PackliftError::Message(
+            "The updated AppImage AppRun points outside its payload or is not a file.".into(),
+        ));
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)?;
+    }
+    fs::rename(&payload, &backup)?;
+    if let Err(error) = fs::rename(&replacement, &payload) {
+        let _ = fs::rename(&backup, &payload);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn restore_appimage_backup(image: &std::path::Path) {
+    let backup = image.with_file_name("program.AppImage.old");
+    let failed = image.with_file_name("program.AppImage.failed");
+    if backup.is_file() {
+        let _ = fs::remove_file(&failed);
+        if fs::rename(image, &failed).is_ok() {
+            let _ = fs::rename(backup, image);
+        }
+    }
 }
 
 struct Section {
@@ -486,14 +623,16 @@ impl Section {
         window: &adw::ApplicationWindow,
     ) -> Rc<Self> {
         let group = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        group.add_css_class(if matches!(source, Source::System) {
-            "packlift-update-system"
-        } else {
-            "packlift-update-section"
-        });
+        group.add_css_class("packlift-update-section");
+        if matches!(source, Source::Flatpaks) {
+            group.add_css_class("packlift-update-flatpak");
+        }
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon = gtk::Image::from_icon_name(icon_name);
-        icon.set_pixel_size(18);
+        icon.set_pixel_size(if matches!(source, Source::Flatpaks) { 40 } else { 18 });
+        if matches!(source, Source::Flatpaks) {
+            icon.add_css_class("packlift-flatpak-update-icon");
+        }
         heading.append(&icon);
         heading.append(&home_label(title, "heading"));
         group.append(&heading);
@@ -514,18 +653,8 @@ impl Section {
         update.set_hexpand(true);
         update.set_margin_top(4);
         update.set_visible(false);
-        if matches!(source, Source::System) {
-            last_checked.set_hexpand(true);
-            update.set_halign(gtk::Align::End);
-            update.set_hexpand(false);
-            let activity = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            activity.append(&last_checked);
-            activity.append(&update);
-            panel.append(&activity);
-        } else {
-            group.append(&last_checked);
-            group.append(&update);
-        }
+        group.append(&last_checked);
+        group.append(&update);
         panel.append(&group);
         let section = Rc::new(Self {
             source,
@@ -572,21 +701,57 @@ impl Section {
                 Ok(Ok(result)) => {
                     *section.backend.borrow_mut() = result.available.then_some(result.backend.clone());
                     let partial = !result.failed_remotes.is_empty();
-                    section.warning.set_visible(partial);
+                    let unsupported = matches!(section.source, Source::AppImages)
+                        && result.unsupported > 0;
+                    section.warning.set_visible(partial || unsupported);
+                    let mut warnings = Vec::new();
                     if partial {
-                        section.warning.set_text(tr("Some Flatpak repositories could not be checked."));
+                        warnings.push(if matches!(section.source, Source::Flatpaks) {
+                            tr("Some Flatpak repositories could not be checked.").to_owned()
+                        } else {
+                            tr("Some AppImages could not be checked.").to_owned()
+                        });
                     }
+                    if unsupported {
+                        warnings.push(
+                            tr("{count} AppImages do not support automatic updates.")
+                                .replace("{count}", &result.unsupported.to_string()),
+                        );
+                    }
+                    section.warning.set_text(&warnings.join("\n"));
                     let status = if result.available && matches!(section.source, Source::Flatpaks) {
                         format_flatpak_status(&result)
                     } else if result.available {
-                        tr("Updates available").to_owned()
+                        match section.source {
+                            Source::AppImages => {
+                                let count = result.packages.len();
+                                let label = if count == 1 {
+                                    tr("1 AppImage update available").to_owned()
+                                } else {
+                                    tr("{count} AppImage updates available")
+                                        .replace("{count}", &count.to_string())
+                                };
+                                label
+                            }
+                            Source::Flatpaks => tr("Updates available").to_owned(),
+                        }
                     } else if partial {
                         tr("Update check incomplete").to_owned()
+                    } else if matches!(section.source, Source::AppImages)
+                        && result.supported > 0
+                    {
+                        tr("All supported AppImages are up to date.").to_owned()
+                    } else if matches!(section.source, Source::AppImages) {
+                        tr("No AppImages with automatic update support were found.").to_owned()
                     } else {
                         String::new()
                     };
                     section.status.set_text(&status);
-                    section.status.set_visible(result.available || partial);
+                    section.status.set_visible(
+                        result.available
+                            || partial
+                            || matches!(section.source, Source::AppImages),
+                    );
                     let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
                     if result.packages.len() > 8 {
                         lines.push(
@@ -595,22 +760,19 @@ impl Section {
                         );
                     }
                     section.details.set_text(&lines.join("\n"));
-                    section.details.set_visible(!lines.is_empty() && matches!(section.source, Source::System));
-                    let is_system = matches!(section.source, Source::System);
-                    section.update.set_visible(result.available && is_system);
-                    section.last_checked.set_visible(!result.available || !is_system);
+                    section.details.set_visible(
+                        !lines.is_empty() && matches!(section.source, Source::AppImages),
+                    );
+                    section.update.set_visible(
+                        result.available && matches!(section.source, Source::AppImages),
+                    );
+                    section.last_checked.set_visible(true);
                 }
                 Ok(Err(error)) => {
                     *section.backend.borrow_mut() = None;
                     section.update.set_visible(false);
                     section.last_checked.set_visible(true);
-                    if matches!(error, PackliftError::HostAccessRequired) {
-                        section
-                            .status
-                            .set_text(tr("System access is required to check for updates."));
-                    } else {
-                        section.status.set_text(&error.to_string());
-                    }
+                    section.status.set_text(&error.to_string());
                 }
                 Err(_) => section
                     .status
@@ -632,7 +794,6 @@ impl Section {
         let section = self.clone();
         glib::MainContext::default().spawn_local(async move {
             let _hold = hold;
-            let restart = matches!(backend, Backend::Ostree);
             let result = gio::spawn_blocking(move || apply(&backend)).await;
             section.busy.set(false);
             section.update.set_sensitive(true);
@@ -641,12 +802,7 @@ impl Section {
                     *section.backend.borrow_mut() = None;
                     section.update.set_visible(false);
                     section.details.set_visible(false);
-                    if restart {
-                        section.last_checked.set_visible(true);
-                        section.status.set_text(tr("Updates prepared. Restart to finish."));
-                    } else {
-                        section.refresh();
-                    }
+                    section.refresh();
                 }
                 Ok(Err(error)) => section.status.set_text(&error.to_string()),
                 Err(_) => section
@@ -704,7 +860,7 @@ pub(super) fn attach(
     let distro_icon = gtk::Image::from_icon_name("computer-symbolic");
     distro_icon.set_pixel_size(42);
     distribution.append(&distro_icon);
-    let distro_name = home_label(tr("Linux system"), "title-2");
+    let distro_name = home_label(tr("Linux distribution"), "title-2");
     distro_name.set_hexpand(true);
     distro_name.set_valign(gtk::Align::Center);
     distribution.append(&distro_name);
@@ -724,15 +880,6 @@ pub(super) fn attach(
             }
         }
     });
-    let system = Section::new(
-        Source::System,
-        tr("System"),
-        "system-software-update-symbolic",
-        &distro_module,
-        window,
-    );
-    distro_module.append(&home_label(tr("More options"), "title-3"));
-
     let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
     preferences.add_css_class("packlift-update-preferences");
     let automatic_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -774,11 +921,18 @@ pub(super) fn attach(
     let flatpaks = Section::new(
         Source::Flatpaks,
         tr("Flatpak"),
-        "package-x-generic-symbolic",
+        "packlift-flatpak",
         &sidebar,
         window,
     );
-    let sections = [system, flatpaks];
+    let appimages = Section::new(
+        Source::AppImages,
+        tr("AppImages"),
+        "application-x-executable-symbolic",
+        &sidebar,
+        window,
+    );
+    let sections = [flatpaks, appimages];
     register_update_sections(&sections);
     ensure_auto_check_timer();
     let frequency_target = frequency.downgrade();

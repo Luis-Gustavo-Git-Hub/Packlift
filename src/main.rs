@@ -72,6 +72,9 @@ fn main() -> glib::ExitCode {
                  .packlift-store-feature { padding: 20px 24px; border-radius: 18px; background-color: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.23); }
                  .packlift-store-feature:hover, .packlift-store-feature:focus-visible { border-color: alpha(@accent_bg_color, 0.65); }
                  .packlift-store-preview { border-radius: 10px; box-shadow: 0 3px 12px alpha(black, 0.2); }
+                 .packlift-store-skeleton-card { min-height: 82px; padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@borders, 0.42); }
+                 .packlift-store-skeleton-icon { border-radius: 10px; background: alpha(@window_fg_color, 0.09); }
+                 .packlift-store-skeleton-line { border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
@@ -87,9 +90,10 @@ fn main() -> glib::ExitCode {
                  button.packlift-showcase-card:hover { border-color: alpha(white, 0.56); }
                  .packlift-showcase-card .heading { font-size: 1.12em; }
                  .packlift-update-module { padding: 18px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); }
-                 .packlift-update-system { padding: 4px 0; }
                  .packlift-update-preferences { padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.045); }
                  .packlift-update-section { padding: 18px; border-radius: 14px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
+                 .packlift-update-flatpak { padding: 18px; border-radius: 16px; background-image: linear-gradient(135deg, alpha(#4a90d9, 0.18), alpha(@card_bg_color, 0.98) 62%); border: 1px solid alpha(#4a90d9, 0.42); }
+                 .packlift-flatpak-update-icon { padding: 3px; border-radius: 11px; }
                  .packlift-update-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(115deg, alpha(@accent_bg_color, 0.24), alpha(@accent_bg_color, 0.08)); border: 1px solid alpha(@accent_bg_color, 0.34); }
                  .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
                  .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }

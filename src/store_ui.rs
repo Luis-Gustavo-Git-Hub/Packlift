@@ -27,6 +27,8 @@ struct StoreView {
     carousel: adw::Carousel,
     list: gtk::FlowBox,
     status: gtk::Label,
+    loading_screen: gtk::Box,
+    loading_status: gtk::Label,
     scroll: gtk::ScrolledWindow,
     previous: gtk::Button,
     next: gtk::Button,
@@ -140,6 +142,9 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     let status = home_label("", "dim-label");
     status.set_selectable(true);
     body.append(&status);
+    let (loading_screen, loading_status) = store_loading_screen();
+    loading_screen.set_visible(false);
+    body.append(&loading_screen);
     let (feature, carousel) = store_carousel();
     let list = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -189,6 +194,8 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         carousel,
         list,
         status,
+        loading_screen,
+        loading_status,
         scroll,
         previous,
         next,
@@ -244,10 +251,72 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     }
 }
 
+fn store_loading_screen() -> (gtk::Box, gtk::Label) {
+    let screen = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    screen.add_css_class("packlift-store-loading");
+    screen.set_hexpand(true);
+    screen.set_vexpand(true);
+    screen.set_valign(gtk::Align::Center);
+
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    heading.set_halign(gtk::Align::Center);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(24, 24);
+    spinner.start();
+    heading.append(&spinner);
+    let status = home_label(tr("Searching the store…"), "title-3");
+    heading.append(&status);
+    screen.append(&heading);
+
+    let cards = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(true)
+        .row_spacing(10)
+        .column_spacing(10)
+        .build();
+    for _ in 0..6 {
+        cards.append(&store_loading_card());
+    }
+    screen.append(&cards);
+    (screen, status)
+}
+
+fn store_loading_card() -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    card.add_css_class("packlift-store-skeleton-card");
+    card.set_size_request(190, 82);
+
+    let icon = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    icon.add_css_class("packlift-store-skeleton-icon");
+    icon.set_size_request(48, 48);
+    card.append(&icon);
+
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    text.set_valign(gtk::Align::Center);
+    text.set_hexpand(true);
+    let name = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    name.add_css_class("packlift-store-skeleton-line");
+    name.set_size_request(100, 11);
+    let description = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    description.add_css_class("packlift-store-skeleton-line");
+    description.set_size_request(72, 9);
+    text.append(&name);
+    text.append(&description);
+    card.append(&text);
+    card
+}
+
 impl StoreView {
     fn set_status(&self, message: &str) {
         self.status.set_text(message);
-        self.status.set_visible(!message.is_empty());
+        if self.busy.get() && self.loading_screen.is_visible() {
+            self.loading_status.set_text(message);
+            self.status.set_visible(false);
+        } else {
+            self.status.set_visible(!message.is_empty());
+        }
     }
 
     fn set_busy(&self, busy: bool) {
@@ -255,12 +324,20 @@ impl StoreView {
         if busy {
             self.previous.set_sensitive(false);
             self.next.set_sensitive(false);
+        } else {
+            self.loading_screen.set_visible(false);
+            self.scroll.set_visible(true);
+            self.status.set_visible(!self.status.text().is_empty());
         }
     }
 
     fn load_remotes(self: &Rc<Self>) {
         self.set_busy(true);
         self.set_status(tr("Loading repositories…"));
+        self.loading_screen.set_visible(true);
+        self.loading_status.set_text(tr("Loading repositories…"));
+        self.status.set_visible(false);
+        self.scroll.set_visible(false);
         let view = self.clone();
         background(
             move || worker().and_then(|runner| store::catalog_remotes(&runner, Destination::User)),
@@ -417,6 +494,10 @@ impl StoreView {
             self.clear_results();
             self.page_label.set_text("");
             self.set_status(tr("Searching the store…"));
+            self.loading_status.set_text(tr("Searching the store…"));
+            self.loading_screen.set_visible(true);
+            self.status.set_visible(false);
+            self.scroll.set_visible(false);
         }
         let explore = catalog_search.is_explore() && page == 1;
         let view = self.clone();
