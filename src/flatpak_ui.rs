@@ -26,6 +26,24 @@ impl PermissionSwitch {
     }
 }
 
+pub(super) fn permission_summary(
+    reference: &str,
+    installation: &str,
+) -> packlift::core::Result<String> {
+    let target = FlatpakTarget {
+        reference: reference.into(),
+        installation: installation.into(),
+    };
+    let manager = installer()?;
+    let permissions = target.permissions(&manager.runner)?;
+    let effective = permissions.effective.trim();
+    Ok(if effective.is_empty() {
+        tr("No permissions reported.").to_owned()
+    } else {
+        effective.to_owned()
+    })
+}
+
 pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     let Some(reference) = record["target"].as_str() else {
         return;
