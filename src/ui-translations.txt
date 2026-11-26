@@ -348,3 +348,4 @@ Monthly|Mensalmente|Mensualmente|Ежемесячно|每月
 Automatic update frequency|Frequência das atualizações automáticas|Frecuencia de actualización automática|Частота автоматического обновления|自动更新频率
 Linux system|Sistema Linux|Sistema Linux|Система Linux|Linux 系统
 Flatpak|Flatpak|Flatpak|Flatpak|Flatpak
+More options|Mais opções|Más opciones|Дополнительные параметры|更多选项

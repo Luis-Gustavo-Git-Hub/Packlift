@@ -86,7 +86,8 @@ fn main() -> glib::ExitCode {
                  button.packlift-showcase-card { padding: 14px; border-radius: 15px; border-color: alpha(white, 0.20); box-shadow: 0 2px 6px alpha(black, 0.17); }
                  button.packlift-showcase-card:hover { border-color: alpha(white, 0.56); }
                  .packlift-showcase-card .heading { font-size: 1.12em; }
-                 .packlift-update-section { padding: 12px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-update-section { padding: 18px; border-radius: 14px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
+                 .packlift-update-hero { padding: 16px; border-radius: 14px; background-image: linear-gradient(115deg, alpha(@accent_bg_color, 0.24), alpha(@accent_bg_color, 0.08)); border: 1px solid alpha(@accent_bg_color, 0.34); }
                  .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
                  .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }
                  .packlift-store-pagination > label { margin: 0 6px; }

@@ -412,7 +412,9 @@ impl Section {
         group.append(&warning);
         let update = text_button(tr("Update"));
         update.add_css_class("suggested-action");
-        update.set_halign(gtk::Align::Start);
+        update.set_halign(gtk::Align::Fill);
+        update.set_hexpand(true);
+        update.set_margin_top(4);
         update.set_visible(false);
         group.append(&update);
         panel.append(&group);
@@ -547,8 +549,8 @@ pub(super) fn attach(
     let split = adw::OverlaySplitView::new();
     split.set_content(Some(&content));
     split.set_sidebar_position(gtk::PackType::End);
-    split.set_min_sidebar_width(280.0);
-    split.set_max_sidebar_width(370.0);
+    split.set_min_sidebar_width(330.0);
+    split.set_max_sidebar_width(440.0);
     split.set_collapsed(true);
     split.set_show_sidebar(false);
     toolbar.set_content(Some(&split));
@@ -581,35 +583,12 @@ pub(super) fn attach(
     refresh.update_property(&[gtk::accessible::Property::Label(tr("Check for updates"))]);
     title_row.append(&refresh);
     sidebar.append(&title_row);
-    let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    preferences.add_css_class("packlift-update-section");
-    preferences.append(&home_label(tr("Automatic updates"), "heading"));
-    let helper = home_label(
-        tr("Packlift checks when it opens and applies updates on this schedule while it is running."),
-        "dim-label",
-    );
-    helper.set_wrap(true);
-    preferences.append(&helper);
-    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    frequency_row.append(&home_label(tr("Frequency"), ""));
-    let frequency_model = gtk::StringList::new(&[&tr("Daily"), &tr("Weekly"), &tr("Monthly")]);
-    let frequency = gtk::DropDown::new(Some(frequency_model), None::<gtk::Expression>);
-    frequency.set_hexpand(true);
-    let (days, _) = read_schedule();
-    frequency.set_selected(match days {
-        7 => 1,
-        30 => 2,
-        _ => 0,
-    });
-    frequency.update_property(&[gtk::accessible::Property::Label(tr("Automatic update frequency"))]);
-    frequency_row.append(&frequency);
-    preferences.append(&frequency_row);
-    sidebar.append(&preferences);
-    let distribution = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let distribution = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    distribution.add_css_class("packlift-update-hero");
     let distro_icon = gtk::Image::from_icon_name("computer-symbolic");
-    distro_icon.set_pixel_size(32);
+    distro_icon.set_pixel_size(42);
     distribution.append(&distro_icon);
-    let distro_name = home_label(tr("Linux system"), "title-3");
+    let distro_name = home_label(tr("Linux system"), "title-2");
     distro_name.set_hexpand(true);
     distro_name.set_valign(gtk::Align::Center);
     distribution.append(&distro_name);
@@ -636,6 +615,31 @@ pub(super) fn attach(
         &sidebar,
         window,
     );
+    sidebar.append(&home_label(tr("More options"), "title-3"));
+    let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    preferences.add_css_class("packlift-update-section");
+    preferences.append(&home_label(tr("Automatic updates"), "heading"));
+    let helper = home_label(
+        tr("Packlift checks when it opens and applies updates on this schedule while it is running."),
+        "dim-label",
+    );
+    helper.set_wrap(true);
+    preferences.append(&helper);
+    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    frequency_row.append(&home_label(tr("Frequency"), ""));
+    let frequency_model = gtk::StringList::new(&[&tr("Daily"), &tr("Weekly"), &tr("Monthly")]);
+    let frequency = gtk::DropDown::new(Some(frequency_model), None::<gtk::Expression>);
+    frequency.set_hexpand(true);
+    let (days, _) = read_schedule();
+    frequency.set_selected(match days {
+        7 => 1,
+        30 => 2,
+        _ => 0,
+    });
+    frequency.update_property(&[gtk::accessible::Property::Label(tr("Automatic update frequency"))]);
+    frequency_row.append(&frequency);
+    preferences.append(&frequency_row);
+    sidebar.append(&preferences);
     let flatpaks = Section::new(
         Source::Flatpaks,
         tr("Flatpak"),
