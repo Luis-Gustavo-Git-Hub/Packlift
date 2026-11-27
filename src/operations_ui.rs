@@ -12,7 +12,7 @@ use packlift::{
     system::LogHandler,
 };
 
-use crate::{home_label, i18n::tr, installation_stage, text_button};
+use crate::{home_label, i18n::tr, text_button};
 
 type Task = Box<dyn FnOnce(LogHandler) -> Result<Option<serde_json::Value>> + Send>;
 type Complete = Box<dyn FnOnce(Result<Option<serde_json::Value>>)>;
@@ -22,8 +22,8 @@ struct Operation {
     id: u64,
     title: String,
     phase: Phase,
-    fraction: f64,
-    message: String,
+    progress: Progress,
+    error: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,8 +104,8 @@ pub(super) fn submit(
             id,
             title: title.to_owned(),
             phase: Phase::Queued,
-            fraction: 0.0,
-            message: String::new(),
+            progress: Progress::PREPARING,
+            error: String::new(),
         });
     });
     PENDING.with_borrow_mut(|queue| {
@@ -137,30 +137,24 @@ fn start_next() {
         return;
     };
     ACTIVE.with(|active| active.set(true));
-    phase(id, |entry| {
-        entry.phase = Phase::Running;
-        entry.fraction = 0.04;
-    });
+    phase(id, |entry| entry.phase = Phase::Running);
     let (sender, receiver) = mpsc::channel();
     let worker = gio::spawn_blocking(move || {
         task(Arc::new(move |line| {
-            let progress = installation_stage(line);
-            let _ = sender.send(progress);
+            if let Some(progress) = describe_progress(line) {
+                let _ = sender.send(progress);
+            }
         }))
     });
     let timer = glib::timeout_add_local(Duration::from_millis(160), move || {
-        let progress = receiver.try_iter().last();
-        if let Some((stage, fraction)) = progress {
+        if let Some(progress) = receiver.try_iter().last() {
             let changed = HISTORY.with_borrow(|history| {
-                history.iter().any(|entry| {
-                    entry.id == id && (entry.message != stage || entry.fraction < fraction)
-                })
+                history
+                    .iter()
+                    .any(|entry| entry.id == id && entry.progress != progress)
             });
             if changed {
-                phase(id, |entry| {
-                    entry.message = stage.to_owned();
-                    entry.fraction = entry.fraction.max(fraction);
-                });
+                phase(id, |entry| entry.progress = progress);
             }
         }
         glib::ControlFlow::Continue
@@ -175,12 +169,10 @@ fn start_next() {
         phase(id, |entry| match &result {
             Ok(_) => {
                 entry.phase = Phase::Done;
-                entry.message.clear();
-                entry.fraction = 1.0;
             }
             Err(error) => {
                 entry.phase = Phase::Failed;
-                entry.message = error.to_string();
+                entry.error = error.to_string();
             }
         });
         completed(result);
@@ -188,6 +180,170 @@ fn start_next() {
         ACTIVE.with(|active| active.set(false));
         start_next();
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Progress {
+    stage: &'static str,
+    explanation: &'static str,
+    item: Option<(u32, u32)>,
+    percent: Option<u8>,
+}
+
+impl Progress {
+    const PREPARING: Self = Self::stage(
+        "Preparing the operation",
+        "Packlift is getting everything ready.",
+    );
+
+    const fn stage(stage: &'static str, explanation: &'static str) -> Self {
+        Self {
+            stage,
+            explanation,
+            item: None,
+            percent: None,
+        }
+    }
+}
+
+fn describe_progress(line: &str) -> Option<Progress> {
+    let line = line.trim();
+    // Flatpak's non-terminal output reports progress for one component at a time.
+    for (verb, stage, explanation) in [
+        (
+            "Installing",
+            "Installing Flatpak components",
+            "Downloading and deploying the app and any required runtimes.",
+        ),
+        (
+            "Updating",
+            "Updating Flatpak components",
+            "Downloading and applying new versions of apps and runtimes.",
+        ),
+        (
+            "Uninstalling",
+            "Removing a Flatpak component",
+            "Removing the selected installation from Flatpak.",
+        ),
+    ] {
+        if let Some((head, tail)) = line
+            .strip_prefix(verb)
+            .and_then(|rest| rest.split_once('…').or_else(|| rest.split_once("...")))
+        {
+            let item = if head.trim().is_empty() {
+                None
+            } else {
+                let (current, total) = head.trim().split_once('/')?;
+                let (current, total) = (current.parse::<u32>().ok()?, total.parse::<u32>().ok()?);
+                if current == 0 || current > total {
+                    return None;
+                }
+                Some((current, total))
+            };
+            let percent = tail
+                .split_whitespace()
+                .find_map(|word| word.strip_suffix('%')?.parse::<u8>().ok())
+                .filter(|value| *value <= 100);
+            return Some(Progress {
+                item,
+                percent,
+                ..Progress::stage(stage, explanation)
+            });
+        }
+    }
+
+    for (prefix, stage, explanation) in [
+        (
+            "Preparing Flatpak installation",
+            "Preparing Flatpak installation",
+            "Checking the selected repository and resolving dependencies.",
+        ),
+        (
+            "Checking Flatpak updates",
+            "Checking for Flatpak updates",
+            "Looking for new versions in the configured repositories.",
+        ),
+        (
+            "Updating Flatpaks for my account",
+            "Updating Flatpaks for my account",
+            "Checking and applying updates in your personal installation.",
+        ),
+        (
+            "Updating system Flatpaks",
+            "Updating system Flatpaks",
+            "Checking and applying updates in the shared installation.",
+        ),
+        (
+            "Refreshing Flatpak state",
+            "Finishing the installation",
+            "Checking that the app is available to open.",
+        ),
+        (
+            "Checking AppImage updates",
+            "Checking for AppImage updates",
+            "Looking for a newer version of the installed file.",
+        ),
+        (
+            "Applying AppImage update",
+            "Updating AppImage files",
+            "Downloading and replacing the installed file.",
+        ),
+        (
+            "Analyzing package",
+            "Analyzing the package",
+            "Reading the package metadata and identifying its format.",
+        ),
+        (
+            "Checking package compatibility",
+            "Checking compatibility",
+            "Checking the package architecture and how it can run on this system.",
+        ),
+        (
+            "Preparing the ",
+            "Preparing the installation environment",
+            "Setting up the runtime or container required to run the app.",
+        ),
+        (
+            "Downloading package dependencies",
+            "Downloading dependencies",
+            "Fetching files the app needs to run.",
+        ),
+        (
+            "Running the Windows installer",
+            "Running the Windows installer",
+            "Follow the instructions in the installer if it asks for input.",
+        ),
+        (
+            "Looking for the installed Windows executable",
+            "Finding the installed program",
+            "Looking for the executable to add to your library.",
+        ),
+        (
+            "Creating application menu",
+            "Creating application shortcuts",
+            "Adding the app to your desktop menu.",
+        ),
+        (
+            "Registering the application",
+            "Adding the app to your library",
+            "Saving the information Packlift needs to open the app.",
+        ),
+        (
+            "Removing the installed program",
+            "Removing the program",
+            "Removing the installation and its shortcuts.",
+        ),
+        (
+            "Installing",
+            "Installing the program",
+            "Copying the program files to the selected installation.",
+        ),
+    ] {
+        if line.starts_with(prefix) {
+            return Some(Progress::stage(stage, explanation));
+        }
+    }
+    None
 }
 
 fn cancel(id: u64) {
@@ -201,71 +357,159 @@ fn cancel(id: u64) {
     }
 }
 
+pub(super) fn cancel_queued(title: &str) {
+    let id = HISTORY.with_borrow(|history| {
+        history
+            .iter()
+            .find(|entry| entry.title == title && entry.phase == Phase::Queued)
+            .map(|entry| entry.id)
+    });
+    if let Some(id) = id {
+        cancel(id);
+    }
+}
+
 pub(super) fn panel() -> gtk::Box {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
     let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
     panel.append(&list);
-    rebuild(&list);
+    let mut layout = None;
+    let mut running = None;
     let weak = list.downgrade();
-    observe(&panel, move || {
-        if let Some(list) = weak.upgrade() {
-            rebuild(&list);
-        }
-    });
+    let refresh = move || {
+        let Some(list) = weak.upgrade() else {
+            return;
+        };
+        HISTORY.with_borrow(|history| {
+            let active = history
+                .iter()
+                .filter(|entry| matches!(entry.phase, Phase::Running | Phase::Queued));
+            let recent = history
+                .iter()
+                .rev()
+                .filter(|entry| !matches!(entry.phase, Phase::Running | Phase::Queued));
+            let entries = active.chain(recent).collect::<Vec<_>>();
+            let next = entries
+                .iter()
+                .map(|entry| (entry.id, entry.phase))
+                .collect::<Vec<_>>();
+            if layout.as_ref() != Some(&next) {
+                running = rebuild(&list, &entries);
+                layout = Some(next);
+            }
+            if let (Some(widgets), Some(entry)) = (
+                &running,
+                entries.iter().find(|entry| entry.phase == Phase::Running),
+            ) {
+                widgets.update(entry.progress);
+            }
+        });
+    };
+    let refresh = Rc::new(RefCell::new(refresh));
+    (refresh.borrow_mut())();
+    observe(&panel, move || (refresh.borrow_mut())());
     panel
 }
 
-fn rebuild(list: &gtk::Box) {
+struct RunningCard {
+    stage: gtk::Label,
+    explanation: gtk::Label,
+    spinner: gtk::Spinner,
+    measurement: gtk::Label,
+    bar: gtk::ProgressBar,
+}
+
+impl RunningCard {
+    fn new(card: &gtk::Box, title: &str) -> Self {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let spinner = gtk::Spinner::new();
+        spinner.set_valign(gtk::Align::Center);
+        row.append(&spinner);
+        let stage = home_label("", "heading");
+        row.append(&stage);
+        card.append(&row);
+        let explanation = home_label("", "dim-label");
+        card.append(&explanation);
+        let measurement = home_label("", "caption");
+        measurement.add_css_class("dim-label");
+        card.append(&measurement);
+        let bar = gtk::ProgressBar::new();
+        bar.update_property(&[gtk::accessible::Property::Label(title)]);
+        card.append(&bar);
+        Self {
+            stage,
+            explanation,
+            spinner,
+            measurement,
+            bar,
+        }
+    }
+
+    fn update(&self, progress: Progress) {
+        self.stage.set_text(tr(progress.stage));
+        self.explanation.set_text(tr(progress.explanation));
+        let mut details = Vec::new();
+        if let Some((current, total)) = progress.item {
+            details.push(
+                tr("Component {current} of {total}")
+                    .replace("{current}", &current.to_string())
+                    .replace("{total}", &total.to_string()),
+            );
+        }
+        if let Some(percent) = progress.percent {
+            details.push(
+                tr("{percent}% of this component").replace("{percent}", &percent.to_string()),
+            );
+            self.bar.set_fraction(f64::from(percent) / 100.0);
+        }
+        self.measurement.set_text(&details.join(" · "));
+        self.measurement.set_visible(!details.is_empty());
+        self.bar.set_visible(progress.percent.is_some());
+        self.spinner.set_visible(progress.percent.is_none());
+        self.spinner.set_spinning(progress.percent.is_none());
+    }
+}
+
+fn rebuild(list: &gtk::Box, entries: &[&Operation]) -> Option<RunningCard> {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    HISTORY.with_borrow(|history| {
-        if history.is_empty() {
-            list.append(&home_label(tr("No recent operations"), "dim-label"));
-        }
-        let active = history
-            .iter()
-            .filter(|entry| matches!(entry.phase, Phase::Running | Phase::Queued));
-        let recent = history
-            .iter()
-            .rev()
-            .filter(|entry| !matches!(entry.phase, Phase::Running | Phase::Queued));
-        for entry in active.chain(recent) {
-            let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-            card.add_css_class("packlift-update-section");
-            card.append(&home_label(&entry.title, "heading"));
-            let status = match entry.phase {
-                Phase::Queued => tr("Queued"),
-                Phase::Running if entry.message.is_empty() => tr("Working…"),
-                Phase::Running => &entry.message,
-                Phase::Done => tr("Completed"),
-                Phase::Failed => tr("Failed"),
-                Phase::Canceled => tr("Canceled"),
-            };
-            card.append(&home_label(status, "dim-label"));
-            if entry.phase == Phase::Running {
-                let bar = gtk::ProgressBar::new();
-                bar.set_fraction(entry.fraction);
-                bar.update_property(&[gtk::accessible::Property::Label(&entry.title)]);
-                card.append(&bar);
-            }
-            if entry.phase == Phase::Failed {
-                let details = gtk::Expander::new(Some(tr("Details")));
-                let message = home_label(&entry.message, "error");
-                message.set_selectable(true);
-                details.set_child(Some(&message));
-                card.append(&details);
-            }
-            if entry.phase == Phase::Queued {
+    if entries.is_empty() {
+        list.append(&home_label(tr("No recent operations"), "dim-label"));
+    }
+    let mut running = None;
+    let mut waiting = 0;
+    for entry in entries {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        card.add_css_class("packlift-update-section");
+        card.append(&home_label(&entry.title, "heading"));
+        match entry.phase {
+            Phase::Running => running = Some(RunningCard::new(&card, &entry.title)),
+            Phase::Queued => {
+                waiting += 1;
+                let status = tr("Waiting in queue · Position {position}")
+                    .replace("{position}", &waiting.to_string());
+                card.append(&home_label(&status, "dim-label"));
                 let button = text_button(tr("Cancel"));
                 button.set_halign(gtk::Align::End);
                 let id = entry.id;
                 button.connect_clicked(move |_| cancel(id));
                 card.append(&button);
             }
-            list.append(&card);
+            Phase::Done => card.append(&home_label(tr("Completed"), "dim-label")),
+            Phase::Canceled => card.append(&home_label(tr("Canceled"), "dim-label")),
+            Phase::Failed => {
+                card.append(&home_label(tr("Failed"), "error"));
+                let details = gtk::Expander::new(Some(tr("Details")));
+                let message = home_label(&entry.error, "error");
+                message.set_selectable(true);
+                details.set_child(Some(&message));
+                card.append(&details);
+            }
         }
-    });
+        list.append(&card);
+    }
+    running
 }
 
 pub(super) fn has_active_title(title: &str) -> bool {

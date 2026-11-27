@@ -15,13 +15,16 @@ use packlift::{
 use serde_json::{json, Value};
 
 use crate::{
-    back_to_previous, flathub_account, home_label, i18n::tr, page_navigation, page_shortcut, render_home,
+    back_to_previous, home_label, i18n::tr, page_navigation, page_shortcut, render_home,
     run_job_with_progress, show_host_access_dialog, text_button, PageReturn,
 };
+
+type StoreChoice = (Remote, CatalogApp);
 
 struct StoreView {
     window: glib::WeakRef<adw::ApplicationWindow>,
     search: gtk::SearchEntry,
+    category_tiles: gtk::FlowBox,
     categories: gtk::Box,
     discover_heading: gtk::Label,
     feature: gtk::Box,
@@ -130,13 +133,11 @@ fn read_favorites() -> packlift::core::Result<Vec<CatalogApp>> {
     }
 }
 
-fn set_favorite_icon(button: &gtk::Button, saved: bool, account: bool) {
-    let icon = if saved { "starred-symbolic" } else { "non-starred-symbolic" };
-    let label = match (saved, account) {
-        (true, true) => tr("Remove from Flathub favorites"),
-        (false, true) => tr("Add to Flathub favorites"),
-        (true, false) => tr("Remove from favorites"),
-        (false, false) => tr("Add to favorites"),
+fn set_favorite_icon(button: &gtk::Button, saved: bool) {
+    let (icon, label) = if saved {
+        ("starred-symbolic", tr("Remove from favorites"))
+    } else {
+        ("non-starred-symbolic", tr("Add to favorites"))
     };
     button.set_icon_name(icon);
     button.set_tooltip_text(Some(label));
@@ -145,83 +146,15 @@ fn set_favorite_icon(button: &gtk::Button, saved: bool, account: bool) {
 
 fn favorite_button(app: &CatalogApp, window: &adw::ApplicationWindow) -> gtk::Button {
     let button = gtk::Button::new();
-    let saved = Rc::new(Cell::new(false));
-    let owner = window.downgrade();
-    let candidate = app.clone();
-    let saved_on_map = saved.clone();
+    let candidate = app.id.clone();
     button.connect_map(move |button| {
-        if let Some(session) = flathub_account::session() {
-            let id = candidate.id.clone();
-            let button = button.downgrade();
-            let saved = saved_on_map.clone();
-            let owner = owner.clone();
-            if let Some(button) = button.upgrade() {
-                button.set_sensitive(false);
-            }
-            glib::MainContext::default().spawn_local(async move {
-                let result = flathub_account::is_favorite(&session, &id).await;
-                let Some(button) = button.upgrade().filter(|button| button.is_mapped()) else {
-                    return;
-                };
-                match result {
-                    Ok(value) => {
-                        saved.set(value);
-                        set_favorite_icon(&button, value, true);
-                        button.set_sensitive(true);
-                    }
-                    Err(error) => {
-                        if flathub_account::session().is_none() {
-                            let local = read_favorites().is_ok_and(|apps| apps.iter().any(|app| app.id == id));
-                            saved.set(local);
-                            set_favorite_icon(&button, local, false);
-                            button.set_sensitive(true);
-                        }
-                        if let Some(window) = owner.upgrade() {
-                            crate::show_error(&window, error.label());
-                        }
-                    }
-                }
-            });
-        } else {
-            let local = read_favorites().is_ok_and(|apps| apps.iter().any(|app| app.id == candidate.id));
-            saved_on_map.set(local);
-            set_favorite_icon(button, local, false);
-            button.set_sensitive(true);
-        }
+        let saved = read_favorites().is_ok_and(|apps| apps.iter().any(|app| app.id == candidate));
+        set_favorite_icon(button, saved);
     });
 
     let app = app.clone();
     let owner = window.downgrade();
     button.connect_clicked(move |button| {
-        if let Some(session) = flathub_account::session() {
-            button.set_sensitive(false);
-            let id = app.id.clone();
-            let next = !saved.get();
-            let (owner, button, saved) = (owner.clone(), button.downgrade(), saved.clone());
-            glib::MainContext::default().spawn_local(async move {
-                let result = flathub_account::set_favorite(&session, &id, next).await;
-                if let Some(button) = button.upgrade() {
-                    button.set_sensitive(true);
-                    match result {
-                        Ok(()) => {
-                            saved.set(next);
-                            set_favorite_icon(&button, next, true);
-                        }
-                        Err(error) => {
-                            if flathub_account::session().is_none() {
-                                let local = read_favorites().is_ok_and(|apps| apps.iter().any(|app| app.id == id));
-                                saved.set(local);
-                                set_favorite_icon(&button, local, false);
-                            }
-                            if let Some(window) = owner.upgrade() {
-                                crate::show_error(&window, error.label());
-                            }
-                        }
-                    }
-                }
-            });
-            return;
-        }
         let result = (|| -> packlift::core::Result<bool> {
             let mut apps = read_favorites()?;
             let local = if let Some(index) = apps.iter().position(|item| item.id == app.id) {
@@ -237,10 +170,7 @@ fn favorite_button(app: &CatalogApp, window: &adw::ApplicationWindow) -> gtk::Bu
             Ok(local)
         })();
         match result {
-            Ok(local) => {
-                saved.set(local);
-                set_favorite_icon(button, local, false);
-            }
+            Ok(local) => set_favorite_icon(button, local),
             Err(error) => {
                 if let Some(window) = owner.upgrade() {
                     crate::show_error(&window, &error.to_string());
@@ -252,7 +182,8 @@ fn favorite_button(app: &CatalogApp, window: &adw::ApplicationWindow) -> gtk::Bu
 }
 
 fn show_favorites(window: &adw::ApplicationWindow) {
-    let (toolbar, header) = detail_page_toolbar(window, tr("Favorites"), PageReturn::capture(window));
+    let (toolbar, header) =
+        detail_page_toolbar(window, tr("Favorites"), PageReturn::capture(window));
     let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     body.set_margin_top(18);
     body.set_margin_bottom(18);
@@ -262,13 +193,12 @@ fn show_favorites(window: &adw::ApplicationWindow) {
     let account_title = home_label(tr("Flathub favorites"), "title-3");
     account_title.set_hexpand(true);
     controls.append(&account_title);
-    let account = text_button(tr("Sign in to Flathub"));
+    let account = gtk::LinkButton::with_label(
+        "https://flathub.org/my-flathub",
+        tr("Open Flathub in Browser"),
+    );
     controls.append(&account);
     body.append(&controls);
-    let account_status = home_label("", "dim-label");
-    body.append(&account_status);
-    let account_tiles = discovery_grid();
-    body.append(&account_tiles);
     body.append(&home_label(tr("Saved on this device"), "title-3"));
     let status = home_label("", "dim-label");
     body.append(&status);
@@ -276,93 +206,18 @@ fn show_favorites(window: &adw::ApplicationWindow) {
     body.append(&tiles);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&adw::Clamp::builder().maximum_size(1180).child(&body).build())
+        .child(
+            &adw::Clamp::builder()
+                .maximum_size(1180)
+                .child(&body)
+                .build(),
+        )
         .build();
     toolbar.set_content(Some(&scroll));
     crate::updates_ui::attach(&toolbar, &header, window);
 
     let owner = window.downgrade();
-    let refresh_account = Rc::new({
-        let (status, tiles, button) = (account_status.downgrade(), account_tiles.downgrade(), account.downgrade());
-        let owner = owner.clone();
-        let requested = Rc::new(Cell::new(0u64));
-        move || {
-            let serial = requested.get().wrapping_add(1);
-            requested.set(serial);
-            let (Some(status), Some(tiles), Some(button)) =
-                (status.upgrade(), tiles.upgrade(), button.upgrade())
-            else { return; };
-            tiles.remove_all();
-            status.set_visible(true);
-            let Some(session) = flathub_account::session() else {
-                button.set_label(tr("Sign in to Flathub"));
-                status.set_text(tr("Sign in to view and manage your Flathub favorites."));
-                return;
-            };
-            button.set_label(tr("Sign out"));
-            status.set_text(tr("Loading favorites…"));
-            let (status, tiles, button, owner) = (status.downgrade(), tiles.downgrade(), button.downgrade(), owner.clone());
-            let requested = requested.clone();
-            glib::MainContext::default().spawn_local(async move {
-                let result = flathub_account::favorites(&session).await;
-                if requested.get() != serial {
-                    return;
-                }
-                let (Some(status), Some(tiles)) = (status.upgrade(), tiles.upgrade()) else { return; };
-                match result {
-                    Ok(ids) if flathub_account::session().as_ref() == Some(&session) => {
-                        if ids.is_empty() {
-                            status.set_text(tr("No favorites yet"));
-                            return;
-                        }
-                        for batch in ids.chunks(8) {
-                            let requests = batch.iter().map(|id| {
-                                let (session, id) = (session.clone(), id.clone());
-                                glib::MainContext::default().spawn_local(async move {
-                                    flathub_account::app_info(&session, id).await
-                                })
-                            }).collect::<Vec<_>>();
-                            for response in requests {
-                                let Ok(candidate) = response.await else { continue; };
-                                if flathub_account::session().as_ref() != Some(&session) || requested.get() != serial {
-                                    return;
-                                }
-                                let color = app_color(&candidate.id);
-                                tiles.append(&app_card(&owner, store::flathub_remote(Destination::User), candidate, color));
-                                status.set_visible(false);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let active = flathub_account::session();
-                        if active.as_ref().is_some_and(|active| active != &session) {
-                            return;
-                        }
-                        status.set_text(error.label());
-                        if active.is_none() {
-                            if let Some(button) = button.upgrade() {
-                                button.set_label(tr("Sign in to Flathub"));
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                }
-            });
-        }
-    });
-    let refresh = refresh_account.clone();
-    let account_window = owner.clone();
-    account.connect_clicked(move |_| {
-        if flathub_account::session().is_some() {
-            flathub_account::sign_out();
-            refresh();
-        } else if let Some(window) = account_window.upgrade() {
-            let refresh = refresh.clone();
-            flathub_account::sign_in(&window, move || refresh());
-        }
-    });
     toolbar.connect_map(move |_| {
-        refresh_account();
         tiles.remove_all();
         match read_favorites() {
             Ok(mut apps) => {
@@ -371,7 +226,12 @@ fn show_favorites(window: &adw::ApplicationWindow) {
                 status.set_text(tr("No favorites yet"));
                 for app in apps {
                     let color = app_color(&app.id);
-                    tiles.append(&app_card(&owner, store::flathub_remote(Destination::User), app, color));
+                    tiles.append(&app_card(
+                        &owner,
+                        store::flathub_remote(Destination::User),
+                        app,
+                        color,
+                    ));
                 }
             }
             Err(error) => {
@@ -453,6 +313,9 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
         .build();
     let catalog = gtk::Box::new(gtk::Orientation::Vertical, 14);
     catalog.append(&feature);
+    let category_tiles = discovery_grid();
+    category_tiles.set_visible(false);
+    catalog.append(&category_tiles);
     let discover_heading = home_label(tr("Trending"), "title-2");
     discover_heading.set_visible(false);
     catalog.append(&discover_heading);
@@ -485,6 +348,7 @@ fn create_store(app: &adw::Application, window: &adw::ApplicationWindow) -> Stor
     let view = Rc::new(StoreView {
         window: window.downgrade(),
         search,
+        category_tiles,
         categories,
         discover_heading,
         feature,
@@ -847,6 +711,7 @@ impl StoreView {
                             })
                             .collect();
                         view.categories.set_visible(explore);
+                        view.category_tiles.set_visible(explore && view.category_tiles.first_child().is_some());
                         view.discover_heading
                             .set_visible(explore && !results.apps.is_empty());
                         let featured_id = if explore {
@@ -883,11 +748,14 @@ impl StoreView {
             self.carousel.remove(&slide);
         }
         self.feature.set_visible(false);
+        self.category_tiles.set_visible(false);
         self.categories.set_visible(false);
         self.discover_heading.set_visible(false);
     }
 
     fn load_categories(&self) {
+        self.category_tiles.remove_all();
+        self.category_tiles.set_visible(false);
         while let Some(section) = self.categories.first_child() {
             self.categories.remove(&section);
         }
@@ -904,14 +772,6 @@ impl StoreView {
             return;
         };
         let window = &self.window;
-        let category_tiles = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .min_children_per_line(1)
-            .max_children_per_line(3)
-            .homogeneous(true)
-            .row_spacing(10)
-            .column_spacing(10)
-            .build();
         for (key, title, icon, style) in [
             ("category/Graphics", "Create", "applications-graphics-symbolic", "create"),
             ("category/Office", "Work", "x-office-document-symbolic", "work"),
@@ -920,7 +780,7 @@ impl StoreView {
             ("category/Education", "Learn", "accessories-dictionary-symbolic", "learn"),
             ("category/Development", "Develop", "applications-engineering-symbolic", "develop"),
         ] {
-            category_tiles.append(&store_category_tile(
+            self.category_tiles.append(&store_category_tile(
                 window,
                 &remote,
                 key,
@@ -929,7 +789,7 @@ impl StoreView {
                 style,
             ));
         }
-        self.categories.append(&category_tiles);
+        self.category_tiles.set_visible(self.categories.is_visible());
         for (index, (key, label)) in [
             ("category/Office", "Productivity"),
             ("daily", "App of the Day"),
@@ -943,6 +803,7 @@ impl StoreView {
             ("category/Science", "Science"),
             ("category/System", "System"),
             ("category/Utility", "Utilities"),
+            ("recently-updated", "New & Updated"),
         ]
         .into_iter()
         .enumerate()
@@ -1010,6 +871,7 @@ impl StoreView {
                 );
             }
         }
+        self.categories.append(&other_categories(window));
     }
 
     fn prepare_banner(self: &Rc<Self>, apps: &[StoreChoice]) {
@@ -1170,7 +1032,10 @@ fn store_category_tile(
     image.add_css_class("packlift-store-category-icon");
     icon_well.append(&image);
     content.append(&icon_well);
-    content.append(&home_label(tr(title), "heading"));
+    let label = gtk::Label::new(Some(tr(title)));
+    label.add_css_class("heading");
+    label.set_single_line_mode(true);
+    content.append(&label);
     button.set_child(Some(&content));
     let (window, remote) = (window.clone(), remote.clone());
     button.connect_clicked(move |_| {
@@ -1239,6 +1104,174 @@ fn load_discovery_grid(
             section.set_visible(true);
         },
     );
+}
+
+fn other_categories(window: &glib::WeakRef<adw::ApplicationWindow>) -> gtk::Box {
+    use store::AddonCategory;
+
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    section.append(&home_label(tr("Other categories"), "title-2"));
+    let grid = discovery_grid();
+    for (category, title, icon) in [
+        (
+            AddonCategory::Codecs,
+            "Codecs",
+            "multimedia-player-symbolic",
+        ),
+        (AddonCategory::Fonts, "Fonts", "font-x-generic-symbolic"),
+        (
+            AddonCategory::Drivers,
+            "Hardware drivers",
+            "video-display-symbolic",
+        ),
+        (
+            AddonCategory::Input,
+            "Input sources",
+            "input-keyboard-symbolic",
+        ),
+        (
+            AddonCategory::Languages,
+            "Localization",
+            "preferences-desktop-locale-symbolic",
+        ),
+    ] {
+        let button = crate::navigation_button(tr(title), icon);
+        button.add_css_class("packlift-store-card");
+        button.set_hexpand(true);
+        let owner = window.clone();
+        button.connect_clicked(move |_| {
+            if let Some(window) = owner.upgrade() {
+                show_addons(&window, category, tr(title));
+            }
+        });
+        grid.append(&button);
+    }
+    section.append(&grid);
+    section
+}
+
+fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, title: &str) {
+    let (toolbar, header) = detail_page_toolbar(window, title, PageReturn::capture(window));
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(18);
+    body.set_margin_bottom(18);
+    body.set_margin_start(18);
+    body.set_margin_end(18);
+    body.append(&home_label(title, "title-2"));
+    body.append(&home_label(
+        tr("Flatpak add-ons from your configured repositories."),
+        "dim-label",
+    ));
+    let status = home_label(tr("Loading Flatpak add-ons…"), "dim-label");
+    body.append(&status);
+    let region = gtk::ListBox::new();
+    region.set_selection_mode(gtk::SelectionMode::None);
+    region.add_css_class("boxed-list");
+    body.append(&region);
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&adw::Clamp::builder().maximum_size(920).child(&body).build())
+        .build();
+    toolbar.set_content(Some(&scroll));
+    crate::updates_ui::attach(&toolbar, &header, window);
+    window.set_widget_name("packlift-store-addons");
+    window.set_title(Some(title));
+    window.set_content(Some(&toolbar));
+
+    let (owner, status, region) = (window.downgrade(), status.downgrade(), region.downgrade());
+    background(
+        move || worker().and_then(|runner| store::addons(&runner, category)),
+        move |result| {
+            let (Some(status), Some(region)) = (status.upgrade(), region.upgrade()) else {
+                return;
+            };
+            match result {
+                Ok((addons, partial)) => {
+                    if partial {
+                        status.set_text(tr("Some Flatpak repositories could not be checked."));
+                    } else if addons.is_empty() {
+                        status.set_text(tr("No Flatpak add-ons found in this category."));
+                    } else {
+                        status.set_visible(false);
+                    }
+                    for addon in addons {
+                        region.append(&addon_row(&owner, addon));
+                    }
+                }
+                Err(error) => status.set_text(&error.to_string()),
+            }
+        },
+    );
+}
+
+fn addon_row(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    addon: store::Addon,
+) -> adw::ActionRow {
+    let scope = match addon.remote.destination {
+        Destination::User => tr("For my account"),
+        Destination::System => tr("For the system"),
+    };
+    let mut info = format!("{} · {} · {}", addon.remote.label(), scope, addon.reference);
+    if !addon.description.is_empty() {
+        info = format!("{}\n{info}", addon.description);
+    }
+    let row = adw::ActionRow::builder()
+        .use_markup(false)
+        .title(&addon.name)
+        .subtitle(&info)
+        .build();
+    let install = text_button(if addon.installed {
+        tr("Installed")
+    } else {
+        tr("Install")
+    });
+    install.set_sensitive(!addon.installed);
+    install.set_valign(gtk::Align::Center);
+    row.add_suffix(&install);
+    let owner = window.clone();
+    let installed = Rc::new(Cell::new(addon.installed));
+    let title = format!(
+        "{} · {} · {}",
+        tr("Installing Flatpak add-on"),
+        addon.name,
+        addon.reference
+    );
+    install.connect_clicked(move |button| {
+        let Some(app) = owner.upgrade().and_then(|window| window.application()) else {
+            return;
+        };
+        if crate::operations_ui::has_active_title(&title) {
+            return;
+        }
+        button.set_sensitive(false);
+        button.set_label(tr("In the operations queue"));
+        let (completed, released) = (button.downgrade(), button.downgrade());
+        let (state, final_state) = (installed.clone(), installed.clone());
+        let addon = addon.clone();
+        crate::operations_ui::submit(
+            &app,
+            &title,
+            move |log| store::install_addon(&Runner::new(None, log)?, &addon).map(|_| None),
+            move |result| {
+                if result.is_ok() {
+                    state.set(true);
+                    if let Some(button) = completed.upgrade() {
+                        button.set_label(tr("Installed"));
+                    }
+                }
+            },
+            move || {
+                if !final_state.get() {
+                    if let Some(button) = released.upgrade() {
+                        button.set_label(tr("Install"));
+                        button.set_sensitive(true);
+                    }
+                }
+            },
+        );
+    });
+    row
 }
 
 fn show_collection(
@@ -1635,9 +1668,8 @@ fn show_app_details(
 
     let hero = gtk::Box::new(gtk::Orientation::Vertical, 16);
     hero.add_css_class("packlift-store-detail-hero");
-    tint_app_card(&hero, color);
     let identity = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-    identity.append(&catalog_icon_frame(app, 68, 80));
+    identity.append(&catalog_icon_frame(app, 76, 88));
     let title = gtk::Box::new(gtk::Orientation::Vertical, 4);
     title.set_hexpand(true);
     title.set_valign(gtk::Align::Center);
@@ -1702,14 +1734,15 @@ fn show_app_details(
     let facts = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(1)
-        .max_children_per_line(6)
+        .max_children_per_line(4)
         .homogeneous(true)
-        .column_spacing(8)
-        .row_spacing(8)
+        .column_spacing(1)
+        .row_spacing(1)
         .build();
     facts.set_vexpand(false);
-    facts.set_visible(true);
-    hero.append(&facts);
+    facts.set_visible(false);
+    facts.add_css_class("packlift-store-facts");
+    facts.set_overflow(gtk::Overflow::Hidden);
     body.append(&hero);
 
     let gallery = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1728,25 +1761,19 @@ fn show_app_details(
     app_id.set_selectable(true);
     about.append(&app_id);
     body.append(&about);
+    body.append(&facts);
 
     let releases = gtk::Box::new(gtk::Orientation::Vertical, 12);
     releases.set_visible(false);
     body.append(&releases);
     let (sources_section, sources) = detail_list(tr("Sources"));
     body.append(&sources_section);
-    let links_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    links_section.set_visible(false);
-    links_section.append(&home_label(tr("Links"), "title-3"));
-    let links = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .min_children_per_line(1)
-        .max_children_per_line(3)
-        .homogeneous(true)
-        .row_spacing(4)
-        .column_spacing(6)
-        .build();
-    links_section.append(&links);
-    body.append(&links_section);
+    let project = detail_columns();
+    project.set_visible(false);
+    body.append(&project);
+    let reviews = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    reviews.set_visible(remote.flathub);
+    body.append(&reviews);
     let similar_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
     similar_section.set_visible(false);
     similar_section.append(&home_label(tr("Suggested apps"), "title-3"));
@@ -1762,8 +1789,8 @@ fn show_app_details(
     body.append(&similar_section);
 
     let layout = adw::Clamp::builder()
-        .maximum_size(1120)
-        .tightening_threshold(940)
+        .maximum_size(900)
+        .tightening_threshold(790)
         .child(&body)
         .build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -1773,8 +1800,7 @@ fn show_app_details(
         .child(&layout)
         .build();
     let (toolbar, header) = detail_page_toolbar(window, &app.name, previous);
-    let (suggestions_layout, rails) = detail_suggestion_layout(&scroll, &similar_section);
-    toolbar.set_content(Some(&suggestions_layout));
+    toolbar.set_content(Some(&scroll));
     crate::updates_ui::attach(&toolbar, &header, window);
     window.set_widget_name("packlift-store-details");
     window.set_title(Some(&app.name));
@@ -1900,17 +1926,7 @@ fn show_app_details(
             "folder-download-symbolic",
             tr("Download size"),
             &glib::format_size(size),
-            tr("Package download size reported by the repository. Runtimes may require additional downloads."),
-            None,
-        ));
-    }
-    if let Some(monthly) = extra.installs_last_month {
-        facts.append(&store_fact(
-            "view-list-ordered-symbolic",
-            tr("Installs last month"),
-            &monthly.to_string(),
-            tr("Installations recorded by Flathub in the last month."),
-            None,
+            tr("Additional runtimes may need to be downloaded."),
         ));
     }
     if let Some(groups) = extra.permissions {
@@ -1928,55 +1944,32 @@ fn show_app_details(
         move || {
             worker()
                 .map(|runner| {
-                    store::suggested_apps(
-                        &runner,
-                        &catalog_source,
-                        &id,
-                        category.as_deref(),
-                    )
+                    store::suggested_apps(&runner, &catalog_source, &id, category.as_deref())
                 })
                 .unwrap_or_default()
         },
         move |apps| {
+            similar_section.set_visible(!apps.is_empty());
             for (index, (remote, app)) in apps.into_iter().enumerate() {
-                let palette = color / HUE_COUNT * HUE_COUNT;
-                let suggestion_color = palette + (color + index + 1) % HUE_COUNT;
-                let child = gtk::FlowBoxChild::new();
-                child.set_focusable(false);
-                child.set_child(Some(&suggested_app_card(
+                similar.append(&app_card(
                     &parent_for_cards,
-                    remote.clone(),
-                    &app,
-                    suggestion_color,
-                )));
-                similar.append(&child);
-                let rail = &rails[index % 2];
-                let tile = suggested_app_card(&parent_for_cards, remote, &app, suggestion_color);
-                rail.append(&tile);
+                    remote,
+                    app,
+                    (color + index + 1) % APP_COLORS.len(),
+                ));
             }
-            update_suggestion_visibility(&suggestions_layout, &similar_section, &rails);
         },
     );
+    let review_version = details_result
+        .as_ref()
+        .ok()
+        .and_then(|details| details.releases.first())
+        .map_or("unknown", |release| release.version.as_str())
+        .to_owned();
     match details_result {
         Ok(details) => {
             developer.set_text(&details.developer);
             developer.set_visible(!details.developer.is_empty());
-            if !details.license.is_empty() {
-                let value = match details.free_software {
-                    Some(true) => tr("Free software"),
-                    Some(false) => tr("Proprietary software"),
-                    None => &details.license,
-                };
-                let license = store_fact(
-                    "text-x-generic-symbolic",
-                    tr("License"),
-                    value,
-                    tr("The license defines how you may use, modify, and share this app."),
-                    Some(&details.license),
-                );
-                facts.append(&license);
-                facts.set_visible(true);
-            }
             if let Some(adaptive) = details.adaptive {
                 facts.append(&store_fact(
                     if adaptive {
@@ -1991,11 +1984,10 @@ fn show_app_details(
                         tr("Desktop")
                     },
                     if adaptive {
-                        tr("This app adapts to smaller screens, such as phones.")
+                        tr("Works on phones, tablets and desktops.")
                     } else {
-                        tr("This app is designed primarily for desktop screens.")
+                        tr("Designed primarily for desktops.")
                     },
-                    None,
                 ));
                 facts.set_visible(true);
             }
@@ -2004,8 +1996,7 @@ fn show_app_details(
                     "avatar-default-symbolic",
                     tr("Age rating"),
                     &format!("{age}+"),
-                    tr("Minimum recommended age based on the app’s content rating."),
-                    None,
+                    tr("Minimum recommended age."),
                 ));
                 facts.set_visible(true);
             }
@@ -2014,16 +2005,26 @@ fn show_app_details(
                 description.set_visible(true);
             }
             show_release_history(&releases, details.releases);
-            show_detail_links(&links_section, &links, &parent, details.links);
+            show_project_details(
+                &project,
+                details.license,
+                details.free_software,
+                extra.installs_last_month,
+                details.links,
+                &parent,
+            );
             if details.screenshots.is_empty() {
-                gallery_status
-                    .set_text(tr("No screenshots are available from this repository."));
+                gallery_status.set_text(tr("No screenshots are available from this repository."));
             } else {
                 gallery.remove(&gallery_status);
                 bind_gallery(&gallery, details.screenshots);
             }
         }
         Err(_) => gallery_status.set_text(tr("App information could not be loaded.")),
+    }
+    facts.set_visible(facts.first_child().is_some());
+    if remote.flathub {
+        show_reviews(&reviews, &app.id, review_version);
     }
     window.set_content(Some(&toolbar));
     window.present();
@@ -2054,29 +2055,34 @@ fn show_release_history(container: &gtk::Box, releases: Vec<store::Release>) {
     let Some(latest) = releases.next() else {
         return;
     };
-    container.append(&release_card(latest));
+    let group = gtk::ListBox::new();
+    group.set_selection_mode(gtk::SelectionMode::None);
+    group.add_css_class("boxed-list");
+    let latest = gtk::ListBoxRow::builder()
+        .activatable(false)
+        .child(&release_card(latest, true))
+        .build();
+    group.append(&latest);
     let older = releases.collect::<Vec<_>>();
     if !older.is_empty() {
-        let history = adw::ExpanderRow::new();
-        history.set_title(tr("Version history"));
+        let history = adw::ExpanderRow::builder()
+            .title(tr("Version history"))
+            .build();
         for release in older {
-            history.add_row(&release_card(release));
+            history.add_row(&release_card(release, false));
         }
-        let group = gtk::ListBox::new();
-        group.set_selection_mode(gtk::SelectionMode::None);
-        group.add_css_class("boxed-list");
         group.append(&history);
-        container.append(&group);
     }
+    container.append(&group);
     container.set_visible(true);
 }
 
-fn release_card(release: store::Release) -> gtk::Box {
+fn release_card(release: store::Release, preview: bool) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("packlift-store-release");
     let version = tr("Version {version}").replace("{version}", &release.version);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let label = home_label(&version, "title-3");
+    let label = home_label(&version, "heading");
     label.set_hexpand(true);
     header.append(&label);
     let date = release.date.or_else(|| {
@@ -2091,74 +2097,271 @@ fn release_card(release: store::Release) -> gtk::Box {
         let notes = home_label(&release.notes, "");
         notes.set_selectable(true);
         card.append(&notes);
+        if preview
+            && (release.notes.chars().nth(220).is_some() || release.notes.lines().count() > 4)
+        {
+            let limit_notes = |notes: &gtk::Label, limited| {
+                notes.set_lines(if limited { 4 } else { -1 });
+                notes.set_ellipsize(if limited {
+                    gtk::pango::EllipsizeMode::End
+                } else {
+                    gtk::pango::EllipsizeMode::None
+                });
+            };
+            limit_notes(&notes, true);
+            let toggle = gtk::ToggleButton::with_label(tr("Show more"));
+            toggle.add_css_class("pill");
+            toggle.set_halign(gtk::Align::Center);
+            toggle.connect_toggled(move |toggle| {
+                let expanded = toggle.is_active();
+                limit_notes(&notes, !expanded);
+                toggle.set_label(if expanded {
+                    tr("Show less")
+                } else {
+                    tr("Show more")
+                });
+            });
+            card.append(&toggle);
+        }
     }
     card
 }
 
-fn show_detail_links(
-    section: &gtk::Box,
-    rows: &gtk::FlowBox,
-    parent: &glib::WeakRef<adw::ApplicationWindow>,
-    links: Vec<(&'static str, String)>,
-) {
-    section.set_visible(!links.is_empty());
-    for (name, url) in links {
-        let name = tr(name);
-        let tile = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        tile.set_size_request(190, -1);
-        tile.add_css_class("packlift-store-link");
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        content.append(&gtk::Image::from_icon_name("go-jump-symbolic"));
-        let title = home_label(name, "");
-        title.set_wrap(false);
-        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content.append(&title);
-        let open = gtk::Button::new();
-        open.add_css_class("flat");
-        open.set_hexpand(true);
-        open.set_child(Some(&content));
-        open.set_tooltip_text(Some(&url));
-        open.update_property(&[
-            gtk::accessible::Property::Label(name),
-            gtk::accessible::Property::Description(&url),
-        ]);
-        tile.append(&open);
-        let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
-        copy.add_css_class("flat");
-        copy.set_tooltip_text(Some(tr("Copy link")));
-        copy.update_property(&[
-            gtk::accessible::Property::Label(tr("Copy link")),
-            gtk::accessible::Property::Description(name),
-        ]);
-        tile.append(&copy);
-        let link = url.clone();
-        copy.connect_clicked(move |button| {
-            button.clipboard().set_text(&link);
-            button.announce(tr("Link copied"), gtk::AccessibleAnnouncementPriority::Low);
-        });
-        let parent = parent.clone();
-        open.connect_clicked(move |_| {
-            if let Some(window) = parent.upgrade() {
-                let parent = window.downgrade();
-                gtk::UriLauncher::new(&url).launch(
-                    Some(&window),
-                    gio::Cancellable::NONE,
-                    move |result| {
-                        if let (Some(window), Err(error)) = (parent.upgrade(), result) {
-                            crate::show_error(&window, &error.to_string());
-                        }
-                    },
-                );
-            }
-        });
-        let row = gtk::FlowBoxChild::new();
-        row.set_focusable(false);
-        row.set_child(Some(&tile));
-        rows.append(&row);
-    }
+fn detail_columns() -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(2)
+        .homogeneous(true)
+        .column_spacing(12)
+        .row_spacing(12)
+        .build()
 }
 
-type StoreChoice = (Remote, CatalogApp);
+fn append_detail_column(section: &gtk::FlowBox, widget: &impl IsA<gtk::Widget>) {
+    let child = gtk::FlowBoxChild::new();
+    child.set_focusable(false);
+    child.set_size_request(280, -1);
+    child.set_child(Some(widget));
+    section.append(&child);
+}
+
+fn show_project_details(
+    section: &gtk::FlowBox,
+    license: String,
+    free_software: Option<bool>,
+    installs: Option<u64>,
+    links: Vec<(&'static str, String)>,
+    parent: &glib::WeakRef<adw::ApplicationWindow>,
+) {
+    if !license.is_empty() || installs.is_some() {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        card.set_valign(gtk::Align::Start);
+        card.add_css_class("packlift-store-info-card");
+        let icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
+        icon.set_halign(gtk::Align::Start);
+        icon.add_css_class("packlift-store-fact-badge");
+        card.append(&icon);
+        if !license.is_empty() {
+            let label = match free_software {
+                Some(true) => tr("Free software"),
+                Some(false) => tr("Proprietary software"),
+                None => tr("License"),
+            };
+            card.append(&home_label(label, "heading"));
+            let value = home_label(&license, "dim-label");
+            value.set_selectable(true);
+            card.append(&value);
+        }
+        if let Some(installs) = installs {
+            card.append(&home_label(
+                &format!("{} · {installs}", tr("Installs last month")),
+                "dim-label",
+            ));
+        }
+        append_detail_column(section, &card);
+    }
+    if !links.is_empty() {
+        let rows = gtk::ListBox::new();
+        rows.set_valign(gtk::Align::Start);
+        rows.set_selection_mode(gtk::SelectionMode::None);
+        rows.add_css_class("boxed-list");
+        for (name, url) in links {
+            let icon = match name {
+                "Donation" | "Donate" => "emblem-favorite-symbolic",
+                "Translate" => "preferences-desktop-locale-symbolic",
+                "Issue tracker" => "dialog-warning-symbolic",
+                "Source code" | "Manifest" => "text-x-script-symbolic",
+                _ => "web-browser-symbolic",
+            };
+            let row = detail_row(tr(name), &url);
+            row.set_subtitle_lines(1);
+            row.set_activatable(true);
+            row.set_tooltip_text(Some(&url));
+            row.add_prefix(&gtk::Image::from_icon_name(icon));
+            let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+            copy.add_css_class("flat");
+            copy.set_valign(gtk::Align::Center);
+            copy.set_tooltip_text(Some(tr("Copy link")));
+            copy.update_property(&[gtk::accessible::Property::Label(tr("Copy link"))]);
+            let address = url.clone();
+            copy.connect_clicked(move |button| {
+                button.clipboard().set_text(&address);
+                button.announce(tr("Link copied"), gtk::AccessibleAnnouncementPriority::Low);
+            });
+            row.add_suffix(&copy);
+            let open = gtk::Image::from_icon_name("go-jump-symbolic");
+            row.add_suffix(&open);
+            let parent = parent.clone();
+            row.connect_activated(move |_| {
+                if let Some(window) = parent.upgrade() {
+                    let parent = window.downgrade();
+                    gtk::UriLauncher::new(&url).launch(
+                        Some(&window),
+                        gio::Cancellable::NONE,
+                        move |result| {
+                            if let (Some(window), Err(error)) = (parent.upgrade(), result) {
+                                crate::show_error(&window, &error.to_string());
+                            }
+                        },
+                    );
+                }
+            });
+            rows.append(&row);
+        }
+        append_detail_column(section, &rows);
+    }
+    section.set_visible(section.first_child().is_some());
+}
+
+fn show_reviews(section: &gtk::Box, id: &str, version: String) {
+    section.append(&home_label(tr("Reviews"), "title-3"));
+    let status = home_label(tr("Loading reviews…"), "dim-label");
+    section.append(&status);
+    let columns = detail_columns();
+    section.append(&columns);
+    let (status, columns) = (status.downgrade(), columns.downgrade());
+    let id = id.to_owned();
+    let locale = glib::language_names()
+        .first()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "en_US".into());
+    background(
+        move || {
+            worker()
+                .ok()
+                .and_then(|runner| store::reviews(&runner, &id, &locale, &version))
+        },
+        move |summary| {
+            let (Some(status), Some(columns)) = (status.upgrade(), columns.upgrade()) else {
+                return;
+            };
+            let Some(summary) = summary else {
+                status.set_text(tr("Reviews are unavailable right now."));
+                return;
+            };
+            let total = summary
+                .ratings
+                .iter()
+                .copied()
+                .fold(0u64, u64::saturating_add);
+            status.set_visible(false);
+            if total == 0 && summary.reviews.is_empty() {
+                status.set_text(tr("No reviews available."));
+                status.set_visible(true);
+                return;
+            }
+            if total > 0 {
+                let card = gtk::Box::new(gtk::Orientation::Vertical, 7);
+                card.add_css_class("packlift-store-info-card");
+                card.set_valign(gtk::Align::Start);
+                let max = summary.ratings.into_iter().max().unwrap_or(1);
+                for (index, count) in summary.ratings.into_iter().enumerate().rev() {
+                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    let bar = gtk::ProgressBar::new();
+                    bar.set_hexpand(true);
+                    bar.set_valign(gtk::Align::Center);
+                    bar.set_fraction(count as f64 / max as f64);
+                    let label = tr("{stars} stars · {count} ratings")
+                        .replace("{stars}", &(index + 1).to_string())
+                        .replace("{count}", &count.to_string());
+                    bar.set_tooltip_text(Some(&label));
+                    bar.update_property(&[gtk::accessible::Property::Label(&label)]);
+                    row.append(&bar);
+                    let stars = home_label(&"★".repeat(index + 1), "packlift-review-stars");
+                    stars.set_width_chars(5);
+                    row.append(&stars);
+                    card.append(&row);
+                }
+                let label = if total == 1 {
+                    tr("1 rating").to_owned()
+                } else {
+                    tr("{count} ratings").replace("{count}", &total.to_string())
+                };
+                card.append(&home_label(&label, "dim-label"));
+                append_detail_column(&columns, &card);
+            }
+            let mut reviews = summary.reviews.into_iter();
+            if let Some(first) = reviews.next() {
+                let list = gtk::ListBox::new();
+                list.set_selection_mode(gtk::SelectionMode::None);
+                list.set_valign(gtk::Align::Start);
+                list.add_css_class("boxed-list");
+                let row = gtk::ListBoxRow::builder()
+                    .activatable(false)
+                    .child(&review_card(first))
+                    .build();
+                list.append(&row);
+                let more = reviews.collect::<Vec<_>>();
+                if !more.is_empty() {
+                    let expander = adw::ExpanderRow::builder()
+                        .title(tr("More reviews"))
+                        .build();
+                    for review in more {
+                        expander.add_row(&review_card(review));
+                    }
+                    list.append(&expander);
+                }
+                append_detail_column(&columns, &list);
+            }
+        },
+    );
+}
+
+fn review_card(review: store::AppReview) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 7);
+    card.add_css_class("packlift-store-release");
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let stars = home_label(&"★".repeat(review.stars), "packlift-review-stars");
+    stars.set_single_line_mode(true);
+    stars.update_property(&[gtk::accessible::Property::Label(
+        &tr("{count} out of 5 stars").replace("{count}", &review.stars.to_string()),
+    )]);
+    header.append(&stars);
+    if let Some(date) = review
+        .timestamp
+        .and_then(|timestamp| glib::DateTime::from_unix_utc(timestamp).ok())
+        .and_then(|date| date.format("%x").ok())
+    {
+        let date = home_label(&date, "dim-label");
+        date.set_hexpand(true);
+        date.set_xalign(1.0);
+        header.append(&date);
+    }
+    card.append(&header);
+    if !review.title.is_empty() {
+        card.append(&home_label(&review.title, "heading"));
+    }
+    if !review.author.is_empty() {
+        card.append(&home_label(&review.author, "dim-label"));
+    }
+    if !review.body.is_empty() {
+        let body = home_label(&review.body, "");
+        body.set_selectable(true);
+        card.append(&body);
+    }
+    card
+}
 
 fn merge_catalog_remotes(user: Vec<Remote>, system: Vec<Remote>) -> Vec<Remote> {
     let mut remotes = user;
@@ -2223,36 +2426,67 @@ fn load_detail_sources(
     );
 }
 
-fn store_fact(
-    icon: &str,
-    label: &str,
-    value: &str,
-    description: &str,
-    detail: Option<&str>,
-) -> gtk::FlowBoxChild {
-    let (child, popover) = fact_chip(icon, label, value);
-    let explanation = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    explanation.set_margin_top(4);
-    explanation.set_margin_bottom(4);
-    explanation.set_margin_start(4);
-    explanation.set_margin_end(4);
-    let title = home_label(label, "heading");
-    explanation.append(&title);
-    if let Some(detail) = detail {
-        let detail = home_label(detail, "monospace");
-        detail.set_selectable(true);
-        detail.set_max_width_chars(34);
-        explanation.append(&detail);
-    }
-    let description = home_label(description, "");
-    description.set_max_width_chars(34);
-    explanation.append(&description);
-    popover.set_child(Some(&explanation));
+fn store_fact(icon: &str, label: &str, value: &str, description: &str) -> gtk::FlowBoxChild {
+    let child = gtk::FlowBoxChild::new();
+    child.set_focusable(false);
+    child.set_child(Some(&fact_content(icon, label, value, description)));
     child
 }
 
+fn fact_content(icon: &str, label: &str, value: &str, description: &str) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.add_css_class("packlift-store-fact-content");
+    content.set_size_request(164, -1);
+    let badge = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    badge.set_halign(gtk::Align::Center);
+    badge.add_css_class("packlift-store-fact-badge");
+    badge.append(&gtk::Image::from_icon_name(icon));
+    badge.append(&home_label(value, "heading"));
+    content.append(&badge);
+    let heading = home_label(label, "heading");
+    heading.set_halign(gtk::Align::Center);
+    heading.set_justify(gtk::Justification::Center);
+    content.append(&heading);
+    let description = home_label(description, "caption");
+    description.set_halign(gtk::Align::Center);
+    description.set_justify(gtk::Justification::Center);
+    description.set_max_width_chars(23);
+    content.append(&description);
+    content
+}
+
 fn permissions_fact(groups: Vec<(&'static str, String)>) -> gtk::FlowBoxChild {
-    let (child, popover) = fact_chip("security-high-symbolic", tr("Permissions"), tr("Details"));
+    let broad_files = groups.iter().any(|(label, access)| {
+        *label == "Files"
+            && access.split(',').any(|path| {
+                matches!(
+                    path.trim().split(':').next(),
+                    Some("host" | "home" | "host-os" | "host-etc")
+                )
+            })
+    });
+    let description = if broad_files {
+        tr("Requests access to your home folder or other system files.")
+    } else {
+        tr("See what the app can access.")
+    };
+    let button = gtk::MenuButton::new();
+    button.add_css_class("packlift-store-fact-button");
+    button.set_child(Some(&fact_content(
+        "security-high-symbolic",
+        tr("Permissions"),
+        if broad_files {
+            tr("File access")
+        } else {
+            tr("Details")
+        },
+        description,
+    )));
+    let popover = gtk::Popover::new();
+    button.set_popover(Some(&popover));
+    let child = gtk::FlowBoxChild::new();
+    child.set_focusable(false);
+    child.set_child(Some(&button));
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content.set_margin_top(4);
     content.set_margin_bottom(4);
@@ -2290,164 +2524,6 @@ fn permissions_fact(groups: Vec<(&'static str, String)>) -> gtk::FlowBoxChild {
     child
 }
 
-fn fact_chip(icon: &str, label: &str, value: &str) -> (gtk::FlowBoxChild, gtk::Popover) {
-    let button = gtk::MenuButton::new();
-    button.add_css_class("packlift-store-fact");
-    button.set_hexpand(true);
-    let name = format!("{label} · {value}");
-    button.set_tooltip_text(Some(&name));
-    button.update_property(&[gtk::accessible::Property::Label(&name)]);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let icon = gtk::Image::from_icon_name(icon);
-    icon.add_css_class("dim-label");
-    content.append(&icon);
-    let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    labels.set_hexpand(true);
-    labels.set_valign(gtk::Align::Center);
-    for (text, style, lines) in [(label, "dim-label", 2), (value, "heading", 1)] {
-        let text = home_label(text, style);
-        text.set_max_width_chars(14);
-        text.set_lines(lines);
-        text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        labels.append(&text);
-    }
-    content.append(&labels);
-    content.set_overflow(gtk::Overflow::Hidden);
-    button.set_child(Some(&content));
-    let popover = gtk::Popover::new();
-    button.set_popover(Some(&popover));
-    let child = gtk::FlowBoxChild::new();
-    child.set_focusable(false);
-    child.set_child(Some(&button));
-    (child, popover)
-}
-
-fn detail_suggestion_layout(
-    scroll: &gtk::ScrolledWindow,
-    inline: &gtk::Box,
-) -> (adw::BreakpointBin, [gtk::Box; 2]) {
-    let rails = std::array::from_fn(|_| {
-        let rail = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        rail.set_width_request(220);
-        rail.set_hexpand(false);
-        rail.set_valign(gtk::Align::Start);
-        rail.set_margin_top(18);
-        rail.set_margin_start(12);
-        rail.set_margin_end(12);
-        rail.set_margin_bottom(18);
-        rail.set_visible(false);
-
-        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        let adjustment = scroll.vadjustment().downgrade();
-        wheel.connect_scroll(move |wheel, _, dy| {
-            let Some(adjustment) = adjustment.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            let distance = if wheel.unit() == gtk::gdk::ScrollUnit::Wheel {
-                dy * 56.0
-            } else {
-                dy
-            };
-            adjustment.set_value(adjustment.value() + distance);
-            glib::Propagation::Stop
-        });
-        rail.add_controller(wheel);
-        rail
-    });
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.append(&rails[0]);
-    row.append(scroll);
-    row.append(&rails[1]);
-    let layout = adw::Clamp::builder()
-        .maximum_size(1620)
-        .tightening_threshold(1480)
-        .child(&row)
-        .build();
-    let responsive = adw::BreakpointBin::builder()
-        .width_request(360)
-        .height_request(300)
-        .child(&layout)
-        .build();
-    let condition = adw::BreakpointCondition::new_and(
-        adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MinWidth,
-            1320.0,
-            adw::LengthUnit::Px,
-        ),
-        adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MinHeight,
-            420.0,
-            adw::LengthUnit::Px,
-        ),
-    );
-    responsive.add_breakpoint(adw::Breakpoint::new(condition));
-    let (alternate, sidebars) = (inline.clone(), rails.clone());
-    responsive.connect_current_breakpoint_notify(move |responsive| {
-        update_suggestion_visibility(responsive, &alternate, &sidebars);
-    });
-    (responsive, rails)
-}
-
-fn update_suggestion_visibility(
-    layout: &adw::BreakpointBin,
-    inline: &gtk::Box,
-    rails: &[gtk::Box; 2],
-) {
-    let available = rails[0].first_child().is_some();
-    let wide = layout.current_breakpoint().is_some();
-    inline.set_visible(available && !wide);
-    for rail in rails {
-        rail.set_visible(wide);
-    }
-}
-
-fn suggested_app_card(
-    window: &glib::WeakRef<adw::ApplicationWindow>,
-    remote: Remote,
-    app: &CatalogApp,
-    color: usize,
-) -> gtk::Button {
-    let button = gtk::Button::new();
-    button.add_css_class("packlift-store-suggestion");
-    button.add_css_class(&format!("color-{color}"));
-    button.set_size_request(150, 92);
-    button.set_cursor_from_name(Some("pointer"));
-    button.set_tooltip_text(Some(&app.name));
-    button.update_property(&[
-        gtk::accessible::Property::Label(&app.name),
-        gtk::accessible::Property::Description(&app.summary),
-    ]);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    content.set_valign(gtk::Align::Center);
-    content.append(&catalog_icon_frame(app, 36, 48));
-
-    let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
-    labels.set_hexpand(true);
-    labels.set_valign(gtk::Align::Center);
-    let title = home_label(&app.name, "heading");
-    title.set_lines(1);
-    title.set_max_width_chars(14);
-    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    labels.append(&title);
-    if !app.summary.is_empty() && app.summary != app.id {
-        let summary = home_label(&app.summary, "dim-label");
-        summary.add_css_class("caption");
-        summary.set_lines(2);
-        summary.set_max_width_chars(14);
-        summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        labels.append(&summary);
-    }
-    content.append(&labels);
-    button.set_child(Some(&content));
-    let (window, app) = (window.clone(), app.clone());
-    button.connect_clicked(move |_| {
-        if let Some(window) = window.upgrade() {
-            show_app(&window, &remote, &app, color);
-        }
-    });
-    button
-}
-
 fn app_card(
     window: &glib::WeakRef<adw::ApplicationWindow>,
     remote: Remote,
@@ -2466,7 +2542,6 @@ fn catalog_app_card(
 ) -> gtk::Button {
     let button = gtk::Button::builder().hexpand(true).build();
     button.add_css_class("packlift-store-card");
-    tint_app_card(&button, color);
     button.set_widget_name(&app.id);
     button.set_size_request(190, if featured { 110 } else { 76 });
     if featured {
@@ -2520,7 +2595,7 @@ pub(super) fn app_color_styles() -> String {
         .iter()
         .enumerate()
         .map(|(index, color)| {
-            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@window_bg_color, {color}, 0.78); }}\nbutton.packlift-store-suggestion.color-{index} {{ border-left-color: {color}; }}\n")
+            format!(".packlift-store-tint.color-{index} {{ background-color: mix(@card_bg_color, {color}, 0.14); }}\n")
         })
         .collect()
 }
@@ -2936,6 +3011,7 @@ fn install_store_app(
                 Destination::User => "user",
                 Destination::System => "system",
             };
+            runner.write("Refreshing Flatpak state");
             let installed = crate::installer()
                 .and_then(|manager| manager.flatpak_app_installations(&candidate.id))
                 .unwrap_or_default();

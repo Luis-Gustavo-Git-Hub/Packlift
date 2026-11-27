@@ -61,15 +61,27 @@ impl Runner {
         watch_bus: bool,
         check: bool,
     ) -> Result<Output> {
-        let command = self.command(args, local, watch_bus);
+        let mut command = self.command(args, local, watch_bus);
+        let flatpak_transaction = args.first().is_some_and(|arg| arg == "flatpak")
+            && args
+                .get(1)
+                .is_some_and(|arg| matches!(arg.as_str(), "install" | "update" | "uninstall"));
+        // The operation panel recognizes the CLI's untranslated progress messages.
+        if flatpak_transaction && self.sandbox && !local {
+            command.insert(2, "--env=LC_ALL=C.UTF-8".into());
+        }
         let shell = command
             .iter()
             .map(|v| shell_quote(v))
             .collect::<Vec<_>>()
             .join(" ");
         self.write(&format!("{} $ {shell}", chrono_timestamp()));
-        let mut child = Command::new(&command[0])
-            .args(&command[1..])
+        let mut process = Command::new(&command[0]);
+        process.args(&command[1..]);
+        if flatpak_transaction {
+            process.env("LC_ALL", "C.UTF-8");
+        }
+        let mut child = process
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

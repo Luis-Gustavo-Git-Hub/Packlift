@@ -393,12 +393,77 @@ Add to favorites|Adicionar aos favoritos|||
 Saved on this device|Salvos neste dispositivo|||
 No favorites yet|Nenhum favorito ainda|||
 Flathub favorites|Favoritos do Flathub|||
-Sign in to Flathub|Entrar no Flathub|||
-Sign out|Sair da conta|||
-Sign in to view and manage your Flathub favorites.|Entre para ver e gerenciar seus favoritos do Flathub.|||
-Loading favorites…|Carregando favoritos…|||
-Connect favorites|Conectar favoritos|||
-Remove from Flathub favorites|Remover dos favoritos do Flathub|||
-Add to Flathub favorites|Adicionar aos favoritos do Flathub|||
-Your Flathub session expired. Sign in again.|Sua sessão do Flathub expirou. Entre novamente.|||
-Could not connect to Flathub. Try again.|Não foi possível conectar ao Flathub. Tente novamente.|||
+Could not load permissions.|Não foi possível carregar as permissões.|No se pudieron cargar los permisos.|Не удалось загрузить разрешения.|无法加载权限。
+Try again|Tentar novamente|Volver a intentar|Повторить попытку|重试
+Preparing the operation|Preparando a operação|||
+Packlift is getting everything ready.|O Packlift está preparando os próximos passos.|||
+Installing Flatpak components|Instalando componentes Flatpak|||
+Downloading and deploying the app and any required runtimes.|Baixando e instalando o app e os runtimes necessários.|||
+Updating Flatpak components|Atualizando componentes Flatpak|||
+Downloading and applying new versions of apps and runtimes.|Baixando e aplicando novas versões de apps e runtimes.|||
+Removing a Flatpak component|Removendo componente Flatpak|||
+Removing the selected installation from Flatpak.|Removendo a instalação selecionada do Flatpak.|||
+Preparing Flatpak installation|Preparando a instalação do Flatpak|||
+Checking the selected repository and resolving dependencies.|Verificando o repositório escolhido e as dependências.|||
+Checking for Flatpak updates|Verificando atualizações de Flatpak|||
+Looking for new versions in the configured repositories.|Procurando novas versões nos repositórios configurados.|||
+Updating Flatpaks for my account|Atualizando Flatpaks da minha conta|||
+Checking and applying updates in your personal installation.|Verificando e aplicando atualizações na sua instalação pessoal.|||
+Updating system Flatpaks|Atualizando Flatpaks do sistema|||
+Checking and applying updates in the shared installation.|Verificando e aplicando atualizações na instalação compartilhada.|||
+Finishing the installation|Finalizando a instalação|||
+Checking that the app is available to open.|Verificando se o app já pode ser aberto.|||
+Checking for AppImage updates|Verificando atualizações de AppImage|||
+Looking for a newer version of the installed file.|Procurando uma versão mais recente do arquivo instalado.|||
+Updating AppImage files|Atualizando arquivos AppImage|||
+Downloading and replacing the installed file.|Baixando a nova versão e substituindo o arquivo instalado.|||
+Reading the package metadata and identifying its format.|Lendo os dados do pacote e identificando o formato.|||
+Checking the package architecture and how it can run on this system.|Verificando a arquitetura do pacote e como executá-lo neste sistema.|||
+Setting up the runtime or container required to run the app.|Preparando o runtime ou contêiner que o app precisa para funcionar.|||
+Fetching files the app needs to run.|Baixando os arquivos necessários para executar o app.|||
+Running the Windows installer|Executando o instalador do Windows|||
+Follow the instructions in the installer if it asks for input.|Siga as instruções do instalador se ele pedir alguma ação.|||
+Finding the installed program|Localizando o programa instalado|||
+Looking for the executable to add to your library.|Procurando o executável para adicionar à biblioteca.|||
+Adding the app to your desktop menu.|Adicionando o app ao menu do sistema.|||
+Adding the app to your library|Adicionando o app à biblioteca|||
+Saving the information Packlift needs to open the app.|Salvando as informações para abrir o app pelo Packlift.|||
+Copying the program files to the selected installation.|Copiando os arquivos do programa para a instalação selecionada.|||
+Removing the program|Removendo o programa|||
+Removing the installation and its shortcuts.|Removendo a instalação e seus atalhos.|||
+Component {current} of {total}|Componente {current} de {total}|||
+{percent}% of this component|{percent}% deste componente|||
+Waiting in queue · Position {position}|Aguardando na fila · Posição {position}|||
+Automatic Flatpak updates|Atualizações automáticas de Flatpak|||
+Automatic AppImage updates|Atualizações automáticas de AppImage|||
+Updates apps and runtimes while Packlift is open.|Atualiza apps e runtimes enquanto o Packlift está aberto.|||
+Updates supported AppImages while Packlift is open.|Atualiza AppImages compatíveis enquanto o Packlift está aberto.|||
+Other categories|Outras categorias|||
+New & Updated|Novos e atualizados|||
+Codecs|Codecs|||
+Fonts|Fontes|||
+Hardware drivers|Drivers de hardware|||
+Input sources|Métodos de entrada|||
+Localization|Localização|||
+Flatpak add-ons from your configured repositories.|Complementos Flatpak dos repositórios configurados.|||
+Loading Flatpak add-ons…|Carregando complementos Flatpak…|||
+No Flatpak add-ons found in this category.|Nenhum complemento Flatpak encontrado nesta categoria.|||
+Installing Flatpak add-on|Instalando complemento Flatpak|||
+Open Flathub in Browser|Abrir Flathub no navegador|Abrir Flathub en el navegador|Открыть Flathub в браузере|在浏览器中打开 Flathub
+Additional runtimes may need to be downloaded.|Pode ser necessário baixar runtimes adicionais.|||
+Works on phones, tablets and desktops.|Funciona em celulares, tablets e computadores.|||
+Designed primarily for desktops.|Feito principalmente para computadores.|||
+Minimum recommended age.|Idade mínima recomendada.|||
+Requests access to your home folder or other system files.|Pede acesso à pasta pessoal ou a outros arquivos do sistema.|||
+See what the app can access.|Veja o que o aplicativo pode acessar.|||
+Show more|Mostrar mais|||
+Show less|Mostrar menos|||
+Reviews|Avaliações|||
+Loading reviews…|Carregando avaliações…|||
+Reviews are unavailable right now.|As avaliações estão indisponíveis no momento.|||
+No reviews available.|Nenhuma avaliação disponível.|||
+{stars} stars · {count} ratings|{stars} estrelas · {count} avaliações|||
+1 rating|1 avaliação|||
+{count} ratings|{count} avaliações|||
+More reviews|Mais avaliações|||
+{count} out of 5 stars|{count} de 5 estrelas|||

@@ -2386,6 +2386,7 @@ fi"#
 
     fn uninstall_with_options(&self, app: &Value, delete_data: bool) -> Result<()> {
         let _operation = operation(&self.data)?;
+        self.runner.write("Removing the installed program");
         let method = app["method"].as_str().unwrap_or("");
         if method == "native" || method == "toolbox" {
             let manager = app["manager"].as_str().unwrap_or("");

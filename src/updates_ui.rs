@@ -44,6 +44,16 @@ type CheckResult = std::result::Result<Available, String>;
 struct CheckState {
     cached: Option<(Instant, Rc<CheckResult>, String)>,
     waiting: Vec<std::rc::Weak<Section>>,
+    invalidated: bool,
+}
+
+fn invalidate_check(source: Source) {
+    CHECKS.with_borrow_mut(|checks| {
+        if let Some(state) = checks.get_mut(&source) {
+            state.cached = None;
+            state.invalidated = !state.waiting.is_empty();
+        }
+    });
 }
 
 fn command(args: &[&str]) -> Vec<String> {
@@ -55,7 +65,7 @@ const UPDATE_INTERVAL_DAYS: [u64; 4] = [0, 1, 7, 30];
 thread_local! {
     static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
     static AUTO_CHECK_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
-    static AUTO_UPDATE_RUNNING: Cell<bool> = const { Cell::new(false) };
+    static AUTO_RETRY: RefCell<BTreeMap<Source, Instant>> = const { RefCell::new(BTreeMap::new()) };
     static CHECKS: RefCell<BTreeMap<Source, CheckState>> = const { RefCell::new(BTreeMap::new()) };
     static UPDATE_SECTIONS: RefCell<Vec<std::rc::Weak<Section>>> = const { RefCell::new(Vec::new()) };
 }
@@ -70,15 +80,47 @@ fn schedule_path() -> std::path::PathBuf {
     packlift_data_dir().join("updates.json")
 }
 
-fn read_schedule() -> (u64, u64) {
-    let contents = fs::read_to_string(schedule_path()).unwrap_or_default();
-    let value: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
-    let days = value["interval_days"]
+impl Source {
+    fn schedule_keys(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Flatpaks => ("flatpak_interval_days", "flatpak_last_auto_update"),
+            Self::AppImages => ("interval_days", "last_auto_update"),
+        }
+    }
+
+    fn auto_title(self) -> &'static str {
+        match self {
+            Self::Flatpaks => tr("Automatic Flatpak updates"),
+            Self::AppImages => tr("Automatic AppImage updates"),
+        }
+    }
+}
+
+fn read_schedule(source: Source) -> (u64, u64) {
+    let state = update_state();
+    let (interval, last) = source.schedule_keys();
+    let days = state[interval]
         .as_u64()
+        .or_else(|| state["interval_days"].as_u64())
         .filter(|days| UPDATE_INTERVAL_DAYS.contains(days))
         .unwrap_or(1);
-    let last_run = value["last_auto_update"].as_u64().unwrap_or(0);
+    let last_run = state[last]
+        .as_u64()
+        .or_else(|| state["last_auto_update"].as_u64())
+        .unwrap_or(0);
     (days, last_run)
+}
+
+// Freeze the previous shared schedule before either preference is changed.
+fn migrate_schedule() {
+    let mut state = update_state();
+    let (interval, last) = Source::Flatpaks.schedule_keys();
+    if state[interval].is_null() || state[last].is_null() {
+        let (days, last_run) = read_schedule(Source::Flatpaks);
+        state[interval] = serde_json::json!(days);
+        state[last] = serde_json::json!(last_run);
+        save_update_state(state);
+    }
 }
 
 fn update_state() -> serde_json::Value {
@@ -102,10 +144,11 @@ fn save_update_state(value: serde_json::Value) {
     }
 }
 
-fn write_schedule(days: u64, last_run: u64) {
+fn write_schedule(source: Source, days: u64, last_run: u64) {
     let mut state = update_state();
-    state["interval_days"] = serde_json::json!(days);
-    state["last_auto_update"] = serde_json::json!(last_run);
+    let (interval, last) = source.schedule_keys();
+    state[interval] = serde_json::json!(days);
+    state[last] = serde_json::json!(last_run);
     save_update_state(state);
 }
 
@@ -202,74 +245,110 @@ fn distribution_identity() -> (String, String) {
     (name, candidate)
 }
 
-fn apply_due_updates(log: LogHandler) -> Result<()> {
-    let mut errors = Vec::new();
-    let sources = if host_access_available() {
-        vec![Source::Flatpaks, Source::AppImages]
-    } else {
-        vec![Source::AppImages]
-    };
-    for source in sources {
-        match check(source) {
-            Ok(available) if available.available => {
-                if let Err(error) = apply(&available.backend, log.clone()) {
+fn apply_due_update(source: Source, log: LogHandler) -> Result<()> {
+    match source {
+        Source::Flatpaks => {
+            let _operation = operation(&packlift_data_dir())?;
+            let runner = Runner::new(None, log)?;
+            runner.write("Checking Flatpak updates");
+            let mut errors = Vec::new();
+            for (scope, stage) in [
+                ("--user", "Updating Flatpaks for my account"),
+                ("--system", "Updating system Flatpaks"),
+            ] {
+                runner.write(stage);
+                if let Err(error) = runner.run(
+                    &command(&[
+                        "flatpak",
+                        "update",
+                        scope,
+                        "--noninteractive",
+                        "--assumeyes",
+                    ]),
+                    false,
+                    true,
+                    true,
+                ) {
                     errors.push(error.to_string());
                 }
             }
-            Ok(_) => {}
-            Err(error) => errors.push(error.to_string()),
+            if !errors.is_empty() {
+                return Err(PackliftError::Message(errors.join("\n")));
+            }
+        }
+        Source::AppImages => {
+            let runner = Runner::new(None, log.clone())?;
+            if appimage_updater(&runner).is_none() {
+                return Ok(());
+            }
+            let available = check_appimages(&runner)?;
+            if available.available {
+                apply(&available.backend, log)?;
+            }
         }
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(PackliftError::Message(errors.join("\n")))
+    Ok(())
+}
+
+fn schedule_due_updates(app: &gtk::Application) {
+    let now = now_epoch();
+    for source in [Source::Flatpaks, Source::AppImages] {
+        if source == Source::Flatpaks && !host_access_available() {
+            continue;
+        }
+        let (days, last_run) = read_schedule(source);
+        if days == 0 || (last_run != 0 && now.saturating_sub(last_run) < days * 24 * 60 * 60) {
+            continue;
+        }
+        let title = source.auto_title();
+        if operations_ui::has_active_title(title)
+            || (source == Source::AppImages
+                && operations_ui::has_active_title(tr("Updating AppImages")))
+        {
+            continue;
+        }
+        let retry_later = AUTO_RETRY.with_borrow(|attempts| {
+            attempts
+                .get(&source)
+                .is_some_and(|last| last.elapsed() < Duration::from_secs(60 * 60))
+        });
+        if retry_later {
+            continue;
+        }
+        AUTO_RETRY.with_borrow_mut(|attempts| attempts.insert(source, Instant::now()));
+        operations_ui::submit(
+            app,
+            title,
+            move |log| apply_due_update(source, log).map(|_| None),
+            move |result| {
+                if result.is_ok() {
+                    write_schedule(source, read_schedule(source).0, now_epoch());
+                }
+                invalidate_check(source);
+                refresh_visible_sections();
+            },
+            || {},
+        );
     }
 }
 
 fn ensure_auto_update_timer(app: &gtk::Application) {
-    let started = AUTO_UPDATE_TIMER_STARTED.with(|started| started.replace(true));
-    if started {
+    if AUTO_UPDATE_TIMER_STARTED.with(|started| started.replace(true)) {
         return;
     }
-    let (days, last_run) = read_schedule();
-    if last_run == 0 {
-        // The update sections check immediately; start the automatic schedule from now.
-        write_schedule(days, now_epoch());
-    }
+    migrate_schedule();
+    let start = app.downgrade();
+    glib::idle_add_local_once(move || {
+        if let Some(app) = start.upgrade() {
+            schedule_due_updates(&app);
+        }
+    });
     let app = app.downgrade();
     glib::timeout_add_seconds_local(60, move || {
         let Some(app) = app.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if AUTO_UPDATE_RUNNING.with(Cell::get) {
-            return glib::ControlFlow::Continue;
-        }
-        let (days, last_run) = read_schedule();
-        let now = now_epoch();
-        if last_run == 0 {
-            write_schedule(days, now);
-            return glib::ControlFlow::Continue;
-        }
-        if days == 0 || now.saturating_sub(last_run) < days.saturating_mul(24 * 60 * 60) {
-            return glib::ControlFlow::Continue;
-        }
-        write_schedule(days, now);
-        AUTO_UPDATE_RUNNING.with(|running| running.set(true));
-        operations_ui::submit(
-            &app,
-            tr("Automatic updates"),
-            |log| apply_due_updates(log).map(|_| None),
-            |_| {
-                CHECKS.with_borrow_mut(|checks| {
-                    for state in checks.values_mut() {
-                        state.cached = None;
-                    }
-                });
-                refresh_visible_sections();
-            },
-            || AUTO_UPDATE_RUNNING.with(|running| running.set(false)),
-        );
+        schedule_due_updates(&app);
         glib::ControlFlow::Continue
     });
 }
@@ -537,6 +616,7 @@ fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
         }
         Backend::AppImages(updater, paths) => {
             for (path, sandbox_only) in paths {
+                runner.write("Applying AppImage update");
                 let path_text = path.to_string_lossy().into_owned();
                 let result = runner.run(
                     &command(&[updater, "--overwrite", "--", &path_text]),
@@ -683,6 +763,7 @@ impl Section {
         update.set_visible(false);
         group.append(&last_checked);
         group.append(&update);
+        group.append(&automatic_preferences(source));
         panel.append(&group);
         let section = Rc::new(Self {
             source,
@@ -735,17 +816,34 @@ impl Section {
         }
         if should_check {
             glib::MainContext::default().spawn_local(async move {
-                let result = gio::spawn_blocking(move || check(source)).await
-                    .map_err(|_| tr("Could not check for updates. See the Packlift log.").to_owned())
+                let result = gio::spawn_blocking(move || check(source))
+                    .await
+                    .map_err(|_| {
+                        tr("Could not check for updates. See the Packlift log.").to_owned()
+                    })
                     .and_then(|result| result.map_err(|error| error.to_string()));
+                let (waiting, invalidated) = CHECKS.with_borrow_mut(|checks| {
+                    let state = checks.entry(source).or_default();
+                    (
+                        std::mem::take(&mut state.waiting),
+                        std::mem::take(&mut state.invalidated),
+                    )
+                });
+                let waiting = waiting.into_iter().filter_map(|section| section.upgrade());
+                if invalidated {
+                    for section in waiting {
+                        section.busy.set(false);
+                        section.refresh();
+                    }
+                    return;
+                }
                 let checked_at = record_last_check(source, now_epoch());
                 let result = Rc::new(result);
-                let waiting = CHECKS.with_borrow_mut(|checks| {
-                    let state = checks.entry(source).or_default();
-                    state.cached = Some((Instant::now(), result.clone(), checked_at.clone()));
-                    std::mem::take(&mut state.waiting)
+                CHECKS.with_borrow_mut(|checks| {
+                    checks.entry(source).or_default().cached =
+                        Some((Instant::now(), result.clone(), checked_at.clone()));
                 });
-                for section in waiting.into_iter().filter_map(|section| section.upgrade()) {
+                for section in waiting {
                     section.show_result(&result, &checked_at);
                 }
             });
@@ -757,75 +855,69 @@ impl Section {
         self.last_checked.set_text(checked_at);
         match result {
             Ok(result) => {
-                    *self.backend.borrow_mut() = result.available.then_some(result.backend.clone());
-                    let partial = !result.failed_remotes.is_empty();
-                    let unsupported = matches!(self.source, Source::AppImages)
-                        && result.unsupported > 0;
-                    self.warning.set_visible(partial || unsupported);
-                    let mut warnings = Vec::new();
-                    if partial {
-                        warnings.push(if matches!(self.source, Source::Flatpaks) {
-                            tr("Some Flatpak repositories could not be checked.").to_owned()
-                        } else {
-                            tr("Some AppImages could not be checked.").to_owned()
-                        });
-                    }
-                    if unsupported {
-                        warnings.push(
-                            tr("{count} AppImages do not support automatic updates.")
-                                .replace("{count}", &result.unsupported.to_string()),
-                        );
-                    }
-                    self.warning.set_text(&warnings.join("\n"));
-                    let status = if result.available && matches!(self.source, Source::Flatpaks) {
-                        format_flatpak_status(result)
-                    } else if result.available {
-                        match self.source {
-                            Source::AppImages => {
-                                let count = result.packages.len();
-                                let label = if count == 1 {
-                                    tr("1 AppImage update available").to_owned()
-                                } else {
-                                    tr("{count} AppImage updates available")
-                                        .replace("{count}", &count.to_string())
-                                };
-                                label
-                            }
-                            Source::Flatpaks => tr("Updates available").to_owned(),
-                        }
-                    } else if partial {
-                        tr("Update check incomplete").to_owned()
-                    } else if matches!(self.source, Source::AppImages)
-                        && result.supported > 0
-                    {
-                        tr("All supported AppImages are up to date.").to_owned()
-                    } else if matches!(self.source, Source::AppImages) {
-                        tr("No AppImages with automatic update support were found.").to_owned()
+                *self.backend.borrow_mut() = result.available.then_some(result.backend.clone());
+                let partial = !result.failed_remotes.is_empty();
+                let unsupported =
+                    matches!(self.source, Source::AppImages) && result.unsupported > 0;
+                self.warning.set_visible(partial || unsupported);
+                let mut warnings = Vec::new();
+                if partial {
+                    warnings.push(if matches!(self.source, Source::Flatpaks) {
+                        tr("Some Flatpak repositories could not be checked.").to_owned()
                     } else {
-                        String::new()
-                    };
-                    self.status.set_text(&status);
-                    self.status.set_visible(
-                        result.available
-                            || partial
-                            || matches!(self.source, Source::AppImages),
-                    );
-                    let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
-                    if result.packages.len() > 8 {
-                        lines.push(
-                            tr("And {count} more")
-                                .replace("{count}", &(result.packages.len() - 8).to_string()),
-                        );
-                    }
-                    self.details.set_text(&lines.join("\n"));
-                    self.details.set_visible(
-                        !lines.is_empty() && matches!(self.source, Source::AppImages),
-                    );
-                    self.update.set_visible(
-                        result.available && matches!(self.source, Source::AppImages),
-                    );
-                    self.last_checked.set_visible(true);
+                        tr("Some AppImages could not be checked.").to_owned()
+                    });
                 }
+                if unsupported {
+                    warnings.push(
+                        tr("{count} AppImages do not support automatic updates.")
+                            .replace("{count}", &result.unsupported.to_string()),
+                    );
+                }
+                self.warning.set_text(&warnings.join("\n"));
+                let status = if result.available && matches!(self.source, Source::Flatpaks) {
+                    format_flatpak_status(result)
+                } else if result.available {
+                    match self.source {
+                        Source::AppImages => {
+                            let count = result.packages.len();
+                            let label = if count == 1 {
+                                tr("1 AppImage update available").to_owned()
+                            } else {
+                                tr("{count} AppImage updates available")
+                                    .replace("{count}", &count.to_string())
+                            };
+                            label
+                        }
+                        Source::Flatpaks => tr("Updates available").to_owned(),
+                    }
+                } else if partial {
+                    tr("Update check incomplete").to_owned()
+                } else if matches!(self.source, Source::AppImages) && result.supported > 0 {
+                    tr("All supported AppImages are up to date.").to_owned()
+                } else if matches!(self.source, Source::AppImages) {
+                    tr("No AppImages with automatic update support were found.").to_owned()
+                } else {
+                    String::new()
+                };
+                self.status.set_text(&status);
+                self.status.set_visible(
+                    result.available || partial || matches!(self.source, Source::AppImages),
+                );
+                let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
+                if result.packages.len() > 8 {
+                    lines.push(
+                        tr("And {count} more")
+                            .replace("{count}", &(result.packages.len() - 8).to_string()),
+                    );
+                }
+                self.details.set_text(&lines.join("\n"));
+                self.details
+                    .set_visible(!lines.is_empty() && matches!(self.source, Source::AppImages));
+                self.update
+                    .set_visible(result.available && matches!(self.source, Source::AppImages));
+                self.last_checked.set_visible(true);
+            }
             Err(error) => {
                 *self.backend.borrow_mut() = None;
                 self.update.set_visible(false);
@@ -837,7 +929,9 @@ impl Section {
 
     fn start_update(self: &Rc<Self>, app: &gtk::Application) {
         let title = tr("Updating AppImages");
-        if operations_ui::has_active_title(title) {
+        if operations_ui::has_active_title(title)
+            || operations_ui::has_active_title(self.source.auto_title())
+        {
             return;
         }
         let Some(backend) = self.backend.borrow().clone() else {
@@ -859,11 +953,7 @@ impl Section {
                     completed.status.set_text(&error.to_string());
                 } else {
                     *completed.backend.borrow_mut() = None;
-                    CHECKS.with_borrow_mut(|checks| {
-                        if let Some(state) = checks.get_mut(&completed.source) {
-                            state.cached = None;
-                        }
-                    });
+                    invalidate_check(completed.source);
                 }
             },
             move || {
@@ -880,6 +970,95 @@ impl Section {
     }
 }
 
+fn automatic_preferences(source: Source) -> gtk::Box {
+    let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    preferences.add_css_class("packlift-update-preferences");
+    let automatic_title = tr("Install updates automatically");
+    let helper = match source {
+        Source::Flatpaks => tr("Updates apps and runtimes while Packlift is open."),
+        Source::AppImages => tr("Updates supported AppImages while Packlift is open."),
+    };
+    let row = adw::SwitchRow::builder()
+        .title(automatic_title)
+        .subtitle(helper)
+        .build();
+    let frequency = gtk::DropDown::from_strings(&[tr("Daily"), tr("Weekly"), tr("Monthly")]);
+    frequency.set_valign(gtk::Align::Center);
+    frequency.update_property(&[gtk::accessible::Property::Label(tr(
+        "Automatic update frequency",
+    ))]);
+    let frequency_row = adw::ActionRow::builder().title(tr("Frequency")).build();
+    frequency_row.add_suffix(&frequency);
+    frequency_row.set_activatable_widget(Some(&frequency));
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+    list.add_css_class("boxed-list");
+    list.append(&row);
+    list.append(&frequency_row);
+    preferences.append(&list);
+    if source == Source::Flatpaks && !host_access_available() {
+        preferences.set_sensitive(false);
+    }
+
+    let loading = Rc::new(Cell::new(false));
+    let sync = {
+        let (row, frequency) = (row.downgrade(), frequency.downgrade());
+        let loading = loading.clone();
+        move || {
+            let (Some(row), Some(frequency)) = (row.upgrade(), frequency.upgrade()) else {
+                return;
+            };
+            let (days, _) = read_schedule(source);
+            loading.set(true);
+            if days > 0 {
+                frequency.set_selected(match days {
+                    7 => 1,
+                    30 => 2,
+                    _ => 0,
+                });
+            }
+            row.set_active(days > 0);
+            frequency.set_sensitive(days > 0);
+            loading.set(false);
+        }
+    };
+    sync();
+    preferences.connect_map(move |_| sync());
+
+    let set_schedule = Rc::new({
+        let (row, frequency) = (row.downgrade(), frequency.downgrade());
+        move || {
+            if loading.get() {
+                return;
+            }
+            let (Some(row), Some(frequency)) = (row.upgrade(), frequency.upgrade()) else {
+                return;
+            };
+            let days = if row.is_active() {
+                [1, 7, 30]
+                    .get(frequency.selected() as usize)
+                    .copied()
+                    .unwrap_or(1)
+            } else {
+                0
+            };
+            frequency.set_sensitive(days > 0);
+            migrate_schedule();
+            let (_, last_run) = read_schedule(source);
+            write_schedule(source, days, last_run);
+            if days == 0 {
+                operations_ui::cancel_queued(source.auto_title());
+            } else {
+                AUTO_RETRY.with_borrow_mut(|attempts| attempts.remove(&source));
+            }
+        }
+    });
+    let toggle = set_schedule.clone();
+    row.connect_active_notify(move |_| toggle());
+    frequency.connect_selected_notify(move |_| set_schedule());
+    preferences
+}
+
 pub(super) fn attach(
     toolbar: &adw::ToolbarView,
     header: &adw::HeaderBar,
@@ -894,6 +1073,8 @@ pub(super) fn attach(
     split.set_sidebar_position(gtk::PackType::End);
     split.set_min_sidebar_width(390.0);
     split.set_max_sidebar_width(520.0);
+    split.set_pin_sidebar(true);
+    split.set_enable_show_gesture(false);
     split.set_collapsed(true);
     split.set_show_sidebar(false);
     if window.widget_name() == "packlift-library" {
@@ -1003,42 +1184,6 @@ pub(super) fn attach(
             }
         }
     });
-    let preferences = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    preferences.add_css_class("packlift-update-preferences");
-    let automatic_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let automatic_text = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    let automatic_title = home_label(tr("Install updates automatically"), "heading");
-    automatic_text.append(&automatic_title);
-    let helper = home_label(
-        tr("Packlift checks when it opens and applies updates on this schedule while it is running."),
-        "dim-label",
-    );
-    helper.set_wrap(true);
-    automatic_text.append(&helper);
-    automatic_row.append(&automatic_text);
-    let automatic = gtk::Switch::new();
-    automatic.set_valign(gtk::Align::Center);
-    let (days, _) = read_schedule();
-    automatic.set_active(days > 0);
-    automatic.update_property(&[gtk::accessible::Property::Label(tr("Install updates automatically"))]);
-    automatic_row.append(&automatic);
-    preferences.append(&automatic_row);
-
-    let frequency_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    frequency_row.append(&home_label(tr("Frequency"), ""));
-    let frequency_model = gtk::StringList::new(&[&tr("Daily"), &tr("Weekly"), &tr("Monthly")]);
-    let frequency = gtk::DropDown::new(Some(frequency_model), None::<gtk::Expression>);
-    frequency.set_hexpand(true);
-    frequency.set_selected(match days {
-        7 => 1,
-        30 => 2,
-        _ => 0,
-    });
-    frequency.set_sensitive(days > 0);
-    frequency.update_property(&[gtk::accessible::Property::Label(tr("Automatic update frequency"))]);
-    frequency_row.append(&frequency);
-    preferences.append(&frequency_row);
-    distro_module.append(&preferences);
     sidebar.append(&distro_module);
 
     let flatpaks = Section::new(
@@ -1058,29 +1203,6 @@ pub(super) fn attach(
     let sections = [flatpaks, appimages];
     register_update_sections(&sections);
     ensure_auto_check_timer();
-    let frequency_target = frequency.downgrade();
-    automatic.connect_active_notify(move |automatic| {
-        let Some(frequency) = frequency_target.upgrade() else {
-            return;
-        };
-        frequency.set_sensitive(automatic.is_active());
-        let interval = match frequency.selected() {
-            1 => 7,
-            2 => 30,
-            _ => 1,
-        };
-        write_schedule(if automatic.is_active() { interval } else { 0 }, now_epoch());
-    });
-    let automatic_target = automatic.downgrade();
-    frequency.connect_selected_notify(move |frequency| {
-        let interval = match frequency.selected() {
-            1 => 7,
-            2 => 30,
-            _ => 1,
-        };
-        let enabled = automatic_target.upgrade().is_some_and(|automatic| automatic.is_active());
-        write_schedule(if enabled { interval } else { 0 }, now_epoch());
-    });
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::External)

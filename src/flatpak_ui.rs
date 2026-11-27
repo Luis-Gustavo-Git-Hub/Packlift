@@ -1,10 +1,13 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use adw::prelude::*;
-use packlift::flatpak::{Access, BusAccess, Change, FileAccess, FlatpakTarget, Permissions};
+use packlift::{
+    core::Result,
+    flatpak::{Access, BusAccess, Change, FileAccess, FlatpakTarget, Permissions},
+};
 use serde_json::Value;
 
-use crate::{home_label, i18n::tr, installer, show_error, text_button};
+use crate::{home_label, i18n::tr, installer, text_button};
 
 struct PermissionSwitch {
     kind: Access,
@@ -26,75 +29,28 @@ impl PermissionSwitch {
     }
 }
 
-pub(super) fn permission_summary(
-    reference: &str,
-    installation: &str,
-) -> packlift::core::Result<String> {
-    let target = FlatpakTarget {
-        reference: reference.into(),
-        installation: installation.into(),
-    };
-    let manager = installer()?;
-    let permissions = target.permissions(&manager.runner)?;
-    let effective = permissions.effective.trim();
-    Ok(if effective.is_empty() {
-        tr("No permissions reported.").to_owned()
-    } else {
-        effective.to_owned()
-    })
-}
+pub(super) fn editor(window: &adw::ApplicationWindow, record: &Value) -> gtk::Box {
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let status = home_label(tr("Loading permissions…"), "dim-label");
+    status.set_selectable(true);
+    panel.append(&status);
 
-pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     let Some(reference) = record["target"].as_str() else {
-        return;
+        set_status(&status, tr("Could not load permissions."), true);
+        return panel;
     };
-    let target = Rc::new(FlatpakTarget {
+    let target = Arc::new(FlatpakTarget {
         reference: reference.into(),
         installation: record["flatpak_scope"].as_str().unwrap_or("user").into(),
     });
-    let manager = match installer().and_then(|manager| {
-        target
-            .permissions(&manager.runner)
-            .map(|permissions| (manager, permissions))
-    }) {
-        Ok(value) => value,
-        Err(error) => {
-            show_error(parent, &error.to_string());
-            return;
-        }
-    };
-    let (manager, permissions) = manager;
-    let runner = Rc::new(manager.runner);
+    let retry = text_button(tr("Try again"));
+    retry.set_halign(gtk::Align::Start);
+    retry.set_visible(false);
+    panel.append(&retry);
 
-    let window = parent;
-
-    let stack = adw::ViewStack::new();
-    let navigation = adw::ViewSwitcher::builder()
-        .stack(&stack)
-        .policy(adw::ViewSwitcherPolicy::Narrow)
-        .build();
-    let nav_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    nav_box.set_halign(gtk::Align::Center);
-    nav_box.append(&navigation);
-
-    let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    let title = adw::WindowTitle::new(
-        record["name"].as_str().unwrap_or(tr("Flatpak permissions")),
-        tr("Flatpak permissions"),
-    );
-    header.set_title_widget(Some(&title));
-    crate::back_to_previous(&toolbar, &header, window);
-    toolbar.add_top_bar(&header);
-    toolbar.add_top_bar(&nav_box);
-    toolbar.set_content(Some(&stack));
-
-    let access_page = adw::PreferencesPage::new();
-    let identity = adw::PreferencesGroup::builder()
-        .title(tr("Application ID"))
-        .description(reference.split('/').next().unwrap_or_default())
-        .build();
-    access_page.add(&identity);
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    controls.set_visible(false);
+    panel.append(&controls);
     let mut switches = Vec::new();
     for (title, entries) in [
         (
@@ -140,24 +96,22 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
                 row,
                 original: Cell::new(false),
             };
-            switch.load(&permissions.effective);
             group.add(&switch.row);
             switches.push(switch);
         }
-        access_page.add(&group);
+        controls.append(&group);
     }
-    stack.add_titled_with_icon(
-        &access_page,
-        Some("access"),
-        tr("Access"),
-        "changes-prevent-symbolic",
-    );
 
-    let advanced = adw::PreferencesPage::new();
+    let extra = adw::PreferencesGroup::new();
+    let advanced = rule_group(&extra, tr("Advanced"));
     let rules = adw::PreferencesGroup::builder()
         .title(tr("Custom rules"))
-        .description(tr("Enter the path, service or variable you want to change. View current rules in Details."))
         .build();
+    rules.set_margin_top(8);
+    rules.set_margin_bottom(8);
+    rules.set_margin_start(12);
+    rules.set_margin_end(12);
+    advanced.add_row(&rules);
     let filesystem = rule_group(&rules, tr("Files and folders"));
     let location = choice(
         &filesystem,
@@ -206,20 +160,11 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     );
     let value_entry = value.clone();
     env_modes.connect_selected_notify(move |mode| value_entry.set_sensitive(mode.selected() == 0));
-    advanced.add(&rules);
-    stack.add_titled_with_icon(
-        &advanced,
-        Some("advanced"),
-        tr("Advanced"),
-        "applications-engineering-symbolic",
-    );
-
-    let details = adw::PreferencesPage::new();
+    let reports = rule_group(&extra, tr("Details"));
     let effective_group = adw::PreferencesGroup::builder()
         .title(tr("Effective permissions"))
         .build();
     let effective = report(&effective_group);
-    details.add(&effective_group);
     let portal_group = adw::PreferencesGroup::builder()
         .title(tr("Portal permissions"))
         .description(tr(
@@ -231,25 +176,20 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     reset_portal.set_halign(gtk::Align::Start);
     reset_portal.set_margin_top(10);
     portal_group.add(&reset_portal);
-    details.add(&portal_group);
-    stack.add_titled_with_icon(
-        &details,
-        Some("details"),
-        tr("Details"),
-        "dialog-information-symbolic",
-    );
+    let report_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    report_content.set_margin_top(8);
+    report_content.set_margin_bottom(8);
+    report_content.set_margin_start(12);
+    report_content.set_margin_end(12);
+    report_content.append(&effective_group);
+    report_content.append(&portal_group);
+    reports.add_row(&report_content);
+    controls.append(&extra);
 
-    let footer = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    footer.set_margin_top(10);
-    footer.set_margin_bottom(14);
-    footer.set_margin_start(16);
-    footer.set_margin_end(16);
-    let status = home_label(
+    controls.append(&home_label(
         tr("Changes apply to all installations of this app for your account. Restart the app to apply them."),
         "dim-label",
-    );
-    status.set_selectable(true);
-    footer.append(&status);
+    ));
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let reset = text_button(tr("Restore defaults…"));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -259,12 +199,10 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
     actions.append(&reset);
     actions.append(&spacer);
     actions.append(&save);
-    footer.append(&actions);
-    toolbar.set_bottom_bar_style(adw::ToolbarStyle::RaisedBorder);
-    toolbar.add_bottom_bar(&footer);
+    controls.append(&actions);
 
     let switches = Rc::new(switches);
-    let update = Rc::new({
+    let update = {
         let switches = switches.clone();
         let entries = [
             path.clone(),
@@ -302,13 +240,28 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
                 None => tr("The desktop permission store is unavailable."),
             });
         }
+    };
+    let editor = Rc::new(Editor {
+        target,
+        controls: controls.downgrade(),
+        status: status.downgrade(),
+        retry: retry.downgrade(),
+        update: Box::new(update),
+        busy: Cell::new(false),
     });
-    update(permissions, true);
+    let start = editor.clone();
+    panel.connect_map(move |_| {
+        if let Some(controls) = start.controls.upgrade() {
+            if !controls.is_visible() && !start.retry.upgrade().is_some_and(|row| row.is_visible())
+            {
+                start.run(Action::Load);
+            }
+        }
+    });
+    let reload = editor.clone();
+    retry.connect_clicked(move |_| reload.run(Action::Load));
 
-    let save_target = target.clone();
-    let save_runner = runner.clone();
-    let save_status = status.clone();
-    let save_update = update.clone();
+    let save_editor = editor.clone();
     save.connect_clicked(move |_| {
         let mut changes: Vec<_> = switches
             .iter()
@@ -342,21 +295,11 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
             });
         }
         if changes.is_empty() {
-            set_status(&save_status, tr("No changes to save."), false);
-            return;
-        }
-        match save_target.apply(&save_runner, &changes) {
-            Ok(()) => {
-                set_status(
-                    &save_status,
-                    tr("Permissions saved. Restart the app to apply them."),
-                    false,
-                );
-                if let Ok(permissions) = save_target.permissions(&save_runner) {
-                    save_update(permissions, true);
-                }
+            if let Some(status) = save_editor.status.upgrade() {
+                set_status(&status, tr("No changes to save."), false);
             }
-            Err(error) => set_status(&save_status, &error.to_string(), true),
+        } else {
+            save_editor.run(Action::Save(changes));
         }
     });
 
@@ -375,10 +318,8 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
         ),
     ] {
         let parent = window.downgrade();
-        let target = target.clone();
-        let runner = runner.clone();
-        let update = update.clone();
-        let status = status.clone();
+        let panel = panel.downgrade();
+        let editor = editor.clone();
         button.connect_clicked(move |_| {
             let Some(parent) = parent.upgrade() else {
                 return;
@@ -389,25 +330,113 @@ pub(super) fn show(parent: &adw::ApplicationWindow, record: &Value) {
             dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
             dialog.set_default_response(Some("cancel"));
             dialog.set_close_response("cancel");
-            let target = target.clone();
-            let runner = runner.clone();
-            let update = update.clone();
-            let status = status.clone();
+            let editor = editor.clone();
+            let panel = panel.clone();
             dialog.connect_response(Some("reset"), move |_, _| {
-                match target.reset(&runner, portal_only) {
-                    Ok(()) => {
-                        set_status(&status, tr("Permissions reset."), false);
-                        if let Ok(permissions) = target.permissions(&runner) {
-                            update(permissions, !portal_only);
-                        }
-                    }
-                    Err(error) => set_status(&status, &error.to_string(), true),
+                if panel.upgrade().is_some_and(|panel| panel.is_mapped()) {
+                    editor.run(Action::Reset { portal_only });
                 }
             });
             dialog.present();
         });
     }
-    window.set_content(Some(&toolbar));
+    panel
+}
+
+enum Action {
+    Load,
+    Save(Vec<Change>),
+    Reset { portal_only: bool },
+}
+
+struct Editor {
+    target: Arc<FlatpakTarget>,
+    controls: glib::WeakRef<gtk::Box>,
+    status: glib::WeakRef<gtk::Label>,
+    retry: glib::WeakRef<gtk::Button>,
+    update: Box<dyn Fn(Permissions, bool)>,
+    busy: Cell<bool>,
+}
+
+impl Editor {
+    fn run(self: &Rc<Self>, action: Action) {
+        let (Some(controls), Some(status), Some(retry)) = (
+            self.controls.upgrade(),
+            self.status.upgrade(),
+            self.retry.upgrade(),
+        ) else {
+            return;
+        };
+        if self.busy.replace(true) {
+            return;
+        }
+        controls.set_sensitive(false);
+        retry.set_visible(false);
+        status.set_visible(true);
+        let (pending, done, reload_edits) = match &action {
+            Action::Load => (tr("Loading permissions…"), "", true),
+            Action::Save(_) => (
+                tr("Working…"),
+                tr("Permissions saved. Restart the app to apply them."),
+                true,
+            ),
+            Action::Reset { portal_only } => {
+                (tr("Working…"), tr("Permissions reset."), !portal_only)
+            }
+        };
+        set_status(&status, pending, false);
+        let editor = self.clone();
+        let target = self.target.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || -> Result<Result<Permissions>> {
+                let runner = installer()?.runner;
+                match action {
+                    Action::Load => {}
+                    Action::Save(changes) => target.apply(&runner, &changes)?,
+                    Action::Reset { portal_only } => target.reset(&runner, portal_only)?,
+                }
+                Ok(target.permissions(&runner))
+            })
+            .await;
+            editor.busy.set(false);
+            let (Some(controls), Some(status), Some(retry)) = (
+                editor.controls.upgrade(),
+                editor.status.upgrade(),
+                editor.retry.upgrade(),
+            ) else {
+                return;
+            };
+            match result {
+                Ok(Ok(Ok(permissions))) => {
+                    (editor.update)(permissions, reload_edits);
+                    controls.set_sensitive(true);
+                    controls.set_visible(true);
+                    status.set_visible(!done.is_empty());
+                    if !done.is_empty() {
+                        set_status(&status, done, false);
+                    }
+                }
+                Ok(Ok(Err(error))) => {
+                    let message = if done.is_empty() {
+                        error.to_string()
+                    } else {
+                        format!("{done} {error}")
+                    };
+                    set_status(&status, &message, true);
+                    retry.set_visible(true);
+                }
+                Ok(Err(error)) => {
+                    set_status(&status, &error.to_string(), true);
+                    controls.set_sensitive(!done.is_empty());
+                    retry.set_visible(done.is_empty());
+                }
+                Err(_) => {
+                    set_status(&status, tr("The operation ended unexpectedly."), true);
+                    retry.set_visible(true);
+                }
+            }
+        });
+    }
 }
 
 fn rule_group(group: &adw::PreferencesGroup, title: &str) -> adw::ExpanderRow {

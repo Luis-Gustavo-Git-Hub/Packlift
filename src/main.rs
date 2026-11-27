@@ -1,5 +1,4 @@
 mod flatpak_ui;
-mod flathub_account;
 mod i18n;
 mod operations_ui;
 mod search_provider;
@@ -82,15 +81,19 @@ fn main() -> glib::ExitCode {
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
                  .packlift-store-detail-hero { padding: 18px 20px; border-radius: 16px; background-color: @card_bg_color; border: 1px solid alpha(@borders, 0.5); }
-                 .packlift-store-fact > button { min-height: 4.6em; padding: 5px 10px; border-radius: 8px; background: alpha(@window_fg_color, 0.07); }
-                 .packlift-store-fact > button:hover, .packlift-store-fact > button:checked { background: alpha(@accent_bg_color, 0.19); }
+                 .packlift-store-facts { border-radius: 12px; background: @borders; }
+                 .packlift-store-facts > flowboxchild { padding: 0; background: @card_bg_color; }
+                 .packlift-store-fact-content { min-height: 102px; padding: 16px 10px; }
+                 .packlift-store-fact-badge { padding: 7px 10px; border-radius: 99px; color: @accent_color; background: alpha(@accent_bg_color, 0.14); }
+                 .packlift-store-fact-button > button { padding: 0; background: transparent; border-radius: 0; }
+                 .packlift-store-fact-button > button:hover, .packlift-store-fact-button > button:checked { background: alpha(@window_fg_color, 0.07); }
                  .packlift-store-shot { border-radius: 10px; }
-                 .packlift-store-release { padding: 16px; border-radius: 12px; background: @card_bg_color; }
-                 .packlift-store-link { padding: 2px; border-radius: 10px; background: @card_bg_color; }
-                 .packlift-store-card-icon { border-radius: 12px; background: #303036; border: 1px solid #45454d; }
+                 .packlift-store-release { padding: 16px; }
+                 .packlift-store-info-card { padding: 16px; border-radius: 12px; background: @card_bg_color; }
+                 .packlift-review-stars { color: #bd7802; }
+                 .packlift-store-card-icon { border-radius: 12px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@borders, 0.45); }
                  button.packlift-store-card { padding: 12px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
-                 button.packlift-showcase-card { padding: 14px; border-radius: 15px; border-color: alpha(white, 0.20); box-shadow: 0 2px 6px alpha(black, 0.17); }
-                 button.packlift-showcase-card:hover { border-color: alpha(white, 0.56); }
+                 button.packlift-showcase-card { padding: 14px; border-radius: 15px; border-color: alpha(@borders, 0.55); }
                  .packlift-showcase-card .heading { font-size: 1.12em; }
                  .packlift-update-module { padding: 18px; border-radius: 16px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); }
                  .packlift-update-preferences { padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.045); }
@@ -105,8 +108,6 @@ fn main() -> glib::ExitCode {
                  .packlift-store-pagination { padding: 2px; border-radius: 99px; background: @card_bg_color; }
                  .packlift-store-pagination > button { min-width: 24px; min-height: 24px; padding: 0 4px; border-radius: 99px; }
                  .packlift-store-pagination > label { margin: 0 6px; }
-                 button.packlift-store-suggestion { padding: 10px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.65); border-left-width: 3px; }
-                 button.packlift-store-suggestion:hover { background: mix(@card_bg_color, @window_fg_color, 0.08); }
                  button.packlift-store-category { padding: 12px; border: 0; border-radius: 12px; }
                  button.packlift-store-category:hover { border: 1px solid alpha(white, 0.42); }
                  box.packlift-store-category-icon-well { background: alpha(white, 0.18); border: 1px solid alpha(white, 0.20); border-radius: 12px; }
@@ -118,8 +119,8 @@ fn main() -> glib::ExitCode {
                  button.packlift-store-category-learn { color: white; background-image: linear-gradient(120deg, #29c778, #138a64); }
                  button.packlift-store-category-develop { color: white; background-image: linear-gradient(120deg, #55545f, #393840); }
                  .packlift-store-tint .dim-label { opacity: 0.87; }
-                 button.packlift-store-card:hover, button.packlift-store-suggestion:hover { border-color: alpha(@window_fg_color, 0.28); }
-                 button.packlift-store-card:focus-visible, button.packlift-store-suggestion:focus-visible { border-color: @accent_color; }",
+                 button.packlift-store-card:hover { background: mix(@card_bg_color, @window_fg_color, 0.07); border-color: alpha(@window_fg_color, 0.28); }
+                 button.packlift-store-card:focus-visible { border-color: @accent_color; }",
                 &store_ui::app_color_styles(),
             ].concat());
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -980,61 +981,16 @@ fn library_detail(
     }
 
     content.append(&home_label(tr("Permissions"), "title-3"));
-    let permissions = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    permissions.add_css_class("packlift-library-detail-row");
     if method == "flatpak" {
-        permissions.append(&home_label(
-            tr("Review and change this app's sandbox permissions."),
-            "dim-label",
-        ));
-        let current = home_label(tr("Loading permissions…"), "dim-label");
-        current.set_selectable(true);
-        current.add_css_class("monospace");
-        let permissions_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(112)
-            .max_content_height(112)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&current)
-            .build();
-        permissions.append(&permissions_scroll);
-
-        let current_target = current.downgrade();
-        let reference = record["target"].as_str().unwrap_or_default().to_owned();
-        let installation = record["flatpak_scope"].as_str().unwrap_or("user").to_owned();
-        content.connect_map(move |_| {
-            let (reference, installation, target) =
-                (reference.clone(), installation.clone(), current_target.clone());
-            glib::MainContext::default().spawn_local(async move {
-                let result = gio::spawn_blocking(move || {
-                    flatpak_ui::permission_summary(&reference, &installation)
-                }).await;
-                if let Some(current) = target.upgrade() {
-                    match result {
-                        Ok(Ok(text)) => current.set_text(&text),
-                        Ok(Err(error)) => current.set_text(&error.to_string()),
-                        Err(_) => current.set_text(tr("Could not load permissions.")),
-                    }
-                }
-            });
-        });
-        let manage = text_button(tr("Manage permissions…"));
-        manage.add_css_class("suggested-action");
-        manage.set_halign(gtk::Align::Start);
-        let parent = window.downgrade();
-        let record = record.clone();
-        manage.connect_clicked(move |_| {
-            if let Some(window) = parent.upgrade() {
-                flatpak_ui::show(&window, &record);
-            }
-        });
-        permissions.append(&manage);
+        content.append(&flatpak_ui::editor(window, record));
     } else {
-        permissions.append(&home_label(
+        let permissions = home_label(
             tr("Packlift does not manage permissions for this installation type."),
             "dim-label",
-        ));
+        );
+        permissions.add_css_class("packlift-library-detail-row");
+        content.append(&permissions);
     }
-    content.append(&permissions);
 
     content.append(&home_label(tr("Settings"), "title-3"));
     let settings = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -2036,30 +1992,6 @@ fn record_image(record: &Value, size: i32) -> gtk::Image {
         });
     image.set_pixel_size(size);
     image
-}
-
-fn installation_stage(line: &str) -> (&'static str, f64) {
-    let line = line.to_ascii_lowercase();
-    if line.contains("uninstall") || line.contains("removing ") {
-        (tr("Uninstalling the program"), 0.72)
-    } else if line.contains("analyzing") {
-        (tr("Analyzing the package"), 0.12)
-    } else if line.contains("compatibility") {
-        (tr("Checking compatibility"), 0.25)
-    } else if line.contains("environment") || line.contains("toolbox") || line.contains("prefix") {
-        (tr("Preparing the installation environment"), 0.38)
-    } else if line.contains("download")
-        || line.contains("flatpak install")
-        || line.contains("pulling")
-    {
-        (tr("Downloading dependencies"), 0.54)
-    } else if line.contains("shortcut") || line.contains("menu") {
-        (tr("Creating application shortcuts"), 0.90)
-    } else if line.contains("install") || line.contains("package") {
-        (tr("Installing the program"), 0.72)
-    } else {
-        (tr("Working…"), 0.64)
-    }
 }
 
 fn human_size(bytes: u64) -> String {
