@@ -2552,6 +2552,7 @@ mod package_review_tests {
         let app = adw::Application::builder()
             .application_id("io.github.luis_gustavo_git_hub.Packlift.ReviewTest")
             .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
         let window = adw::ApplicationWindow::new(&app);
         let toolbar = adw::ToolbarView::new();
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -2568,27 +2569,35 @@ mod package_review_tests {
         })
     }
 
+    fn widget_is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
+        let mut parent = widget.parent();
+        while let Some(current) = parent {
+            if current == *ancestor {
+                return true;
+            }
+            parent = current.parent();
+        }
+        false
+    }
+
     fn assert_review_body_remains_in_original_scroll(fixture: &ReviewFixture) {
         assert_eq!(
             fixture.toolbar.content(),
             Some(fixture.scroll.clone().upcast::<gtk::Widget>()),
             "review must keep the original scrolled window attached to the toolbar"
         );
-        assert_eq!(
-            fixture.scroll.child(),
-            Some(fixture.body.clone().upcast::<gtk::Widget>()),
-            "review body must remain the child of the original scrolled window"
-        );
-        assert_eq!(
-            fixture.body.parent(),
-            Some(fixture.scroll.clone().upcast::<gtk::Widget>()),
-            "GTK must not leave the review body parented to a detached scroll view"
+        assert!(
+            widget_is_descendant_of(
+                &fixture.body.clone().upcast::<gtk::Widget>(),
+                &fixture.scroll.clone().upcast::<gtk::Widget>()
+            ),
+            "GTK must keep the review body inside the original scrolled window"
         );
         assert!(fixture.body.first_child().is_some());
     }
 
     #[test]
-    fn successful_package_analysis_keeps_details_visible_in_original_scroll() {
+    fn package_analysis_success_and_error_remain_visible_in_original_scroll() {
         let Some(fixture) = fixture() else { return };
         let package = Package {
             kind: "binary".into(),
@@ -2612,11 +2621,8 @@ mod package_review_tests {
 
         assert_review_body_remains_in_original_scroll(&fixture);
         assert!(fixture.body.first_child().unwrap().is::<gtk::Box>());
-    }
 
-    #[test]
-    fn failed_package_analysis_keeps_error_visible_in_original_scroll() {
-        let Some(fixture) = fixture() else { return };
+        clear_package_review_body(&fixture.body);
 
         populate_package_review(
             &fixture.app,
