@@ -2610,6 +2610,7 @@ mod package_review_tests {
             ..packlift::core::Plan::default()
         };
 
+        clear_package_review_body(&fixture.body);
         populate_package_review(
             &fixture.app,
             &fixture.window,
