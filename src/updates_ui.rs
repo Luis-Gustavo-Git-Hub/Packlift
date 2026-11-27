@@ -215,6 +215,7 @@ pub(super) fn run_background(app: &adw::Application) {
     }
     // Keep the headless GTK application alive for its scheduled checks.
     std::mem::forget(app.hold());
+    crate::tray::start();
     migrate_schedule();
     let app = app.upcast_ref::<gtk::Application>().downgrade();
     if let Some(app) = app.upgrade() {
@@ -1315,7 +1316,7 @@ fn automatic_preferences(source: Source) -> gtk::Box {
         let startup = adw::SwitchRow::builder()
             .title(tr("Start Packlift with the system"))
             .subtitle(tr(
-                "Check for updates in the background when you sign in. The window stays closed.",
+                "Check for updates in the background when you sign in. A tray icon shows when supported.",
             ))
             .build();
         startup.set_active(start_with_system_enabled());

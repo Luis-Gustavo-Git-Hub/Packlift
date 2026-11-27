@@ -8,7 +8,7 @@ build:
 	cargo build --locked --release --features gui
 
 test:
-	cargo test --locked --all-features
+	cargo test --locked --all-features -- --test-threads=1
 
 install: build
 	install -Dm755 target/release/packlift "$(DESTDIR)$(PREFIX)/bin/packlift"

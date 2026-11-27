@@ -7,6 +7,7 @@ mod i18n;
 mod operations_ui;
 mod search_provider;
 mod store_ui;
+mod tray;
 mod updates_ui;
 mod windows_ui;
 
@@ -1246,6 +1247,21 @@ fn open_package_review(
     review_package(app, &window, path);
 }
 
+fn package_review_scroll(body: &gtk::Box) -> gtk::ScrolledWindow {
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_max_content_height(480);
+    scroll.set_child(Some(body));
+    scroll
+}
+
+fn clear_package_review_body(body: &gtk::Box) {
+    while let Some(child) = body.first_child() {
+        body.remove(&child);
+    }
+}
+
 fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path: &Path) {
     let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let close_cancellation = cancellation.clone();
@@ -1314,11 +1330,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     loading.append(&cancel);
     body.append(&loading);
 
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
-    scroll.set_propagate_natural_height(true);
-    scroll.set_max_content_height(480);
-    scroll.set_child(Some(&body));
+    let scroll = package_review_scroll(&body);
     toolbar.set_content(Some(&scroll));
     operations_ui::attach_button(&header);
     window.set_widget_name("packlift-package-review");
@@ -1388,9 +1400,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
         else {
             return;
         };
-        while let Some(child) = body.first_child() {
-            body.remove(&child);
-        }
+        clear_package_review_body(&body);
         populate_package_review(&app, &window, &path, &body, &toolbar, result);
     });
 }
@@ -1703,12 +1713,6 @@ fn populate_package_review(
             body.append(&file);
         }
     }
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
-    scroll.set_propagate_natural_height(true);
-    scroll.set_max_content_height(480);
-    scroll.set_child(Some(body));
-    toolbar.set_content(Some(&scroll));
 }
 
 fn package_identity(package: &Package, path: &Path) -> gtk::Box {
@@ -2522,4 +2526,115 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
     toolbar.set_content(Some(&body));
     parent.set_content(Some(&toolbar));
     copy.grab_focus();
+}
+
+#[cfg(test)]
+mod package_review_tests {
+    use super::*;
+
+    struct ReviewFixture {
+        app: adw::Application,
+        window: adw::ApplicationWindow,
+        toolbar: adw::ToolbarView,
+        scroll: gtk::ScrolledWindow,
+        body: gtk::Box,
+    }
+
+    fn fixture() -> Option<ReviewFixture> {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            eprintln!("GTK review tests need a display; run them with xvfb-run.");
+            return None;
+        }
+        if gtk::init().is_err() {
+            eprintln!("GTK review tests need a display; run them with xvfb-run.");
+            return None;
+        }
+        let app = adw::Application::builder()
+            .application_id("io.github.luis_gustavo_git_hub.Packlift.ReviewTest")
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let window = adw::ApplicationWindow::new(&app);
+        let toolbar = adw::ToolbarView::new();
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        body.append(&gtk::Label::new(Some("Analyzing package")));
+        let scroll = package_review_scroll(&body);
+        toolbar.set_content(Some(&scroll));
+        window.set_content(Some(&toolbar));
+        Some(ReviewFixture {
+            app,
+            window,
+            toolbar,
+            scroll,
+            body,
+        })
+    }
+
+    fn widget_is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
+        let mut parent = widget.parent();
+        while let Some(current) = parent {
+            if current == *ancestor {
+                return true;
+            }
+            parent = current.parent();
+        }
+        false
+    }
+
+    fn assert_review_body_remains_in_original_scroll(fixture: &ReviewFixture) {
+        assert_eq!(
+            fixture.toolbar.content(),
+            Some(fixture.scroll.clone().upcast::<gtk::Widget>()),
+            "review must keep the original scrolled window attached to the toolbar"
+        );
+        assert!(
+            widget_is_descendant_of(
+                &fixture.body.clone().upcast::<gtk::Widget>(),
+                &fixture.scroll.clone().upcast::<gtk::Widget>()
+            ),
+            "GTK must keep the review body inside the original scrolled window"
+        );
+        assert!(fixture.body.first_child().is_some());
+    }
+
+    #[test]
+    fn package_analysis_success_and_error_remain_visible_in_original_scroll() {
+        let Some(fixture) = fixture() else { return };
+        let package = Package {
+            kind: "binary".into(),
+            name: "Example application".into(),
+            signature: "verified".into(),
+            ..Package::default()
+        };
+        let plan = packlift::core::Plan {
+            method: "native".into(),
+            ..packlift::core::Plan::default()
+        };
+
+        clear_package_review_body(&fixture.body);
+        populate_package_review(
+            &fixture.app,
+            &fixture.window,
+            Path::new("/tmp/example-program"),
+            &fixture.body,
+            &fixture.toolbar,
+            Ok((package, plan)),
+        );
+
+        assert_review_body_remains_in_original_scroll(&fixture);
+        assert!(fixture.body.first_child().unwrap().is::<gtk::Box>());
+
+        clear_package_review_body(&fixture.body);
+
+        populate_package_review(
+            &fixture.app,
+            &fixture.window,
+            Path::new("/tmp/invalid-package"),
+            &fixture.body,
+            &fixture.toolbar,
+            Err(PackliftError::Message("invalid package".into())),
+        );
+
+        assert_review_body_remains_in_original_scroll(&fixture);
+        assert!(fixture.body.first_child().unwrap().is::<gtk::Label>());
+    }
 }
