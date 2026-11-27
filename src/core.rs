@@ -303,6 +303,19 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
             return Ok(("tar".into(), String::new()));
         }
     }
+    if name.ends_with(".tar.lzma") {
+        let mut decoded = [0_u8; 512];
+        let stream = xz2::stream::Stream::new_lzma_decoder(256 * 1024 * 1024)
+            .map_err(|_| PackliftError::Message("Unsupported LZMA archive.".into()))?;
+        xz2::read::XzDecoder::new_stream(File::open(path)?, stream)
+            .read_exact(&mut decoded)
+            .map_err(|_| {
+                PackliftError::Message("The file is not a supported tar archive.".into())
+            })?;
+        if tar_header(&decoded) {
+            return Ok(("tar".into(), String::new()));
+        }
+    }
     Err(PackliftError::Message(
         "The file header does not match a supported package format.".into(),
     ))
@@ -541,8 +554,16 @@ mod tests {
             encoder.write_all(&tar).unwrap();
             encoder.finish().unwrap()
         };
+        let lzma = {
+            let options = xz2::stream::LzmaOptions::new_preset(1).unwrap();
+            let stream = xz2::stream::Stream::new_lzma_encoder(&options).unwrap();
+            let mut encoder = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+            encoder.write_all(&tar).unwrap();
+            encoder.finish().unwrap()
+        };
         fs::write(root.join("portable.tar.bz2"), bz2).unwrap();
-        for name in ["portable.tar.zst", "portable.tar.bz2"] {
+        fs::write(root.join("portable.tar.lzma"), lzma).unwrap();
+        for name in ["portable.tar.zst", "portable.tar.bz2", "portable.tar.lzma"] {
             assert_eq!(detect(&root.join(name)).unwrap().0, "tar");
         }
         fs::remove_dir_all(root).unwrap();

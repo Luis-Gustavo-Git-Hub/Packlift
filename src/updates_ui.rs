@@ -10,19 +10,27 @@ use std::{
 use adw::prelude::*;
 use packlift::{
     core::{PackliftError, Result},
-    system::{host_access_available, operation, packlift_data_dir, LogHandler, Runner},
+    system::{home_dir, host_access_available, operation, packlift_data_dir, LogHandler, Runner},
 };
 
 use crate::{home_label, i18n::tr, operations_ui, text_button};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Source {
+    System,
     Flatpaks,
     AppImages,
 }
 
+#[derive(Clone, Copy)]
+enum SystemUpdater {
+    RpmOstree,
+    PackageKit,
+}
+
 #[derive(Clone)]
 enum Backend {
+    System(SystemUpdater),
     Flatpak(&'static str, Vec<String>),
     Flatpaks(Vec<(&'static str, Vec<String>)>),
     AppImages(String, Vec<std::path::PathBuf>),
@@ -60,11 +68,21 @@ fn command(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
+fn system_command(args: &[&str]) -> Vec<String> {
+    ["env", "LC_ALL=C.UTF-8"]
+        .into_iter()
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect()
+}
+
 const UPDATE_INTERVAL_DAYS: [u64; 4] = [0, 1, 7, 30];
 
 thread_local! {
     static AUTO_UPDATE_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
     static AUTO_CHECK_TIMER_STARTED: Cell<bool> = const { Cell::new(false) };
+    static BACKGROUND_MODE_STARTED: Cell<bool> = const { Cell::new(false) };
+    static BACKGROUND_SYSTEM_CHECK_RUNNING: Cell<bool> = const { Cell::new(false) };
     static AUTO_RETRY: RefCell<BTreeMap<Source, Instant>> = const { RefCell::new(BTreeMap::new()) };
     static CHECKS: RefCell<BTreeMap<Source, CheckState>> = const { RefCell::new(BTreeMap::new()) };
     static UPDATE_SECTIONS: RefCell<Vec<std::rc::Weak<Section>>> = const { RefCell::new(Vec::new()) };
@@ -76,13 +94,154 @@ fn now_epoch() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+fn automatic_updates_can_use_network() -> bool {
+    let network = gio::NetworkMonitor::default();
+    network.is_network_available() && !network.is_network_metered()
+}
+
+fn running_on_battery() -> bool {
+    let Ok(supplies) = fs::read_dir("/sys/class/power_supply") else {
+        return false;
+    };
+    let mut has_battery = false;
+    let mut has_external_power = false;
+    let mut external_power_connected = false;
+    for supply in supplies.flatten() {
+        let path = supply.path();
+        let kind = fs::read_to_string(path.join("type")).unwrap_or_default();
+        if kind.trim().eq_ignore_ascii_case("battery") {
+            has_battery = true;
+        } else if fs::read_to_string(path.join("online")).is_ok_and(|online| online.trim() == "1") {
+            has_external_power = true;
+            external_power_connected = true;
+        } else if path.join("online").exists() {
+            has_external_power = true;
+        }
+    }
+    has_battery && has_external_power && !external_power_connected
+}
+
 fn schedule_path() -> std::path::PathBuf {
     packlift_data_dir().join("updates.json")
+}
+
+fn autostart_path() -> std::path::PathBuf {
+    home_dir()
+        .join(".config")
+        .join("autostart")
+        .join("io.github.luis_gustavo_git_hub.Packlift-background.desktop")
+}
+
+fn autostart_disabled_marker() -> std::path::PathBuf {
+    home_dir()
+        .join(".config")
+        .join("packlift")
+        .join("disable-autostart")
+}
+
+fn start_with_system_enabled() -> bool {
+    !autostart_disabled_marker().exists()
+}
+
+fn set_start_with_system(enabled: bool) {
+    let marker = autostart_disabled_marker();
+    if let Some(parent) = marker.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    if enabled {
+        let _ = fs::remove_file(marker);
+    } else if fs::write(marker, "disabled").is_err() {
+        return;
+    }
+    write_autostart_entry(enabled);
+}
+
+fn write_autostart_entry(enabled: bool) {
+    let path = autostart_path();
+    if !enabled {
+        let _ = fs::remove_file(path);
+        return;
+    }
+    let Some(parent) = path.parent() else { return };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let (exec, try_exec) = if std::path::Path::new("/.flatpak-info").is_file() {
+        (
+            "flatpak run --command=packlift io.github.luis_gustavo_git_hub.Packlift --background-updates",
+            "flatpak",
+        )
+    } else {
+        ("packlift --background-updates", "packlift")
+    };
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=Packlift background updates\nComment=Check and install updates in the background\nExec={exec}\nTryExec={try_exec}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
+    );
+    let temporary = path.with_extension("desktop.tmp");
+    if fs::write(&temporary, entry).is_ok() {
+        let _ = fs::rename(temporary, path);
+    }
+}
+
+pub(super) fn ensure_background_autostart() {
+    let enabled = start_with_system_enabled();
+    write_autostart_entry(enabled);
+}
+
+fn start_background_system_check(app: &gtk::Application) {
+    if !automatic_updates_can_use_network()
+        || running_on_battery()
+        || operations_ui::has_active_title(tr("Updating system"))
+        || BACKGROUND_SYSTEM_CHECK_RUNNING.with(|running| running.replace(true))
+    {
+        return;
+    }
+    let app = app.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let _ = gio::spawn_blocking(|| check(Source::System)).await;
+        record_last_check(Source::System, now_epoch());
+        BACKGROUND_SYSTEM_CHECK_RUNNING.with(|running| running.set(false));
+        if let Some(app) = app.upgrade() {
+            schedule_due_updates(&app);
+        }
+    });
+}
+
+pub(super) fn run_background(app: &adw::Application) {
+    if BACKGROUND_MODE_STARTED.with(|started| started.replace(true)) {
+        return;
+    }
+    // Keep the headless GTK application alive for its scheduled checks.
+    std::mem::forget(app.hold());
+    migrate_schedule();
+    let app = app.upcast_ref::<gtk::Application>().downgrade();
+    if let Some(app) = app.upgrade() {
+        start_background_system_check(&app);
+    }
+    let schedule_app = app.clone();
+    glib::timeout_add_seconds_local(60, move || {
+        let Some(app) = schedule_app.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        schedule_due_updates(&app);
+        glib::ControlFlow::Continue
+    });
+    let check_app = app;
+    glib::timeout_add_seconds_local(30 * 60, move || {
+        let Some(app) = check_app.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        start_background_system_check(&app);
+        glib::ControlFlow::Continue
+    });
 }
 
 impl Source {
     fn schedule_keys(self) -> (&'static str, &'static str) {
         match self {
+            Self::System => ("system_interval_days", "system_last_auto_update"),
             Self::Flatpaks => ("flatpak_interval_days", "flatpak_last_auto_update"),
             Self::AppImages => ("interval_days", "last_auto_update"),
         }
@@ -90,6 +249,7 @@ impl Source {
 
     fn auto_title(self) -> &'static str {
         match self {
+            Self::System => tr("Automatic system updates"),
             Self::Flatpaks => tr("Automatic Flatpak updates"),
             Self::AppImages => tr("Automatic AppImage updates"),
         }
@@ -101,12 +261,20 @@ fn read_schedule(source: Source) -> (u64, u64) {
     let (interval, last) = source.schedule_keys();
     let days = state[interval]
         .as_u64()
-        .or_else(|| state["interval_days"].as_u64())
+        .or_else(|| {
+            (source != Source::System)
+                .then(|| state["interval_days"].as_u64())
+                .flatten()
+        })
         .filter(|days| UPDATE_INTERVAL_DAYS.contains(days))
         .unwrap_or(1);
     let last_run = state[last]
         .as_u64()
-        .or_else(|| state["last_auto_update"].as_u64())
+        .or_else(|| {
+            (source != Source::System)
+                .then(|| state["last_auto_update"].as_u64())
+                .flatten()
+        })
         .unwrap_or(0);
     (days, last_run)
 }
@@ -154,6 +322,7 @@ fn write_schedule(source: Source, days: u64, last_run: u64) {
 
 fn check_key(source: Source) -> &'static str {
     match source {
+        Source::System => "last_checked_system",
         Source::Flatpaks => "last_checked_flatpaks",
         Source::AppImages => "last_checked_appimages",
     }
@@ -191,6 +360,90 @@ fn format_flatpak_status(result: &Available) -> String {
             .replace("{count}", &count.to_string())
             .replace("{runtimes}", &runtimes.to_string()),
     }
+}
+
+fn system_updater(runner: &Runner) -> Option<SystemUpdater> {
+    if runner.available("pkcon") {
+        Some(SystemUpdater::PackageKit)
+    } else if runner.available("rpm-ostree") {
+        Some(SystemUpdater::RpmOstree)
+    } else {
+        None
+    }
+}
+
+fn check_system(runner: &Runner) -> Result<Available> {
+    let Some(updater) = system_updater(runner) else {
+        return Err(PackliftError::Message(
+            tr("System update support is unavailable for this distribution.").into(),
+        ));
+    };
+    runner.write(tr("Checking for system updates"));
+    let output = match updater {
+        SystemUpdater::RpmOstree => runner.capture(
+            &system_command(&[
+                "sh",
+                "-c",
+                "rpm-ostree upgrade --check; result=$?; if test \"$result\" -eq 77; then exit 0; fi; exit \"$result\"",
+            ]),
+            false,
+        )?,
+        SystemUpdater::PackageKit => {
+            runner.run(
+                &system_command(&["pkcon", "--noninteractive", "refresh", "force"]),
+                false,
+                true,
+                true,
+            )?;
+            runner.capture(
+                &system_command(&["pkcon", "--noninteractive", "get-updates"]),
+                false,
+            )?
+        }
+    };
+    let available = match updater {
+        SystemUpdater::RpmOstree => {
+            let output = output.to_ascii_lowercase();
+            if output.contains("no upgrade available") || output.contains("no updates available") {
+                false
+            } else if output.contains("automatic updates are not enabled") {
+                return Err(PackliftError::Message(
+                    tr("rpm-ostree cannot check updates until an update policy is enabled.").into(),
+                ));
+            } else if !output.trim().is_empty() {
+                true
+            } else {
+                return Err(PackliftError::Message(
+                    tr("Could not read the system update check result. See the Packlift log.")
+                        .into(),
+                ));
+            }
+        }
+        SystemUpdater::PackageKit => {
+            let output = output.to_ascii_lowercase();
+            !output.contains("no updates available")
+                && output.lines().map(str::trim).any(|line| {
+                    !line.is_empty()
+                        && !line.starts_with("getting updates")
+                        && !line.starts_with("finished")
+                        && !line.starts_with("refreshing")
+                        && !line.starts_with("loading")
+                })
+        }
+    };
+    Ok(Available {
+        backend: Backend::System(updater),
+        available,
+        packages: if available {
+            vec![tr("System update").to_owned()]
+        } else {
+            Vec::new()
+        },
+        runtime_updates: 0,
+        failed_remotes: Vec::new(),
+        unsupported: 0,
+        supported: 1,
+    })
 }
 
 fn register_update_sections(sections: &[Rc<Section>]) {
@@ -255,6 +508,13 @@ fn distribution_identity() -> (String, String) {
 
 fn apply_due_update(source: Source, log: LogHandler) -> Result<()> {
     match source {
+        Source::System => {
+            let runner = Runner::new(None, log.clone())?;
+            let available = check_system(&runner)?;
+            if available.available {
+                apply_with_mode(&available.backend, log, true)?;
+            }
+        }
         Source::Flatpaks => {
             let _operation = operation(&packlift_data_dir())?;
             let runner = Runner::new(None, log)?;
@@ -300,16 +560,19 @@ fn apply_due_update(source: Source, log: LogHandler) -> Result<()> {
 
 fn schedule_due_updates(app: &gtk::Application) {
     let now = now_epoch();
-    let network = gio::NetworkMonitor::default();
-    if !network.is_network_available() || network.is_network_metered() {
+    if !automatic_updates_can_use_network() || running_on_battery() {
         return;
     }
-    for source in [Source::Flatpaks, Source::AppImages] {
-        if source == Source::Flatpaks && !host_access_available() {
+    for source in [Source::System, Source::Flatpaks, Source::AppImages] {
+        if source == Source::System && BACKGROUND_SYSTEM_CHECK_RUNNING.with(Cell::get) {
+            continue;
+        }
+        if matches!(source, Source::System | Source::Flatpaks) && !host_access_available() {
             continue;
         }
         let (days, last_run) = read_schedule(source);
         let schedule_jitter = match source {
+            Source::System => 131,
             Source::Flatpaks => 173,
             Source::AppImages => 419,
         } + last_run % 127;
@@ -375,6 +638,7 @@ fn ensure_auto_update_timer(app: &gtk::Application) {
 fn check(source: Source) -> Result<Available> {
     let runner = Runner::new(None, Arc::new(|_| {}))?;
     match source {
+        Source::System => check_system(&runner),
         Source::Flatpaks => check_all_flatpaks(&runner),
         Source::AppImages => check_appimages(&runner),
     }
@@ -600,9 +864,31 @@ fn flatpak_ref(reference: &str) -> &str {
 }
 
 fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
+    apply_with_mode(backend, log, false)
+}
+
+fn apply_with_mode(backend: &Backend, log: LogHandler, noninteractive: bool) -> Result<()> {
     let _operation = operation(&packlift_data_dir())?;
     let runner = Runner::new(None, log)?;
     match backend {
+        Backend::System(SystemUpdater::RpmOstree) => {
+            runner.write(tr("Staging the system update"));
+            runner.run(
+                &system_command(&["rpm-ostree", "upgrade"]),
+                false,
+                true,
+                true,
+            )?;
+        }
+        Backend::System(SystemUpdater::PackageKit) => {
+            runner.write(tr("Installing system updates"));
+            let args = if noninteractive {
+                system_command(&["pkcon", "--noninteractive", "update-system"])
+            } else {
+                system_command(&["pkcon", "update-system"])
+            };
+            runner.run(&args, false, true, true)?;
+        }
         Backend::Flatpak(scope, refs) => {
             if !refs.is_empty() {
                 runner.run(
@@ -735,28 +1021,30 @@ impl Section {
         window: &adw::ApplicationWindow,
     ) -> Rc<Self> {
         let group = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        group.add_css_class("packlift-update-section");
-        if matches!(source, Source::Flatpaks) {
+        if source == Source::System {
+            group.add_css_class("packlift-update-system");
+        } else {
+            group.add_css_class("packlift-update-section");
+        }
+        if source == Source::Flatpaks {
             group.add_css_class("packlift-update-flatpak");
         }
-        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let icon = gtk::Image::from_icon_name(icon_name);
-        icon.set_pixel_size(if matches!(source, Source::Flatpaks) {
-            40
-        } else {
-            18
-        });
-        if matches!(source, Source::Flatpaks) {
-            icon.add_css_class("packlift-flatpak-update-icon");
+        if source != Source::System {
+            let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let icon = gtk::Image::from_icon_name(icon_name);
+            icon.set_pixel_size(if source == Source::Flatpaks { 40 } else { 18 });
+            if source == Source::Flatpaks {
+                icon.add_css_class("packlift-flatpak-update-icon");
+            }
+            heading.append(&icon);
+            let heading_title = home_label(title, "heading");
+            if source == Source::Flatpaks {
+                heading_title.set_wrap(false);
+                heading_title.set_single_line_mode(true);
+            }
+            heading.append(&heading_title);
+            group.append(&heading);
         }
-        heading.append(&icon);
-        let heading_title = home_label(title, "heading");
-        if matches!(source, Source::Flatpaks) {
-            heading_title.set_wrap(false);
-            heading_title.set_single_line_mode(true);
-        }
-        heading.append(&heading_title);
-        group.append(&heading);
         let status = home_label(tr("Waiting to check for updates."), "dim-label");
         group.append(&status);
         let last_checked = home_label(&last_check_time(source), "dim-label");
@@ -892,6 +1180,7 @@ impl Section {
                     format_flatpak_status(result)
                 } else if result.available {
                     match self.source {
+                        Source::System => tr("System update available").to_owned(),
                         Source::AppImages => {
                             let count = result.packages.len();
                             if count == 1 {
@@ -903,6 +1192,8 @@ impl Section {
                         }
                         Source::Flatpaks => tr("Updates available").to_owned(),
                     }
+                } else if self.source == Source::System {
+                    String::new()
                 } else if partial {
                     tr("Update check incomplete").to_owned()
                 } else if matches!(self.source, Source::AppImages) && result.supported > 0 {
@@ -913,9 +1204,8 @@ impl Section {
                     String::new()
                 };
                 self.status.set_text(&status);
-                self.status.set_visible(
-                    result.available || partial || matches!(self.source, Source::AppImages),
-                );
+                self.status
+                    .set_visible(result.available || partial || self.source == Source::AppImages);
                 let mut lines = result.packages.iter().take(8).cloned().collect::<Vec<_>>();
                 if result.packages.len() > 8 {
                     lines.push(
@@ -926,9 +1216,11 @@ impl Section {
                 self.details.set_text(&lines.join("\n"));
                 self.details
                     .set_visible(!lines.is_empty() && matches!(self.source, Source::AppImages));
-                self.update
-                    .set_visible(result.available && matches!(self.source, Source::AppImages));
-                self.last_checked.set_visible(true);
+                self.update.set_visible(
+                    result.available && matches!(self.source, Source::System | Source::AppImages),
+                );
+                self.last_checked
+                    .set_visible(!(self.source == Source::System && result.available));
             }
             Err(error) => {
                 *self.backend.borrow_mut() = None;
@@ -940,7 +1232,11 @@ impl Section {
     }
 
     fn start_update(self: &Rc<Self>, app: &gtk::Application) {
-        let title = tr("Updating AppImages");
+        let title = match self.source {
+            Source::System => tr("Updating system"),
+            Source::Flatpaks => tr("Updating Flatpaks"),
+            Source::AppImages => tr("Updating AppImages"),
+        };
         if operations_ui::has_active_title(title)
             || operations_ui::has_active_title(self.source.auto_title())
         {
@@ -965,6 +1261,11 @@ impl Section {
                     completed.status.set_text(&error.to_string());
                 } else {
                     *completed.backend.borrow_mut() = None;
+                    write_schedule(
+                        completed.source,
+                        read_schedule(completed.source).0,
+                        now_epoch(),
+                    );
                     invalidate_check(completed.source);
                 }
             },
@@ -987,6 +1288,9 @@ fn automatic_preferences(source: Source) -> gtk::Box {
     preferences.add_css_class("packlift-update-preferences");
     let automatic_title = tr("Install updates automatically");
     let helper = match source {
+        Source::System => {
+            tr("Checks and installs system updates while Packlift is open. Some updates may require a restart.")
+        }
         Source::Flatpaks => tr("Updates apps and runtimes while Packlift is open."),
         Source::AppImages => tr("Updates supported AppImages while Packlift is open."),
     };
@@ -1007,9 +1311,27 @@ fn automatic_preferences(source: Source) -> gtk::Box {
     list.add_css_class("boxed-list");
     list.append(&row);
     list.append(&frequency_row);
+    if source == Source::System {
+        let startup = adw::SwitchRow::builder()
+            .title(tr("Start Packlift with the system"))
+            .subtitle(tr(
+                "Check for updates in the background when you sign in. The window stays closed.",
+            ))
+            .build();
+        startup.set_active(start_with_system_enabled());
+        list.append(&startup);
+        startup.connect_active_notify(|row| set_start_with_system(row.is_active()));
+    }
     preferences.append(&list);
-    if source == Source::Flatpaks && !host_access_available() {
-        preferences.set_sensitive(false);
+    if !host_access_available() {
+        match source {
+            Source::System => {
+                row.set_sensitive(false);
+                frequency_row.set_sensitive(false);
+            }
+            Source::Flatpaks => preferences.set_sensitive(false),
+            Source::AppImages => {}
+        }
     }
 
     let loading = Rc::new(Cell::new(false));
@@ -1212,6 +1534,7 @@ pub(super) fn attach(
     });
     sidebar.append(&distro_module);
 
+    let system = Section::new(Source::System, "", "", &distro_module, window);
     let flatpaks = Section::new(
         Source::Flatpaks,
         tr("Flatpak"),
@@ -1226,7 +1549,7 @@ pub(super) fn attach(
         &sidebar,
         window,
     );
-    let sections = [flatpaks, appimages];
+    let sections = [system, flatpaks, appimages];
     register_update_sections(&sections);
     ensure_auto_check_timer();
     let scroll = gtk::ScrolledWindow::builder()

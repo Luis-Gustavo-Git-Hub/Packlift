@@ -489,6 +489,7 @@ impl Installer {
             package.name = name
                 .trim_end_matches(".tar.gz")
                 .trim_end_matches(".tar.xz")
+                .trim_end_matches(".tar.lzma")
                 .trim_end_matches(".tar")
                 .to_owned();
         }
@@ -4162,6 +4163,17 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
         Box::new(flate2::read::GzDecoder::new(fs::File::open(path)?))
     } else if magic[..count].starts_with(b"\xfd7zXZ\0") {
         Box::new(xz2::read::XzDecoder::new(fs::File::open(path)?))
+    } else if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".tar.lzma"))
+    {
+        let stream = xz2::stream::Stream::new_lzma_decoder(256 * 1024 * 1024)
+            .map_err(|_| PackliftError::Message("Unsupported LZMA archive.".into()))?;
+        Box::new(xz2::read::XzDecoder::new_stream(
+            fs::File::open(path)?,
+            stream,
+        ))
     } else if magic[..count].starts_with(b"\x28\xb5\x2f\xfd") {
         Box::new(zstd::stream::read::Decoder::new(fs::File::open(path)?)?)
     } else if magic[..count].starts_with(b"BZh") {
@@ -5253,6 +5265,45 @@ mod tests {
         assert!(unpack_archive(&link_path, &destination).is_err());
         assert!(!root.join("outside").exists());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lzma_tar_archives_are_detected_and_extracted_within_the_memory_limit() {
+        use super::{fs, unpack_archive};
+
+        let root = std::env::temp_dir().join(format!(
+            "packlift-lzma-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        let contents = b"#!/bin/sh\nexit 0\n";
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "Game/Game", &contents[..])
+            .unwrap();
+        let tar_bytes = archive.into_inner().unwrap();
+        let options = xz2::stream::LzmaOptions::new_preset(1).unwrap();
+        let stream = xz2::stream::Stream::new_lzma_encoder(&options).unwrap();
+        let mut encoder = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
+        use std::io::Write;
+        encoder.write_all(&tar_bytes).unwrap();
+        let archive_path = root.join("game.tar.lzma");
+        fs::write(&archive_path, encoder.finish().unwrap()).unwrap();
+
+        assert_eq!(crate::core::detect(&archive_path).unwrap().0, "tar");
+        let destination = root.join("payload");
+        fs::create_dir(&destination).unwrap();
+        let executables = unpack_archive(&archive_path, &destination).unwrap();
+        assert_eq!(executables, vec![destination.join("Game/Game")]);
         fs::remove_dir_all(root).unwrap();
     }
 

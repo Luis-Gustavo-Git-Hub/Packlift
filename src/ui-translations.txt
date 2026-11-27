@@ -436,8 +436,21 @@ Component {current} of {total}|Componente {current} de {total}|||
 Waiting in queue · Position {position}|Aguardando na fila · Posição {position}|||
 Automatic Flatpak updates|Atualizações automáticas de Flatpak|||
 Automatic AppImage updates|Atualizações automáticas de AppImage|||
+Automatic system updates|Atualizações automáticas do sistema|||
 Updates apps and runtimes while Packlift is open.|Atualiza apps e runtimes enquanto o Packlift está aberto.|||
 Updates supported AppImages while Packlift is open.|Atualiza AppImages compatíveis enquanto o Packlift está aberto.|||
+Checks and installs system updates while Packlift is open. Some updates may require a restart.|Verifica e instala atualizações do sistema enquanto o Packlift está aberto. Algumas podem exigir uma reinicialização.|||
+Checking for system updates|Verificando atualizações do sistema|||
+Staging the system update|Preparando a atualização do sistema|||
+Installing system updates|Instalando atualizações do sistema|||
+System update available|Há uma atualização do sistema disponível|||
+System update support is unavailable for this distribution.|O suporte a atualizações do sistema não está disponível nesta distribuição.|||
+rpm-ostree cannot check updates until an update policy is enabled.|O rpm-ostree não consegue verificar atualizações até que uma política de atualização esteja ativada.|||
+Could not read the system update check result. See the Packlift log.|Não foi possível ler o resultado da verificação do sistema. Consulte o registro do Packlift.|||
+System update|Atualização do sistema|||
+Updating system|Atualizando o sistema|||
+Start Packlift with the system|Iniciar o Packlift junto com o sistema|||
+Check for updates in the background when you sign in. The window stays closed.|Verifique atualizações em segundo plano ao entrar na sessão. A janela não será aberta.|||
 Other categories|Outras categorias|||
 New & Updated|Novos e atualizados|||
 Codecs|Codecs|||
@@ -458,6 +471,7 @@ Install for the system|Instalar no sistema|||
 Analyzing package…|Analisando o pacote…|||
 Reading package metadata and calculating its checksum.|Lendo metadados do pacote e calculando a soma de verificação.|||
 Calculating checksum…|Calculando soma de verificação…|||
+Package analysis progress|Progresso da análise do pacote|||
 Cancel analysis|Cancelar análise|||
 The package could not be analyzed.|Não foi possível analisar o pacote.|||
 Open Flathub in Browser|Abrir Flathub no navegador|Abrir Flathub en el navegador|Открыть Flathub в браузере|在浏览器中打开 Flathub
