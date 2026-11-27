@@ -214,10 +214,20 @@ fn build_home(app: &adw::Application) {
 }
 
 fn attach_package_drop_target(app: &adw::Application, window: &adw::ApplicationWindow) {
-    let target = gtk::DropTarget::new(gio::File::static_type(), gtk::gdk::DragAction::COPY);
+    let target = gtk::DropTarget::new(
+        gtk::gdk::FileList::static_type(),
+        gtk::gdk::DragAction::COPY,
+    );
     let app = app.clone();
     target.connect_drop(move |_, value, _, _| {
-        let Ok(file) = value.get::<gio::File>() else {
+        let Ok(files) = value.get::<gtk::gdk::FileList>() else {
+            return false;
+        };
+        let files = files.files();
+        if files.len() != 1 {
+            return false;
+        }
+        let Some(file) = files.first() else {
             return false;
         };
         let Some(path) = file.path() else {
