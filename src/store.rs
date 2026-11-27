@@ -1,11 +1,16 @@
 use std::{
     collections::{BTreeSet, HashSet},
+    fs,
     io::Read,
     path::PathBuf,
     thread,
+    time::{Duration, SystemTime},
 };
 
+#[cfg(feature = "gui")]
+use gio::prelude::NetworkMonitorExt;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     core::{PackliftError, Result},
@@ -336,8 +341,8 @@ pub fn catalog_remotes(runner: &Runner, destination: Destination) -> Result<Vec<
     if !host_access_available() {
         return Err(PackliftError::HostAccessRequired);
     }
-    let remotes = remotes(runner, destination)
-        .unwrap_or_else(|_| vec![flathub_remote(destination)]);
+    let remotes =
+        remotes(runner, destination).unwrap_or_else(|_| vec![flathub_remote(destination)]);
     Ok(remotes)
 }
 
@@ -640,7 +645,7 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
     // complete remote just to return a small first page; use its AppStream
     // catalog when present and only fall back to remote-ls otherwise.
     if let Ok(Some(root)) = appstream_root(runner, remote) {
-        if let Some(mut results) = appstream_search(runner, &root, query, page).ok() {
+        if let Ok(mut results) = appstream_search(runner, &root, query, page) {
             for app in &mut results.apps {
                 if let Some(arch) = app.reference.split('/').nth(2) {
                     app.icon = Some(CatalogIcon::AppStream(root.join(arch).join("active/icons")));
@@ -674,7 +679,11 @@ fn appstream_search(
     for arch in ["x86_64", "aarch64", "i386", "arm"] {
         let path = root.join(arch).join("active/appstream.xml.gz");
         let bytes = match runner.capture_bytes_limited(
-            &["cat".into(), "--".into(), path.to_string_lossy().into_owned()],
+            &[
+                "cat".into(),
+                "--".into(),
+                path.to_string_lossy().into_owned(),
+            ],
             false,
             8 * 1024 * 1024,
         ) {
@@ -695,7 +704,10 @@ fn appstream_search(
             .descendants()
             .filter(|node| node.has_tag_name("component"))
         {
-            if component.attribute("type").is_some_and(|kind| kind != "desktop") {
+            if component
+                .attribute("type")
+                .is_some_and(|kind| kind != "desktop")
+            {
                 continue;
             }
             let Some(id) = component
@@ -796,7 +808,6 @@ pub fn discovery_page(runner: &Runner, collection: &str, page: usize) -> Result<
     })
 }
 
-
 fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
     let body = json!({"query": query, "page": page, "hits_per_page": PAGE_SIZE}).to_string();
     Ok(serde_json::from_slice(&fetch(
@@ -815,7 +826,13 @@ pub fn desktop_search(runner: &Runner, query: &str) -> Result<Vec<CatalogApp>> {
         5,
         512 * 1024,
     )?)?;
-    Ok(response["hits"].as_array().into_iter().flatten().filter_map(flathub_catalog_app).take(8).collect())
+    Ok(response["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(flathub_catalog_app)
+        .take(8)
+        .collect())
 }
 
 fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
@@ -1604,6 +1621,100 @@ fn fetch_with_timeout(
     seconds: u32,
     max_bytes: u64,
 ) -> Result<Vec<u8>> {
+    if post.is_none() {
+        if let Some(cached) = cached_store_response(url, max_bytes) {
+            return Ok(cached);
+        }
+    }
+    #[cfg(feature = "gui")]
+    if !gio::NetworkMonitor::default().is_network_available() {
+        return Err(PackliftError::Message(
+            "No network connection is available. Reconnect and try again.".into(),
+        ));
+    }
+    let mut last_error = None;
+    for attempt in 0..3_u32 {
+        match fetch_once(runner, url, post, seconds, max_bytes) {
+            Ok(bytes) => {
+                if post.is_none() {
+                    cache_store_response(url, &bytes);
+                }
+                return Ok(bytes);
+            }
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    // Short exponential delay with bounded jitter avoids retry
+                    // bursts while keeping store failures responsive.
+                    let jitter = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.subsec_millis())
+                        % 350) as u64;
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        350 * (1 << attempt) + jitter,
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| PackliftError::Message("The request failed.".into())))
+}
+
+fn store_cache_path(url: &str) -> PathBuf {
+    let digest = Sha256::digest(url.as_bytes());
+    let key = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    crate::system::packlift_data_dir()
+        .join("store-cache")
+        .join(key)
+}
+
+fn cached_store_response(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    let path = store_cache_path(url);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.len() > max_bytes
+        || SystemTime::now()
+            .duration_since(metadata.modified().ok()?)
+            .ok()?
+            > Duration::from_secs(30 * 60)
+    {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn cache_store_response(url: &str, bytes: &[u8]) {
+    let path = store_cache_path(url);
+    let Some(parent) = path.parent() else { return };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    }
+    let temp = path.with_extension(format!(
+        "tmp-{}",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    if fs::write(&temp, bytes).is_ok() {
+        let _ = fs::rename(temp, path);
+    }
+}
+
+fn fetch_once(
+    runner: &Runner,
+    url: &str,
+    post: Option<&str>,
+    seconds: u32,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
     if !runner.available("curl") {
         if !runner.available("wget") {
             return Err(PackliftError::Message(
@@ -1614,9 +1725,9 @@ fn fetch_with_timeout(
             "wget".into(),
             "--no-config".into(),
             "--https-only".into(),
-            "--max-redirect=0".into(),
+            "--max-redirect=5".into(),
             "--timeout=8".into(),
-            "--tries=1".into(),
+            "--tries=3".into(),
             "--quiet".into(),
             "-O".into(),
             "-".into(),
@@ -1634,6 +1745,9 @@ fn fetch_with_timeout(
         "curl".into(),
         "--disable".into(),
         "--fail".into(),
+        "--location".into(),
+        "--max-redirs".into(),
+        "5".into(),
         "--silent".into(),
         "--show-error".into(),
         "--proto".into(),
@@ -1642,6 +1756,9 @@ fn fetch_with_timeout(
         "6".into(),
         "--max-time".into(),
         seconds.to_string(),
+        "--retry".into(),
+        "2".into(),
+        "--retry-connrefused".into(),
         "--max-filesize".into(),
         max_bytes.to_string(),
     ];

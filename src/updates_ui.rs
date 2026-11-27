@@ -25,7 +25,7 @@ enum Source {
 enum Backend {
     Flatpak(&'static str, Vec<String>),
     Flatpaks(Vec<(&'static str, Vec<String>)>),
-    AppImages(String, Vec<(std::path::PathBuf, bool)>),
+    AppImages(String, Vec<std::path::PathBuf>),
 }
 
 struct Available {
@@ -184,7 +184,9 @@ fn format_flatpak_status(result: &Available) -> String {
         (1, 0) => tr("1 app needs updates").to_owned(),
         (count, 0) => tr("{count} apps need updates").replace("{count}", &count.to_string()),
         (0, 1) => tr("1 runtime update available").to_owned(),
-        (0, runtimes) => tr("{count} runtime updates available").replace("{count}", &runtimes.to_string()),
+        (0, runtimes) => {
+            tr("{count} runtime updates available").replace("{count}", &runtimes.to_string())
+        }
         (count, runtimes) => tr("{count} apps and {runtimes} runtime updates available")
             .replace("{count}", &count.to_string())
             .replace("{runtimes}", &runtimes.to_string()),
@@ -210,7 +212,10 @@ fn ensure_auto_check_timer() {
 
 fn refresh_visible_sections() {
     let sections = UPDATE_SECTIONS.with_borrow_mut(|registered| {
-        let sections = registered.iter().filter_map(std::rc::Weak::upgrade).collect::<Vec<_>>();
+        let sections = registered
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect::<Vec<_>>();
         registered.retain(|section| section.strong_count() > 0);
         sections
     });
@@ -225,7 +230,10 @@ fn distribution_identity() -> (String, String) {
     let result = Runner::new(None, Arc::new(|_| {}))
         .and_then(|runner| runner.capture(&command(&["cat", "/etc/os-release"]), false));
     let Ok(contents) = result else {
-        return (tr("Linux distribution").to_owned(), "computer-symbolic".to_owned());
+        return (
+            tr("Linux distribution").to_owned(),
+            "computer-symbolic".to_owned(),
+        );
     };
     let values: BTreeMap<_, _> = contents
         .lines()
@@ -292,12 +300,23 @@ fn apply_due_update(source: Source, log: LogHandler) -> Result<()> {
 
 fn schedule_due_updates(app: &gtk::Application) {
     let now = now_epoch();
+    let network = gio::NetworkMonitor::default();
+    if !network.is_network_available() || network.is_network_metered() {
+        return;
+    }
     for source in [Source::Flatpaks, Source::AppImages] {
         if source == Source::Flatpaks && !host_access_available() {
             continue;
         }
         let (days, last_run) = read_schedule(source);
-        if days == 0 || (last_run != 0 && now.saturating_sub(last_run) < days * 24 * 60 * 60) {
+        let schedule_jitter = match source {
+            Source::Flatpaks => 173,
+            Source::AppImages => 419,
+        } + last_run % 127;
+        if days == 0
+            || (last_run != 0
+                && now.saturating_sub(last_run) < days * 24 * 60 * 60 + schedule_jitter)
+        {
             continue;
         }
         let title = source.auto_title();
@@ -404,7 +423,7 @@ fn check_appimages(runner: &Runner) -> Result<Available> {
             let migrated = sandbox_only
                 && app["source"]
                     .as_str()
-                    .map(|source| std::path::Path::new(source))
+                    .map(std::path::Path::new)
                     .filter(|source| source.is_file())
                     .is_some_and(|source| fs::copy(source, &path).is_ok());
             if !migrated {
@@ -413,16 +432,13 @@ fn check_appimages(runner: &Runner) -> Result<Available> {
             }
         }
         let path_text = path.to_string_lossy().into_owned();
-        let describe = runner.capture(
-            &command(&[updater, "--describe", "--", &path_text]),
-            local,
-        )?;
+        let describe =
+            runner.capture(&command(&[updater, "--describe", "--", &path_text]), local)?;
         if !describe.lines().any(|line| {
             line.trim_start()
                 .strip_prefix("Update info:")
                 .is_some_and(|info| !info.trim().is_empty())
-        })
-        {
+        }) {
             unsupported += 1;
             continue;
         }
@@ -450,13 +466,8 @@ fn check_appimages(runner: &Runner) -> Result<Available> {
         match result.status.code() {
             Some(0) => {}
             Some(1) => {
-                updates.push((path, app["sandbox_only"].as_bool() == Some(true)));
-                names.push(
-                    app["name"]
-                        .as_str()
-                        .unwrap_or("AppImage")
-                        .to_owned(),
-                );
+                updates.push(path);
+                names.push(app["name"].as_str().unwrap_or("AppImage").to_owned());
             }
             _ => {
                 let detail = diagnostic.lines().last().unwrap_or("").trim().to_owned();
@@ -567,9 +578,7 @@ fn check_all_flatpaks(runner: &Runner) -> Result<Available> {
     }
     failed_remotes.extend(errors);
     if scopes.is_empty() {
-        return Err(PackliftError::Message(
-            failed_remotes.join("\n"),
-        ));
+        return Err(PackliftError::Message(failed_remotes.join("\n")));
     }
     let available = scopes.iter().any(|(_, refs)| !refs.is_empty());
     Ok(Available {
@@ -615,7 +624,7 @@ fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
             }
         }
         Backend::AppImages(updater, paths) => {
-            for (path, sandbox_only) in paths {
+            for path in paths {
                 runner.write("Applying AppImage update");
                 let path_text = path.to_string_lossy().into_owned();
                 let result = runner.run(
@@ -627,14 +636,14 @@ fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
                 if !result.status.success() {
                     return Err(PackliftError::Message(format!(
                         "{} could not be updated. See the Packlift log.",
-                        path.file_name().and_then(|name| name.to_str()).unwrap_or("AppImage")
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("AppImage")
                     )));
                 }
-                if *sandbox_only {
-                    if let Err(error) = refresh_sandbox_appimage(&runner, path) {
-                        restore_appimage_backup(path);
-                        return Err(error);
-                    }
+                if let Err(error) = refresh_appimage_payload(&runner, path) {
+                    restore_appimage_backup(path);
+                    return Err(error);
                 }
             }
         }
@@ -642,7 +651,7 @@ fn apply(backend: &Backend, log: LogHandler) -> Result<()> {
     Ok(())
 }
 
-fn refresh_sandbox_appimage(runner: &Runner, image: &std::path::Path) -> Result<()> {
+fn refresh_appimage_payload(runner: &Runner, image: &std::path::Path) -> Result<()> {
     use std::fs;
 
     let directory = image.parent().ok_or_else(|| {
@@ -732,7 +741,11 @@ impl Section {
         }
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon = gtk::Image::from_icon_name(icon_name);
-        icon.set_pixel_size(if matches!(source, Source::Flatpaks) { 40 } else { 18 });
+        icon.set_pixel_size(if matches!(source, Source::Flatpaks) {
+            40
+        } else {
+            18
+        });
         if matches!(source, Source::Flatpaks) {
             icon.add_css_class("packlift-flatpak-update-icon");
         }
@@ -881,13 +894,12 @@ impl Section {
                     match self.source {
                         Source::AppImages => {
                             let count = result.packages.len();
-                            let label = if count == 1 {
+                            if count == 1 {
                                 tr("1 AppImage update available").to_owned()
                             } else {
                                 tr("{count} AppImage updates available")
                                     .replace("{count}", &count.to_string())
-                            };
-                            label
+                            }
                         }
                         Source::Flatpaks => tr("Updates available").to_owned(),
                     }
@@ -1097,10 +1109,12 @@ pub(super) fn attach(
 
     let pages = gtk::Stack::new();
     let updates = gtk::ToggleButton::new();
-    updates.set_child(Some(&adw::ButtonContent::builder()
-        .icon_name("software-update-available-symbolic")
-        .label(tr("Updates"))
-        .build()));
+    updates.set_child(Some(
+        &adw::ButtonContent::builder()
+            .icon_name("software-update-available-symbolic")
+            .label(tr("Updates"))
+            .build(),
+    ));
     let operations_label = adw::ButtonContent::builder()
         .icon_name("view-list-symbolic")
         .label(tr("Operations"))
@@ -1121,16 +1135,22 @@ pub(super) fn attach(
         }
     });
     if operations_ui::active_count() > 0 {
-        operations_label.set_label(&format!("{} ({})", tr("Operations"), operations_ui::active_count()));
+        operations_label.set_label(&format!(
+            "{} ({})",
+            tr("Operations"),
+            operations_ui::active_count()
+        ));
     }
 
     for (button, name) in [(&updates, "updates"), (&operations, "operations")] {
         let panel = split.downgrade();
         let stack = pages.downgrade();
         button.connect_clicked(move |_| {
-            let (Some(panel), Some(stack)) = (panel.upgrade(), stack.upgrade()) else { return; };
-            let was_open = panel.shows_sidebar()
-                && stack.visible_child_name().as_deref() == Some(name);
+            let (Some(panel), Some(stack)) = (panel.upgrade(), stack.upgrade()) else {
+                return;
+            };
+            let was_open =
+                panel.shows_sidebar() && stack.visible_child_name().as_deref() == Some(name);
             stack.set_visible_child_name(name);
             panel.set_show_sidebar(!was_open);
             // Keep the toggles in sync when switching from one panel to the other.
@@ -1138,12 +1158,18 @@ pub(super) fn attach(
         });
     }
     let (update_button, operation_button, stack) = (
-        updates.downgrade(), operations.downgrade(), pages.downgrade(),
+        updates.downgrade(),
+        operations.downgrade(),
+        pages.downgrade(),
     );
     split.connect_show_sidebar_notify(move |panel| {
-        let (Some(updates), Some(operations), Some(stack)) =
-            (update_button.upgrade(), operation_button.upgrade(), stack.upgrade())
-        else { return; };
+        let (Some(updates), Some(operations), Some(stack)) = (
+            update_button.upgrade(),
+            operation_button.upgrade(),
+            stack.upgrade(),
+        ) else {
+            return;
+        };
         let selected = stack.visible_child_name();
         updates.set_active(panel.shows_sidebar() && selected.as_deref() == Some("updates"));
         operations.set_active(panel.shows_sidebar() && selected.as_deref() == Some("operations"));

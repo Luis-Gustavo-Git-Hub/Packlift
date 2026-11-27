@@ -1,3 +1,7 @@
+// GTK 4.14 still exposes these legacy dialogs; keep them until the supported
+// libadwaita baseline provides a replacement for the current UX.
+#![allow(deprecated)]
+
 mod flatpak_ui;
 mod i18n;
 mod operations_ui;
@@ -364,11 +368,15 @@ fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
     glib::MainContext::default().spawn_local(async move {
         let worker = gio::spawn_blocking(|| installer().and_then(|manager| manager.library_apps()));
         let records = worker.await.unwrap_or_else(|_| {
-            Err(PackliftError::Message(tr("Could not load your library").into()))
+            Err(PackliftError::Message(
+                tr("Could not load your library").into(),
+            ))
         });
         let (Some(window), Some(library), Some(toolbar)) =
             (owner.upgrade(), target.upgrade(), view.upgrade())
-        else { return; };
+        else {
+            return;
+        };
         while let Some(child) = library.first_child() {
             library.remove(&child);
         }
@@ -493,7 +501,9 @@ fn populate_library(
                 .collect::<Vec<_>>();
             let scroll = detail_scroll.downgrade();
             list.connect_row_selected(move |_, selected| {
-                let Some(details) = detail_target.upgrade() else { return; };
+                let Some(details) = detail_target.upgrade() else {
+                    return;
+                };
                 while let Some(child) = details.first_child() {
                     details.remove(&child);
                 }
@@ -510,7 +520,9 @@ fn populate_library(
                 else {
                     return;
                 };
-                let Some(window) = detail_window.upgrade() else { return; };
+                let Some(window) = detail_window.upgrade() else {
+                    return;
+                };
                 let detail = library_detail(record, row.clone(), &detail_app, &window);
                 let clamp = adw::Clamp::builder()
                     .maximum_size(1000)
@@ -524,7 +536,9 @@ fn populate_library(
 
             let list_ref = list.downgrade();
             let update_filter = Rc::new(move |query: &str, scope: u32| {
-                let Some(list) = list_ref.upgrade() else { return; };
+                let Some(list) = list_ref.upgrade() else {
+                    return;
+                };
                 let query = query.trim().to_lowercase();
                 let filter = LIBRARY_FILTERS
                     .get(scope as usize)
@@ -534,7 +548,9 @@ fn populate_library(
                 for (row, searchable, record) in rows.iter() {
                     let record = record.borrow();
                     let visible = (searchable.contains(&query)
-                        || row.subtitle().is_some_and(|subtitle| subtitle.to_lowercase().contains(&query)))
+                        || row
+                            .subtitle()
+                            .is_some_and(|subtitle| subtitle.to_lowercase().contains(&query)))
                         && filter(&record);
                     row.set_visible(visible);
                     matches |= visible;
@@ -542,7 +558,11 @@ fn populate_library(
                 list.set_visible(matches);
                 empty.set_visible(!matches);
                 if !list.selected_row().is_some_and(|row| row.is_visible()) {
-                    list.select_row(rows.iter().find(|(row, _, _)| row.is_visible()).map(|(row, _, _)| row.upcast_ref::<gtk::ListBoxRow>()));
+                    list.select_row(
+                        rows.iter()
+                            .find(|(row, _, _)| row.is_visible())
+                            .map(|(row, _, _)| row.upcast_ref::<gtk::ListBoxRow>()),
+                    );
                 }
             });
             let search_filter = update_filter.clone();
@@ -567,7 +587,6 @@ fn populate_library(
         )),
     }
 }
-
 
 #[derive(Clone)]
 struct PageReturn {
@@ -1164,7 +1183,6 @@ fn open_package_review(
     if let Some(parent) = parent {
         window.add_css_class("packlift-package-window");
         window.set_transient_for(Some(parent));
-        parent.set_visible(false);
         window.connect_close_request(|window| {
             if let Some(parent) = window.transient_for() {
                 parent.present();
@@ -1437,7 +1455,8 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                     }
                     let runtime = runtime.clone();
                     if kind == "setup" {
-                        let title = format!("{} · {}", tr("Installing program or game"), package.name);
+                        let title =
+                            format!("{} · {}", tr("Installing program or game"), package.name);
                         run_job_with_progress(
                             &app,
                             &window,
@@ -1451,13 +1470,19 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                         );
                     } else {
                         let title = format!("{} · {}", tr("Installing program"), package.name);
-                        run_job_with_progress(&app, &window, &title, Some(&progress), move |logger| {
-                            let manager = installer_with_output(logger)?;
-                            if let Some(command) = setup {
-                                manager.setup_container_support(&command)?;
-                            }
-                            manager.install_package(&package, &runtime).map(Some)
-                        });
+                        run_job_with_progress(
+                            &app,
+                            &window,
+                            &title,
+                            Some(&progress),
+                            move |logger| {
+                                let manager = installer_with_output(logger)?;
+                                if let Some(command) = setup {
+                                    manager.setup_container_support(&command)?;
+                                }
+                                manager.install_package(&package, &runtime).map(Some)
+                            },
+                        );
                     }
                 }
             });
@@ -1793,55 +1818,76 @@ fn run_job_with_progress<F>(
     let original = window.content().map(|content| content.downgrade());
     let application = app.clone();
     let completed_owner = owner.clone();
-    let id = operations_ui::submit(app.upcast_ref(), title, task, move |result| {
-        let window = completed_owner.upgrade().filter(|window| window.application().is_some());
-        let still_here = window.as_ref().is_some_and(|window| {
-            original.as_ref().and_then(glib::WeakRef::upgrade) == window.content()
-        });
-        if let Ok(Some(record)) = &result {
-            if record["method"] == "flatpak"
-                && record["flatpak_already_installed"] != true
-                && !(package_review && still_here)
-            {
-                notify_flatpak_installed(&application, record);
-            }
-        }
-        let Some(window) = window else { return; };
-        match result {
-            Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
-                choose_installed_executable(&application, &window, *package, runtime);
-            }
-            Err(PackliftError::ExecutableSelectionFailed { package, runtime, reason }) => {
-                choose_installed_executable(&application, &window, *package, runtime);
-                show_error(&window, &reason);
-            }
-            Err(error) if (package_review || !is_inline) && still_here => show_error(&window, &error.to_string()),
-            Ok(Some(record)) if still_here && (package_review || record["method"] != "flatpak") => {
-                show_success(&application, &window, &record);
-            }
-            Ok(_) => {
-                if window.widget_name() == "packlift-library"
-                    || (still_here && window.has_css_class("packlift-package-window"))
+    let id = operations_ui::submit(
+        app.upcast_ref(),
+        title,
+        task,
+        move |result| {
+            let window = completed_owner
+                .upgrade()
+                .filter(|window| window.application().is_some());
+            let still_here = window.as_ref().is_some_and(|window| {
+                original.as_ref().and_then(glib::WeakRef::upgrade) == window.content()
+            });
+            if let Ok(Some(record)) = &result {
+                if record["method"] == "flatpak"
+                    && record["flatpak_already_installed"] != true
+                    && !(package_review && still_here)
                 {
-                    render_home(&application, &window);
+                    notify_flatpak_installed(&application, record);
                 }
             }
-            Err(_) => {}
-        }
-    }, move || {
-        if let Some(window) = owner.upgrade() {
-            if !is_inline && !library {
-                window.remove_css_class("packlift-running-job");
+            let Some(window) = window else {
+                return;
+            };
+            match result {
+                Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
+                    choose_installed_executable(&application, &window, *package, runtime);
+                }
+                Err(PackliftError::ExecutableSelectionFailed {
+                    package,
+                    runtime,
+                    reason,
+                }) => {
+                    choose_installed_executable(&application, &window, *package, runtime);
+                    show_error(&window, &reason);
+                }
+                Err(error) if (package_review || !is_inline) && still_here => {
+                    show_error(&window, &error.to_string())
+                }
+                Ok(Some(record))
+                    if still_here && (package_review || record["method"] != "flatpak") =>
+                {
+                    show_success(&application, &window, &record);
+                }
+                Ok(_) => {
+                    if window.widget_name() == "packlift-library"
+                        || (still_here && window.has_css_class("packlift-package-window"))
+                    {
+                        render_home(&application, &window);
+                    }
+                }
+                Err(_) => {}
             }
-        }
-        if let Some(slot) = release_slot.and_then(|slot| slot.upgrade()) {
-            while let Some(child) = slot.first_child() {
-                slot.remove(&child);
+        },
+        move || {
+            if let Some(window) = owner.upgrade() {
+                if !is_inline && !library {
+                    window.remove_css_class("packlift-running-job");
+                }
             }
-            slot.set_visible(false);
-        }
-    });
-    if let Some(slot) = progress_slot.and_then(|slot| slot.upgrade()).filter(|_| package_review) {
+            if let Some(slot) = release_slot.and_then(|slot| slot.upgrade()) {
+                while let Some(child) = slot.first_child() {
+                    slot.remove(&child);
+                }
+                slot.set_visible(false);
+            }
+        },
+    );
+    if let Some(slot) = progress_slot
+        .and_then(|slot| slot.upgrade())
+        .filter(|_| package_review)
+    {
         operations_ui::track(&slot, id, title);
     }
 }
@@ -1979,7 +2025,8 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     let message = if already_installed {
         tr("This version of {name} is already installed.").replace("{name}", name)
     } else if self_install {
-        tr("Close all Packlift windows and open it again from your app menu to use this version.").to_owned()
+        tr("Close all Packlift windows and open it again from your app menu to use this version.")
+            .to_owned()
     } else if runnable {
         tr("{name} is ready to use.").replace("{name}", name)
     } else {

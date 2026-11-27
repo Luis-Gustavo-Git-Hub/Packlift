@@ -12,8 +12,14 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check lints
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Install validation tools
         run: |
           sudo apt-get update
@@ -25,11 +31,23 @@ jobs:
           desktop-file-validate data/io.github.luis_gustavo_git_hub.Packlift.desktop
           appstreamcli validate --no-net data/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml
 
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-audit --version 0.23.0 --locked
+          cargo audit
+
   flatpak:
     runs-on: ubuntu-24.04
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
       - name: Install Flatpak build tools
@@ -62,7 +80,7 @@ jobs:
             unsquashfs -version | grep -F "unsquashfs version"
           '
       - name: Upload bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Packlift-x86_64
           path: Packlift-x86_64.flatpak
@@ -73,8 +91,10 @@ jobs:
     timeout-minutes: 12
     needs: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
       - name: Install Rust integration tools
         run: |
           sudo apt-get update
@@ -105,10 +125,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: Packlift-x86_64
       - name: Publish the tested Flatpak

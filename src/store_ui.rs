@@ -117,7 +117,12 @@ pub(super) fn show_search_result(
 ) {
     show(application, window);
     if window.widget_name() == "packlift-store" {
-        show_app(window, &store::flathub_remote(Destination::User), candidate, app_color(&candidate.id));
+        show_app(
+            window,
+            &store::flathub_remote(Destination::User),
+            candidate,
+            app_color(&candidate.id),
+        );
     }
 }
 
@@ -546,8 +551,7 @@ impl StoreView {
                 let Ok(system_remotes) = result else {
                     return;
                 };
-                let remotes =
-                    merge_catalog_remotes(view.remotes.borrow().clone(), system_remotes);
+                let remotes = merge_catalog_remotes(view.remotes.borrow().clone(), system_remotes);
                 let initial_len = view.remotes.borrow().len();
                 if remotes.len() != initial_len {
                     *view.remotes.borrow_mut() = remotes;
@@ -726,20 +730,45 @@ impl StoreView {
         let remote = store::flathub_remote(Destination::User);
         let window = &self.window;
         for (key, title, icon, style) in [
-            ("category/Graphics", "Create", "applications-graphics-symbolic", "create"),
-            ("category/Office", "Work", "x-office-document-symbolic", "work"),
-            ("category/Game", "Play", "applications-games-symbolic", "play"),
-            ("category/Social", "Socialize", "chat-message-new-symbolic", "socialize"),
-            ("category/Education", "Learn", "accessories-dictionary-symbolic", "learn"),
-            ("category/Development", "Develop", "applications-engineering-symbolic", "develop"),
+            (
+                "category/Graphics",
+                "Create",
+                "applications-graphics-symbolic",
+                "create",
+            ),
+            (
+                "category/Office",
+                "Work",
+                "x-office-document-symbolic",
+                "work",
+            ),
+            (
+                "category/Game",
+                "Play",
+                "applications-games-symbolic",
+                "play",
+            ),
+            (
+                "category/Social",
+                "Socialize",
+                "chat-message-new-symbolic",
+                "socialize",
+            ),
+            (
+                "category/Education",
+                "Learn",
+                "accessories-dictionary-symbolic",
+                "learn",
+            ),
+            (
+                "category/Development",
+                "Develop",
+                "applications-engineering-symbolic",
+                "develop",
+            ),
         ] {
             self.category_tiles.append(&store_category_tile(
-                window,
-                &remote,
-                key,
-                title,
-                icon,
-                style,
+                window, &remote, key, title, icon, style,
             ));
         }
         for (index, (key, label)) in [
@@ -1570,12 +1599,27 @@ fn advance_banner(carousel: &adw::Carousel, step: i64) {
 
 fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, color: usize) {
     let previous_page = PageReturn::capture(window);
-    let key = format!("{}:{}:{}", remote.destination.flag(), remote.url, app.reference);
+    let key = format!(
+        "{}:{}:{}",
+        remote.destination.flag(),
+        remote.url,
+        app.reference
+    );
     if let Some((details, facts)) = DETAIL_CACHE.with_borrow(|cache| {
-        cache.iter().find(|(id, time, _, _)| id == &key && time.elapsed() < Duration::from_secs(300))
+        cache
+            .iter()
+            .find(|(id, time, _, _)| id == &key && time.elapsed() < Duration::from_secs(300))
             .map(|(_, _, details, facts)| (details.clone(), facts.clone()))
     }) {
-        show_app_details(window, remote, app, color, Ok(details), facts, previous_page);
+        show_app_details(
+            window,
+            remote,
+            app,
+            color,
+            Ok(details),
+            facts,
+            previous_page,
+        );
         return;
     }
     window.set_widget_name("packlift-store-loading");
@@ -1611,11 +1655,14 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
     background(
         move || match worker() {
             Ok(runner) => std::thread::scope(|tasks| {
-                let facts = detail_remote.flathub.then(|| {
-                    tasks.spawn(|| store::flathub_facts(&runner, &detail_app))
-                });
+                let facts = detail_remote
+                    .flathub
+                    .then(|| tasks.spawn(|| store::flathub_facts(&runner, &detail_app)));
                 let details = store::app_details(&runner, &detail_remote, &detail_app);
-                (details, facts.and_then(|task| task.join().ok()).unwrap_or_default())
+                (
+                    details,
+                    facts.and_then(|task| task.join().ok()).unwrap_or_default(),
+                )
             }),
             Err(error) => (Err(error), store::FlathubFacts::default()),
         },
@@ -1629,14 +1676,15 @@ fn show_app(window: &adw::ApplicationWindow, remote: &Remote, app: &CatalogApp, 
                     cache.push_back((key, Instant::now(), details.clone(), facts.clone()));
                 });
             }
-            let (Some(window), Some(loading)) = (window.upgrade(), loading.upgrade()) else { return; };
+            let (Some(window), Some(loading)) = (window.upgrade(), loading.upgrade()) else {
+                return;
+            };
             if window.content().as_ref() == Some(&loading) {
                 show_app_details(&window, &remote, &app, color, details, facts, previous);
             }
         },
     );
 }
-
 
 fn detail_page_toolbar(
     window: &adw::ApplicationWindow,

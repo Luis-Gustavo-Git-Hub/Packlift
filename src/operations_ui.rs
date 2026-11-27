@@ -2,14 +2,17 @@ use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
     rc::Rc,
-    sync::{mpsc, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     time::Duration,
 };
 
 use adw::prelude::*;
 use packlift::{
     core::{PackliftError, Result},
-    system::LogHandler,
+    system::{with_cancellation_token, LogHandler},
 };
 
 use crate::{home_label, i18n::tr, text_button};
@@ -24,6 +27,7 @@ struct Operation {
     phase: Phase,
     progress: Progress,
     error: String,
+    cancellation: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,6 +44,7 @@ struct Pending {
     task: Task,
     completed: Complete,
     released: Box<dyn FnOnce()>,
+    cancellation: Arc<AtomicBool>,
 }
 
 thread_local! {
@@ -106,7 +111,16 @@ pub(super) fn submit(
             phase: Phase::Queued,
             progress: Progress::PREPARING,
             error: String::new(),
+            cancellation: Arc::new(AtomicBool::new(false)),
         });
+    });
+    let cancellation = HISTORY.with_borrow(|history| {
+        history
+            .iter()
+            .find(|entry| entry.id == id)
+            .unwrap()
+            .cancellation
+            .clone()
     });
     PENDING.with_borrow_mut(|queue| {
         queue.push_back(Pending {
@@ -117,6 +131,7 @@ pub(super) fn submit(
                 released();
                 drop(hold);
             }),
+            cancellation,
         })
     });
     notify();
@@ -133,6 +148,7 @@ fn start_next() {
         task,
         completed,
         released,
+        cancellation,
     }) = PENDING.with_borrow_mut(VecDeque::pop_front)
     else {
         return;
@@ -141,11 +157,13 @@ fn start_next() {
     phase(id, |entry| entry.phase = Phase::Running);
     let (sender, receiver) = mpsc::channel();
     let worker = gio::spawn_blocking(move || {
-        task(Arc::new(move |line| {
-            if let Some(progress) = describe_progress(line) {
-                let _ = sender.send(progress);
-            }
-        }))
+        with_cancellation_token(cancellation, || {
+            task(Arc::new(move |line| {
+                if let Some(progress) = describe_progress(line) {
+                    let _ = sender.send(progress);
+                }
+            }))
+        })
     });
     let timer = glib::timeout_add_local(Duration::from_millis(160), move || {
         if let Some(progress) = receiver.try_iter().last() {
@@ -172,7 +190,11 @@ fn start_next() {
                 entry.phase = Phase::Done;
             }
             Err(error) => {
-                entry.phase = Phase::Failed;
+                entry.phase = if error.to_string() == "Operation canceled." {
+                    Phase::Canceled
+                } else {
+                    Phase::Failed
+                };
                 entry.error = error.to_string();
             }
         });
@@ -355,7 +377,16 @@ fn cancel(id: u64) {
     if let Some(pending) = pending {
         phase(id, |entry| entry.phase = Phase::Canceled);
         (pending.released)();
+        return;
     }
+    HISTORY.with_borrow(|history| {
+        if let Some(entry) = history
+            .iter()
+            .find(|entry| entry.id == id && entry.phase == Phase::Running)
+        {
+            entry.cancellation.store(true, Ordering::Relaxed);
+        }
+    });
 }
 
 pub(super) fn cancel_queued(title: &str) {
@@ -513,7 +544,14 @@ fn rebuild(list: &gtk::Box, entries: &[&Operation]) -> Option<RunningCard> {
         card.add_css_class("packlift-update-section");
         card.append(&home_label(&entry.title, "heading"));
         match entry.phase {
-            Phase::Running => running = Some(RunningCard::new(&card, &entry.title)),
+            Phase::Running => {
+                running = Some(RunningCard::new(&card, &entry.title));
+                let button = text_button(tr("Cancel"));
+                button.set_halign(gtk::Align::End);
+                let id = entry.id;
+                button.connect_clicked(move |_| cancel(id));
+                card.append(&button);
+            }
             Phase::Queued => {
                 waiting += 1;
                 let status = tr("Waiting in queue · Position {position}")
