@@ -79,6 +79,69 @@ pub(super) fn launch_settings(
         .build();
     arguments.set_text(record["launch_arguments"].as_str().unwrap_or_default());
     group.add(&arguments);
+
+    let options = &record["wine_options"];
+    let disable_dxvk = adw::SwitchRow::builder()
+        .title(tr("Disable DXVK (Proton)"))
+        .active(options["disable_dxvk"].as_bool().unwrap_or(false))
+        .build();
+    let disable_vkd3d = adw::SwitchRow::builder()
+        .title(tr("Disable VKD3D-Proton (Proton)"))
+        .active(options["disable_vkd3d"].as_bool().unwrap_or(false))
+        .build();
+    let disable_esync = adw::SwitchRow::builder()
+        .title(tr("Disable Esync (Proton)"))
+        .active(options["disable_esync"].as_bool().unwrap_or(false))
+        .build();
+    let disable_fsync = adw::SwitchRow::builder()
+        .title(tr("Disable Fsync (Proton)"))
+        .active(options["disable_fsync"].as_bool().unwrap_or(false))
+        .build();
+    for row in [
+        &disable_dxvk,
+        &disable_vkd3d,
+        &disable_esync,
+        &disable_fsync,
+    ] {
+        group.add(row);
+    }
+    let compatibility_help = home_label(
+        tr("These compatibility switches are used by Proton. They do not change the selected runtime."),
+        "dim-label",
+    );
+    panel.append(&compatibility_help);
+    let environment_label = home_label(tr("Environment variables"), "heading");
+    panel.append(&environment_label);
+    let environment = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .monospace(true)
+        .left_margin(10)
+        .right_margin(10)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    let environment_buffer = environment.buffer();
+    if let Some(entries) = record["launch_environment"].as_object() {
+        let content = entries
+            .iter()
+            .filter_map(|(key, value)| value.as_str().map(|value| format!("{key}={value}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        environment_buffer.set_text(&content);
+    }
+    let environment_scroll = gtk::ScrolledWindow::builder()
+        .child(&environment)
+        .min_content_height(105)
+        .max_content_height(180)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+    environment_scroll.add_css_class("card");
+    panel.append(&environment_scroll);
+    let environment_help = home_label(
+        tr("Write one NAME=VALUE per line, for example DXVK_HUD=fps. These variables apply only to this game."),
+        "dim-label",
+    );
+    panel.append(&environment_help);
     let default_directory = record["working_directory"]
         .as_str()
         .map(PathBuf::from)
@@ -183,10 +246,17 @@ pub(super) fn launch_settings(
         arguments.downgrade(),
         status.downgrade(),
     );
-    let fields = group.downgrade();
+    let (disable_dxvk, disable_vkd3d, disable_esync, disable_fsync) = (
+        disable_dxvk.downgrade(),
+        disable_vkd3d.downgrade(),
+        disable_esync.downgrade(),
+        disable_fsync.downgrade(),
+    );
+    let environment_buffer = environment_buffer.clone();
+    let fields = panel.downgrade();
     save.connect_clicked(move |button| {
-        let (Some(runtime), Some(directory), Some(arguments), Some(label), Some(group)) =
-            (runtime.upgrade(), directory.upgrade(), arguments.upgrade(), status.upgrade(), fields.upgrade())
+        let (Some(runtime), Some(directory), Some(arguments), Some(label), Some(group), Some(disable_dxvk), Some(disable_vkd3d), Some(disable_esync), Some(disable_fsync)) =
+            (runtime.upgrade(), directory.upgrade(), arguments.upgrade(), status.upgrade(), fields.upgrade(), disable_dxvk.upgrade(), disable_vkd3d.upgrade(), disable_esync.upgrade(), disable_fsync.upgrade())
         else { return; };
         let selection = runtime.selected();
         let runtime = if selection == 0 { "wine" } else { "proton" };
@@ -195,6 +265,15 @@ pub(super) fn launch_settings(
         let options = WindowsLaunchOptions {
             working_directory: (!path.is_empty()).then(|| PathBuf::from(path.as_str())),
             arguments: arguments.text().to_string(),
+            environment: environment_buffer.text(
+                &environment_buffer.start_iter(),
+                &environment_buffer.end_iter(),
+                false,
+            ).to_string(),
+            disable_dxvk: disable_dxvk.is_active(),
+            disable_vkd3d: disable_vkd3d.is_active(),
+            disable_esync: disable_esync.is_active(),
+            disable_fsync: disable_fsync.is_active(),
         };
         button.set_sensitive(false);
         group.set_sensitive(false);

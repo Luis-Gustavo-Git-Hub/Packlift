@@ -1248,6 +1248,14 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
             full_path.set_margin_bottom(10);
             source.add_row(&full_path);
             options.append(&source);
+            let include_binary_siblings = adw::SwitchRow::builder()
+                .title(tr("Include nearby files"))
+                .subtitle(tr(
+                    "Copy files beside this executable only if the program needs them (up to 512 MiB).",
+                ))
+                .visible(package.kind == "binary")
+                .build();
+            options.append(&include_binary_siblings);
             if package.kind == "flatpakref" && !package.description.is_empty() {
                 let repository = adw::ActionRow::builder()
                     .title(tr("Flatpak repository"))
@@ -1394,6 +1402,7 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
             install.add_css_class("suggested-action");
             let app = app.clone();
             let package = package.clone();
+            let include_binary_siblings = include_binary_siblings.downgrade();
             let kind = package.kind.clone();
             let selected_runtime = runtime.clone();
             let weak_window = window.downgrade();
@@ -1414,6 +1423,9 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                     let setup = setup.clone();
                     let mut package = package.clone();
                     package.resolve_libraries = libraries.is_active();
+                    package.include_binary_siblings = include_binary_siblings
+                        .upgrade()
+                        .is_some_and(|row| row.is_active());
                     if choose_target {
                         package.use_container = true;
                         package.rpm_family = if rpm_target.selected() == 1 {

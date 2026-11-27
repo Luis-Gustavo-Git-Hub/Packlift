@@ -31,6 +31,11 @@ pub struct Installer {
 pub struct WindowsLaunchOptions {
     pub working_directory: Option<PathBuf>,
     pub arguments: String,
+    pub environment: String,
+    pub disable_dxvk: bool,
+    pub disable_vkd3d: bool,
+    pub disable_esync: bool,
+    pub disable_fsync: bool,
 }
 
 impl Installer {
@@ -1524,9 +1529,8 @@ fi"#
             fs::create_dir_all(&payload)?;
             let targets = unpack_archive(&package.path, &payload)?;
             let host_arch = architecture_group(machine);
-            let target = targets
-                .into_iter()
-                .find(|target| {
+            let target = select_executable(
+                targets.into_iter().filter(|target| {
                     let Ok(mut file) = fs::File::open(target) else {
                         return false;
                     };
@@ -1536,12 +1540,14 @@ fi"#
                     };
                     let arch = crate::core::elf_architecture(&header[..count]);
                     arch == host_arch || (host_arch == "x86_64" && arch == "x86")
-                })
-                .ok_or_else(|| {
-                    PackliftError::Message(
-                        "The archive has no executable compatible with this computer.".into(),
-                    )
-                })?;
+                }),
+                &package.name,
+            )
+            .ok_or_else(|| {
+                PackliftError::Message(
+                    "The archive has no executable compatible with this computer.".into(),
+                )
+            })?;
             (
                 vec![
                     "env".into(),
@@ -1554,29 +1560,8 @@ fi"#
         } else if package.kind == "binary" {
             let payload = directory.join("payload");
             fs::create_dir_all(&payload)?;
-            let parent = package.path.parent().unwrap_or(&package.path);
-            let bin_name = package
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("program");
-
-            let has_siblings = fs::read_dir(parent)
-                .map(|entries| {
-                    entries.flatten().any(|e| {
-                        e.file_name() != package.path.file_name().unwrap_or_default()
-                    })
-                })
-                .unwrap_or(false);
-
-            if has_siblings {
-                copy_dir_all(parent, &payload)?;
-            } else {
-                fs::copy(&package.path, payload.join(bin_name))?;
-            }
-
-            let target = payload.join(bin_name);
-            make_executables_in_payload(&payload);
+            let target =
+                copy_binary_payload(&package.path, &payload, package.include_binary_siblings)?;
 
             (
                 vec![
@@ -2228,6 +2213,11 @@ fi"#
                 .as_str()
                 .unwrap_or_default()
                 .to_owned(),
+            environment: String::new(),
+            disable_dxvk: false,
+            disable_vkd3d: false,
+            disable_esync: false,
+            disable_fsync: false,
         });
         if let Some(directory) = &options.working_directory {
             let directory_text = directory.to_string_lossy();
@@ -2263,6 +2253,21 @@ fi"#
                 )
             })?;
         arguments.extend(extra_arguments);
+        let environment = parse_windows_environment(&options.environment)?;
+        for (key, value) in [
+            ("PROTON_USE_WINED3D", options.disable_dxvk),
+            ("PROTON_NO_D3D12", options.disable_vkd3d),
+            ("PROTON_NO_ESYNC", options.disable_esync),
+            ("PROTON_NO_FSYNC", options.disable_fsync),
+        ] {
+            if value {
+                if environment.contains_key(key) {
+                    return Err(PackliftError::Message(format!(
+                        "Remove {key} from the custom environment variables because Packlift manages it above."
+                    )));
+                }
+            }
+        }
         let executable = Path::new(&arguments[0]);
         if entry["desktop"].as_str().is_none() {
             return Err(PackliftError::Message(
@@ -2288,12 +2293,30 @@ fi"#
             &machine,
         );
         wine.proton_path = proton_path.map(Path::to_owned);
+        wine.extra_env = environment.clone();
+        for (key, value) in [
+            ("PROTON_USE_WINED3D", options.disable_dxvk),
+            ("PROTON_NO_D3D12", options.disable_vkd3d),
+            ("PROTON_NO_ESYNC", options.disable_esync),
+            ("PROTON_NO_FSYNC", options.disable_fsync),
+        ] {
+            if value {
+                wine.extra_env.insert(key.into(), "1".into());
+            }
+        }
         let argv = wine.command("wine", &arguments, cwd);
         let mut updated = record.clone();
         updated["runtime"] = json!(wine.runtime);
         updated["proton_path"] = json!(proton_path);
         updated["launch_directory"] = json!(options.working_directory);
         updated["launch_arguments"] = json!(options.arguments);
+        updated["launch_environment"] = json!(environment);
+        updated["wine_options"] = json!({
+            "disable_dxvk": options.disable_dxvk,
+            "disable_vkd3d": options.disable_vkd3d,
+            "disable_esync": options.disable_esync,
+            "disable_fsync": options.disable_fsync,
+        });
         updated["exports"][0]["argv"] = json!(argv);
         if let Err(error) = self
             .sync_app_menu_entry(&mut updated)
@@ -2974,6 +2997,7 @@ struct Wine {
     umu: bool,
     flatpak: bool,
     proton_path: Option<PathBuf>,
+    extra_env: BTreeMap<String, String>,
 }
 
 impl Wine {
@@ -2992,6 +3016,7 @@ impl Wine {
             prefix: shared_windows_prefix(data),
             integrations: data.join("wine/desktop"),
             proton_path: None,
+            extra_env: BTreeMap::new(),
         }
     }
 
@@ -3011,6 +3036,11 @@ impl Wine {
             "XDG_DATA_HOME",
             self.integrations.to_string_lossy().to_string(),
         ));
+        values.extend(
+            self.extra_env
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone())),
+        );
         if self.umu {
             if self.runner.sandbox {
                 let mut command = vec![
@@ -3102,6 +3132,42 @@ impl Wine {
 
 fn short_hash(value: &str) -> Result<String> {
     Ok(sha256_bytes(value.as_bytes())?[..20].to_owned())
+}
+
+fn parse_windows_environment(input: &str) -> Result<BTreeMap<String, String>> {
+    let mut environment = BTreeMap::new();
+    for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(PackliftError::Message(
+                "Write each environment variable as NAME=VALUE.".into(),
+            ));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let mut chars = key.chars();
+        let valid_key = chars
+            .next()
+            .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+            && chars.all(|character| character == '_' || character.is_ascii_alphanumeric());
+        if !valid_key || value.contains(char::is_control) {
+            return Err(PackliftError::Message(
+                "Use valid environment variable names and single-line values.".into(),
+            ));
+        }
+        if matches!(
+            key,
+            "WINEPREFIX" | "XDG_DATA_HOME" | "GAMEID" | "PROTONPATH" | "UMU_FOLDERS_PATH"
+        ) {
+            return Err(PackliftError::Message(format!(
+                "Packlift manages {key}; remove it from the custom environment variables."
+            )));
+        }
+        environment.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(environment)
 }
 
 pub fn appimage_offset(path: &Path) -> Result<Option<u64>> {
@@ -4024,6 +4090,9 @@ fn system_launchers(
 }
 
 fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
+    const MAX_UNPACKED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+    const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+
     let mut probe = fs::File::open(path)?;
     let mut magic = [0_u8; 6];
     let count = std::io::Read::read(&mut probe, &mut magic)?;
@@ -4037,8 +4106,18 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
     };
     let mut archive = tar::Archive::new(input);
     let mut executable_files = Vec::new();
+    let mut symlinks = Vec::new();
+    let root = destination.canonicalize()?;
+    let mut unpacked_bytes = 0_u64;
+    let mut entry_count = 0_usize;
     for entry in archive.entries()? {
         let mut entry = entry?;
+        entry_count += 1;
+        if entry_count > MAX_ARCHIVE_ENTRIES {
+            return Err(PackliftError::Message(
+                "The archive contains too many files (limit: 100,000).".into(),
+            ));
+        }
         let relative = entry.path()?.into_owned();
         if relative.as_os_str().is_empty()
             || relative.is_absolute()
@@ -4053,16 +4132,48 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
                 "The archive contains an invalid file name.".into(),
             ));
         }
-        let target = destination.join(relative);
+        let target = destination.join(&relative);
         let kind = entry.header().entry_type();
         if kind.is_dir() {
             fs::create_dir_all(&target)?;
+            continue;
+        }
+        if kind.is_symlink() {
+            let Some(link) = entry.link_name()? else {
+                return Err(PackliftError::Message(
+                    "The archive contains an invalid symbolic link.".into(),
+                ));
+            };
+            resolve_archive_link(&relative, &link).ok_or_else(|| {
+                PackliftError::Message(
+                    "The archive contains a symbolic link that points outside its folder.".into(),
+                )
+            })?;
+            symlinks.push((target, link.into_owned()));
             continue;
         }
         if !kind.is_file() {
             return Err(PackliftError::Message(
                 "The archive contains a link or special file. Use an AppImage or a system package."
                     .into(),
+            ));
+        }
+        let size = entry.header().size()?;
+        unpacked_bytes = unpacked_bytes.checked_add(size).ok_or_else(|| {
+            PackliftError::Message("The archive expands beyond Packlift's 4 GiB limit.".into())
+        })?;
+        if unpacked_bytes > MAX_UNPACKED_BYTES {
+            return Err(PackliftError::Message(
+                "The archive expands beyond Packlift's 4 GiB limit.".into(),
+            ));
+        }
+        let parent = target.parent().ok_or_else(|| {
+            PackliftError::Message("The archive contains an invalid file name.".into())
+        })?;
+        fs::create_dir_all(parent)?;
+        if !parent.canonicalize()?.starts_with(&root) {
+            return Err(PackliftError::Message(
+                "The archive contains a path that escapes its destination.".into(),
             ));
         }
         let mode = entry.header().mode().unwrap_or(0);
@@ -4084,7 +4195,49 @@ fn unpack_archive(path: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
             ));
         }
     }
+    for (path, link) in symlinks {
+        let parent = path.parent().ok_or_else(|| {
+            PackliftError::Message("The archive contains an invalid symbolic link.".into())
+        })?;
+        fs::create_dir_all(parent)?;
+        if !parent.canonicalize()?.starts_with(&root)
+            || fs::symlink_metadata(&path).is_ok()
+            || executable_files.iter().any(|file| file.starts_with(&path))
+        {
+            return Err(PackliftError::Message(
+                "The archive contains conflicting symbolic links.".into(),
+            ));
+        }
+        std::os::unix::fs::symlink(link, path)?;
+    }
     Ok(executable_files)
+}
+
+fn resolve_archive_link(link_path: &Path, link: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    if link.is_absolute() {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in link_path.parent()?.components() {
+        match component {
+            Component::Normal(value) => components.push(value.to_owned()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    for component in link.components() {
+        match component {
+            Component::Normal(value) => components.push(value.to_owned()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                components.pop()?;
+            }
+            _ => return None,
+        }
+    }
+    Some(components.into_iter().collect())
 }
 
 type ExecutableSnapshot = BTreeMap<PathBuf, (u64, i64, i64)>;
@@ -4348,47 +4501,98 @@ fn collect_exes(
     Ok(())
 }
 
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let target = dst.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
-        } else if file_type.is_symlink() {
-            if let Ok(link) = fs::read_link(entry.path()) {
-                let _ = std::os::unix::fs::symlink(link, &target);
-            }
-        } else {
-            fs::copy(entry.path(), &target)?;
-            if let Ok(meta) = entry.metadata() {
-                let _ = fs::set_permissions(
-                    &target,
-                    fs::Permissions::from_mode(meta.permissions().mode()),
-                );
-            }
-        }
-    }
-    Ok(())
-}
+fn copy_binary_payload(
+    source: &Path,
+    destination: &Path,
+    include_neighbors: bool,
+) -> Result<PathBuf> {
+    const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
+    const MAX_PAYLOAD_FILES: usize = 256;
 
-fn make_executables_in_payload(payload: &Path) {
-    if let Ok(entries) = fs::read_dir(payload) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                if let Ok(mut f) = fs::File::open(&p) {
-                    let mut h = [0u8; 4];
-                    if let Ok(4) = f.read(&mut h) {
-                        if &h == b"\x7fELF" {
-                            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
-                        }
-                    }
-                }
+    let parent = source
+        .parent()
+        .ok_or_else(|| PackliftError::Message("The executable has no parent folder.".into()))?
+        .canonicalize()?;
+    let source_real = source.canonicalize()?;
+    if !source_real.starts_with(&parent) || !source_real.is_file() {
+        return Err(PackliftError::Message(
+            "The selected executable must point to a file inside its folder.".into(),
+        ));
+    }
+    let name = source.file_name().ok_or_else(|| {
+        PackliftError::Message("The selected executable has no file name.".into())
+    })?;
+    let target = destination.join(name);
+    let source_size = fs::metadata(&source_real)?.len();
+    if source_size > MAX_PAYLOAD_BYTES {
+        return Err(PackliftError::Message(
+            "This executable is larger than Packlift's 512 MiB import limit.".into(),
+        ));
+    }
+    fs::copy(&source_real, &target)?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
+
+    if !include_neighbors {
+        return Ok(target);
+    }
+
+    let mut files = Vec::new();
+    let mut links = Vec::new();
+    let mut total_size = source_size;
+    for entry in fs::read_dir(&parent)? {
+        let entry = entry?;
+        if entry.file_name() == name {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_file() {
+            let size = entry.metadata()?.len();
+            total_size = total_size.checked_add(size).ok_or_else(|| {
+                PackliftError::Message("The selected folder is too large to import.".into())
+            })?;
+            files.push((path, entry.file_name(), size));
+        } else if kind.is_symlink() {
+            let Ok(link) = fs::read_link(&path) else {
+                continue;
+            };
+            if link.is_absolute()
+                || link
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                continue;
+            }
+            if fs::canonicalize(&path)
+                .is_ok_and(|resolved| resolved.starts_with(&parent) && resolved.is_file())
+            {
+                links.push((entry.file_name(), link));
             }
         }
+        if files.len() + links.len() > MAX_PAYLOAD_FILES {
+            return Err(PackliftError::Message(
+                "The selected folder contains too many files to import (limit: 256).".into(),
+            ));
+        }
+        if total_size > MAX_PAYLOAD_BYTES {
+            return Err(PackliftError::Message(
+                "Nearby files exceed Packlift's 512 MiB import limit.".into(),
+            ));
+        }
     }
+    for (path, name, _) in files {
+        let target = destination.join(name);
+        fs::copy(&path, &target)?;
+        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+    }
+    for (name, link) in links {
+        let target = destination.join(name);
+        if !target.exists() {
+            std::os::unix::fs::symlink(link, target)?;
+        }
+    }
+    Ok(target)
 }
 
 fn find_dir_binary(dir: &Path) -> Option<PathBuf> {

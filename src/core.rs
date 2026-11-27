@@ -59,6 +59,8 @@ pub struct Package {
     pub terminal: bool,
     pub digest: String,
     #[serde(skip)]
+    pub include_binary_siblings: bool,
+    #[serde(skip)]
     pub icon: Option<PathBuf>,
     #[serde(skip)]
     pub desktop_id: String,
