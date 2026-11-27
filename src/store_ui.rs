@@ -1181,7 +1181,7 @@ fn other_categories(window: &glib::WeakRef<adw::ApplicationWindow>) -> gtk::Box 
         let owner = window.clone();
         button.connect_clicked(move |_| {
             if let Some(window) = owner.upgrade() {
-                show_addons(&window, category, tr(title));
+                show_addons(&window, category, tr(title), icon);
             }
         });
         grid.append(&button);
@@ -1190,20 +1190,35 @@ fn other_categories(window: &glib::WeakRef<adw::ApplicationWindow>) -> gtk::Box 
     section
 }
 
-fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, title: &str) {
+fn show_addons(
+    window: &adw::ApplicationWindow,
+    category: store::AddonCategory,
+    title: &str,
+    icon: &'static str,
+) {
     let (toolbar, header) = detail_page_toolbar(window, title, PageReturn::capture(window));
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(18);
     body.set_margin_bottom(18);
     body.set_margin_start(18);
     body.set_margin_end(18);
-    body.append(&home_label(title, "title-2"));
+    let hero = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    hero.add_css_class("packlift-store-detail-hero");
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_pixel_size(24);
+    image.add_css_class("packlift-scope-icon");
+    image.set_valign(gtk::Align::Center);
+    hero.append(&image);
+    let heading = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    heading.append(&home_label(title, "title-2"));
     let introduction = home_label(
         tr("Flatpak add-ons from your configured repositories."),
         "dim-label",
     );
     introduction.set_max_width_chars(76);
-    body.append(&introduction);
+    heading.append(&introduction);
+    hero.append(&heading);
+    body.append(&hero);
     let loading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     loading.add_css_class("packlift-addon-loading");
     loading.set_margin_top(8);
@@ -1306,7 +1321,7 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
                                 }
                                 return glib::ControlFlow::Break;
                             };
-                            region.append(&addon_row(&owner, addon_group));
+                            region.append(&addon_row(&owner, icon, addon_group));
                         }
                         glib::ControlFlow::Continue
                     });
@@ -1322,8 +1337,9 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
 
 fn addon_row(
     window: &glib::WeakRef<adw::ApplicationWindow>,
+    icon: &str,
     mut choices: Vec<store::Addon>,
-) -> adw::ActionRow {
+) -> gtk::ListBoxRow {
     choices.sort_by_key(|addon| addon.remote.destination == Destination::System);
     let first = &choices[0];
     let scope_summary = choices
@@ -1342,43 +1358,63 @@ fn addon_row(
         })
         .collect::<Vec<_>>()
         .join(" · ");
-    let mut info = format!(
-        "{} · {scope_summary}\n{}",
-        first.remote.label(),
-        first.reference
-    );
-    if !first.description.is_empty() {
-        info = format!("{}\n{info}", first.description);
-    }
-    let row = adw::ActionRow::builder()
-        .use_markup(false)
-        .title(&first.name)
-        .subtitle(&info)
-        .title_lines(2)
-        .subtitle_lines(4)
+    let row = gtk::ListBoxRow::builder()
+        .activatable(false)
+        .selectable(false)
+        .focusable(false)
+        .tooltip_text(format!("{scope_summary}\n{}", first.reference))
         .build();
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    content.add_css_class("packlift-addon-row");
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_pixel_size(18);
+    image.add_css_class("packlift-scope-icon");
+    image.set_valign(gtk::Align::Center);
+    content.append(&image);
+
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    labels.set_hexpand(true);
+    labels.set_valign(gtk::Align::Center);
+    labels.append(&addon_label(&first.name, "heading"));
+    if !first.description.is_empty() {
+        labels.append(&addon_label(&first.description, "dim-label"));
+    }
+    let mut reference = first.reference.split('/');
+    let _ = reference.next(); // Flatpak reference kind, always "runtime" here.
+    let id = reference.next().unwrap_or(&first.reference);
+    let arch = reference.next().unwrap_or_default();
+    let branch = reference.next().unwrap_or_default();
+    labels.append(&addon_label(id, "packlift-addon-metadata"));
+    let context = format!("{} · {branch} · {arch}", first.remote.label());
+    let repository = addon_label(&context, "packlift-addon-metadata");
+    repository.set_tooltip_text(Some(&format!("{context}\n{scope_summary}")));
+    labels.append(&repository);
+    content.append(&labels);
+
     let pending: Vec<_> = choices
         .into_iter()
         .filter(|addon| !addon.installed)
         .collect();
     if pending.is_empty() {
-        let installed = text_button(tr("Installed"));
-        installed.set_sensitive(false);
+        let installed = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        installed.add_css_class("packlift-addon-installed");
         installed.set_valign(gtk::Align::Center);
-        row.add_suffix(&installed);
-    } else if pending.len() == 1 {
+        installed.append(&gtk::Image::from_icon_name("emblem-ok-symbolic"));
+        installed.append(&gtk::Label::new(Some(tr("Installed"))));
+        content.append(&installed);
+    } else if let [addon] = pending.as_slice() {
         let install = addon_install_button(tr("Install"));
-        install.set_tooltip_text(Some(match pending[0].remote.destination {
+        install.set_tooltip_text(Some(match addon.remote.destination {
             Destination::User => tr("Install for my account"),
             Destination::System => tr("Install for the system"),
         }));
-        queue_addon_install(window, &install, pending[0].clone());
-        row.add_suffix(&install);
+        queue_addon_install(window, &install, addon.clone());
+        content.append(&install);
     } else {
         let install = gtk::MenuButton::builder()
             .label(tr("Install"))
             .valign(gtk::Align::Center)
-            .width_request(96)
+            .width_request(100)
             .build();
         let popover = gtk::Popover::new();
         let options = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1391,26 +1427,37 @@ fn addon_row(
                 Destination::User => tr("Install for my account"),
                 Destination::System => tr("Install for the system"),
             };
-            let action = text_button(label);
+            let action = addon_install_button(label);
             action.set_halign(gtk::Align::Fill);
             queue_addon_install(window, &action, addon);
             options.append(&action);
         }
         popover.set_child(Some(&options));
         install.set_popover(Some(&popover));
-        row.add_suffix(&install);
+        content.append(&install);
     }
+    row.set_child(Some(&content));
     row
 }
 
+fn addon_label(text: &str, class: &str) -> gtk::Label {
+    let label = gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .single_line_mode(true)
+        .tooltip_text(text)
+        .build();
+    label.add_css_class(class);
+    label
+}
+
 fn addon_install_button(label: &str) -> gtk::Button {
-    let button = text_button(label);
-    button.set_valign(gtk::Align::Center);
-    button.set_size_request(96, -1);
-    if let Some(label) = button.child().and_downcast::<gtk::Label>() {
-        label.set_wrap(false);
-    }
-    button
+    gtk::Button::builder()
+        .label(label)
+        .valign(gtk::Align::Center)
+        .width_request(100)
+        .build()
 }
 
 fn queue_addon_install(
@@ -1436,6 +1483,7 @@ fn queue_addon_install(
         if crate::operations_ui::has_active_title(&title) {
             return;
         }
+        let original_label = button.label().unwrap_or_default();
         button.set_sensitive(false);
         button.set_label(tr("Queued"));
         let (completed, released) = (button.downgrade(), button.downgrade());
@@ -1452,13 +1500,98 @@ fn queue_addon_install(
                 }
             },
             move || {
-                if let Some(button) = released.upgrade() {
-                    button.set_label(tr("Install"));
+                if let Some(button) = released
+                    .upgrade()
+                    .filter(|button| button.label().as_deref() == Some(tr("Queued")))
+                {
+                    button.set_label(&original_label);
                     button.set_sensitive(true);
                 }
             },
         );
     });
+}
+
+#[cfg(test)]
+mod addon_tests {
+    use super::*;
+
+    #[test]
+    fn addon_rows_keep_actions_on_one_line_and_identify_runtime_variants() {
+        crate::with_gtk_test(|| {
+            let addon = store::Addon {
+                remote: store::flathub_remote(Destination::User),
+                reference: "runtime/org.freedesktop.Platform.codecs-extra/x86_64/25.08-extra"
+                    .into(),
+                name: "Codecs Extra Extension".into(),
+                description: "This extension contains extra codecs for the Flatpak platform."
+                    .into(),
+                installed: true,
+            };
+            let mut system = addon.clone();
+            system.remote.destination = Destination::System;
+            let window = glib::WeakRef::new();
+            let icon = "multimedia-player-symbolic";
+
+            let installed_row = addon_row(&window, icon, vec![addon.clone(), system.clone()]);
+            let content = installed_row.child().and_downcast::<gtk::Box>().unwrap();
+            let badge = content.last_child().and_downcast::<gtk::Box>().unwrap();
+            assert!(badge.has_css_class("packlift-addon-installed"));
+            let label = badge.last_child().and_downcast::<gtk::Label>().unwrap();
+            assert_eq!(label.text(), tr("Installed"));
+            assert!(!label.wraps());
+            let labels = badge.prev_sibling().and_downcast::<gtk::Box>().unwrap();
+            let metadata = labels.last_child().and_downcast::<gtk::Label>().unwrap();
+            assert_eq!(metadata.text(), "Flathub · 25.08-extra · x86_64");
+            let id = metadata
+                .prev_sibling()
+                .and_downcast::<gtk::Label>()
+                .unwrap();
+            assert_eq!(id.text(), "org.freedesktop.Platform.codecs-extra");
+            assert_eq!(id.ellipsize(), gtk::pango::EllipsizeMode::End);
+            assert!(id.is_single_line_mode());
+            assert!(installed_row.measure(gtk::Orientation::Horizontal, -1).0 <= 320);
+
+            system.installed = false;
+            let install_row = addon_row(&window, icon, vec![addon.clone(), system.clone()]);
+            let content = install_row.child().and_downcast::<gtk::Box>().unwrap();
+            let button = content.last_child().and_downcast::<gtk::Button>().unwrap();
+            let label = button.child().and_downcast::<gtk::Label>().unwrap();
+            assert_eq!(label.text(), tr("Install"));
+            assert!(!label.wraps());
+            assert_eq!(
+                button.tooltip_text().as_deref(),
+                Some(tr("Install for the system"))
+            );
+            assert!(install_row.measure(gtk::Orientation::Horizontal, -1).0 <= 320);
+
+            let mut user = addon;
+            user.installed = false;
+            let menu_row = addon_row(&window, icon, vec![user, system]);
+            let content = menu_row.child().and_downcast::<gtk::Box>().unwrap();
+            let menu = content
+                .last_child()
+                .and_downcast::<gtk::MenuButton>()
+                .unwrap();
+            assert_eq!(menu.label().as_deref(), Some(tr("Install")));
+            let options = menu
+                .popover()
+                .unwrap()
+                .child()
+                .and_downcast::<gtk::Box>()
+                .unwrap();
+            let mut action = options.first_child();
+            for expected in [tr("Install for my account"), tr("Install for the system")] {
+                let button = action.and_downcast::<gtk::Button>().unwrap();
+                let label = button.child().and_downcast::<gtk::Label>().unwrap();
+                assert_eq!(label.text(), expected);
+                assert!(!label.wraps());
+                action = button.next_sibling();
+            }
+            assert!(action.is_none());
+            assert!(menu_row.measure(gtk::Orientation::Horizontal, -1).0 <= 320);
+        });
+    }
 }
 
 fn show_collection(
@@ -1977,7 +2110,7 @@ fn show_app_details(
     body.append(&releases);
     let (sources_section, sources) = detail_list(tr("Sources"));
     body.append(&sources_section);
-    let project = detail_columns();
+    let project = gtk::Box::new(gtk::Orientation::Vertical, 12);
     project.set_visible(false);
     body.append(&project);
     let reviews = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -2336,27 +2469,8 @@ fn release_card(release: store::Release, preview: bool) -> gtk::Box {
     card
 }
 
-fn detail_columns() -> gtk::FlowBox {
-    gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .min_children_per_line(1)
-        .max_children_per_line(2)
-        .homogeneous(true)
-        .column_spacing(12)
-        .row_spacing(12)
-        .build()
-}
-
-fn append_detail_column(section: &gtk::FlowBox, widget: &impl IsA<gtk::Widget>) {
-    let child = gtk::FlowBoxChild::new();
-    child.set_focusable(false);
-    child.set_size_request(280, -1);
-    child.set_child(Some(widget));
-    section.append(&child);
-}
-
 fn show_project_details(
-    section: &gtk::FlowBox,
+    section: &gtk::Box,
     license: String,
     free_software: Option<bool>,
     installs: Option<u64>,
@@ -2388,7 +2502,7 @@ fn show_project_details(
                 "dim-label",
             ));
         }
-        append_detail_column(section, &card);
+        section.append(&card);
     }
     if !links.is_empty() {
         let rows = gtk::ListBox::new();
@@ -2438,18 +2552,58 @@ fn show_project_details(
             });
             rows.append(&row);
         }
-        append_detail_column(section, &rows);
+        section.append(&rows);
     }
     section.set_visible(section.first_child().is_some());
+}
+
+#[cfg(test)]
+#[test]
+fn project_details_use_only_the_height_of_the_license_and_links() {
+    crate::with_gtk_test(|| {
+        adw::init().unwrap();
+        let project = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        show_project_details(
+            &project,
+            "Apache-2.0".into(),
+            Some(true),
+            Some(11_644),
+            vec![
+                ("Flathub page", "https://flathub.org/apps/example".into()),
+                ("Project website", "https://example.org/".into()),
+                ("Issue tracker", "https://example.org/issues".into()),
+                ("Help", "https://example.org/help".into()),
+                ("Source code", "https://example.org/source".into()),
+            ],
+            &glib::WeakRef::new(),
+        );
+        let license = project.first_child().and_downcast::<gtk::Box>().unwrap();
+        let links = license
+            .next_sibling()
+            .and_downcast::<gtk::ListBox>()
+            .unwrap();
+        assert!(project.is_visible());
+        assert!(links.next_sibling().is_none());
+        for width in [320, 860] {
+            let (_, license_height, _, _) = license.measure(gtk::Orientation::Vertical, width);
+            let (_, links_height, _, _) = links.measure(gtk::Orientation::Vertical, width);
+            let (_, total_height, _, _) = project.measure(gtk::Orientation::Vertical, width);
+            assert!(links_height > license_height);
+            assert_eq!(
+                total_height,
+                license_height + links_height + project.spacing()
+            );
+        }
+    });
 }
 
 fn show_reviews(section: &gtk::Box, id: &str, version: String) {
     section.append(&home_label(tr("Reviews"), "title-3"));
     let status = home_label(tr("Loading reviews…"), "dim-label");
     section.append(&status);
-    let columns = detail_columns();
-    section.append(&columns);
-    let (status, columns) = (status.downgrade(), columns.downgrade());
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    section.append(&content);
+    let (status, content) = (status.downgrade(), content.downgrade());
     let id = id.to_owned();
     let locale = glib::language_names()
         .first()
@@ -2462,79 +2616,83 @@ fn show_reviews(section: &gtk::Box, id: &str, version: String) {
                 .and_then(|runner| store::reviews(&runner, &id, &locale, &version))
         },
         move |summary| {
-            let (Some(status), Some(columns)) = (status.upgrade(), columns.upgrade()) else {
+            let (Some(status), Some(content)) = (status.upgrade(), content.upgrade()) else {
                 return;
             };
             let Some(summary) = summary else {
                 status.set_text(tr("Reviews are unavailable right now."));
                 return;
             };
-            let total = summary
-                .ratings
-                .iter()
-                .copied()
-                .fold(0u64, u64::saturating_add);
-            status.set_visible(false);
-            if total == 0 && summary.reviews.is_empty() {
+            if summary.ratings.iter().all(|&count| count == 0) && summary.reviews.is_empty() {
                 status.set_text(tr("No reviews available."));
-                status.set_visible(true);
                 return;
             }
-            if total > 0 {
-                let card = gtk::Box::new(gtk::Orientation::Vertical, 7);
-                card.add_css_class("packlift-store-info-card");
-                card.set_valign(gtk::Align::Start);
-                let max = summary.ratings.into_iter().max().unwrap_or(1);
-                for (index, count) in summary.ratings.into_iter().enumerate().rev() {
-                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                    let bar = gtk::ProgressBar::new();
-                    bar.set_hexpand(true);
-                    bar.set_valign(gtk::Align::Center);
-                    bar.set_fraction(count as f64 / max as f64);
-                    let label = tr("{stars} stars · {count} ratings")
-                        .replace("{stars}", &(index + 1).to_string())
-                        .replace("{count}", &count.to_string());
-                    bar.set_tooltip_text(Some(&label));
-                    bar.update_property(&[gtk::accessible::Property::Label(&label)]);
-                    row.append(&bar);
-                    let stars = home_label(&"★".repeat(index + 1), "packlift-review-stars");
-                    stars.set_width_chars(5);
-                    row.append(&stars);
-                    card.append(&row);
-                }
-                let label = if total == 1 {
-                    tr("1 rating").to_owned()
-                } else {
-                    tr("{count} ratings").replace("{count}", &total.to_string())
-                };
-                card.append(&home_label(&label, "dim-label"));
-                append_detail_column(&columns, &card);
-            }
-            let mut reviews = summary.reviews.into_iter();
-            if let Some(first) = reviews.next() {
-                let list = gtk::ListBox::new();
-                list.set_selection_mode(gtk::SelectionMode::None);
-                list.set_valign(gtk::Align::Start);
-                list.add_css_class("boxed-list");
-                let row = gtk::ListBoxRow::builder()
-                    .activatable(false)
-                    .child(&review_card(first))
-                    .build();
-                list.append(&row);
-                let more = reviews.collect::<Vec<_>>();
-                if !more.is_empty() {
-                    let expander = adw::ExpanderRow::builder()
-                        .title(tr("More reviews"))
-                        .build();
-                    for review in more {
-                        expander.add_row(&review_card(review));
-                    }
-                    list.append(&expander);
-                }
-                append_detail_column(&columns, &list);
-            }
+            status.set_visible(false);
+            populate_reviews(&content, summary);
         },
     );
+}
+
+fn populate_reviews(content: &gtk::Box, summary: store::ReviewSummary) {
+    let total = summary.ratings.into_iter().fold(0u64, u64::saturating_add);
+    if total > 0 {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 7);
+        card.add_css_class("packlift-store-info-card");
+        let star_width = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+        let max = summary.ratings.into_iter().max().unwrap_or(1);
+        for (index, count) in summary.ratings.into_iter().enumerate().rev() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let bar = gtk::ProgressBar::new();
+            bar.set_hexpand(true);
+            bar.set_valign(gtk::Align::Center);
+            bar.set_fraction(count as f64 / max as f64);
+            let label = tr("{stars} stars · {count} ratings")
+                .replace("{stars}", &(index + 1).to_string())
+                .replace("{count}", &count.to_string());
+            bar.set_tooltip_text(Some(&label));
+            bar.update_property(&[gtk::accessible::Property::Label(&label)]);
+            row.append(&bar);
+            let stars = gtk::Label::new(Some(&"★".repeat(index + 1)));
+            stars.set_xalign(0.0);
+            stars.add_css_class("packlift-review-stars");
+            star_width.add_widget(&stars);
+            row.append(&stars);
+            card.append(&row);
+        }
+        let label = if total == 1 {
+            tr("1 rating").to_owned()
+        } else {
+            tr("{count} ratings").replace("{count}", &total.to_string())
+        };
+        card.append(&home_label(&label, "dim-label"));
+        content.append(&card);
+    }
+    let mut reviews = summary.reviews.into_iter();
+    let Some(first) = reviews.next() else {
+        content.append(&home_label(
+            tr("No written reviews available."),
+            "dim-label",
+        ));
+        return;
+    };
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+    list.add_css_class("boxed-list");
+    let row = gtk::ListBoxRow::builder()
+        .activatable(false)
+        .child(&review_card(first))
+        .build();
+    list.append(&row);
+    if reviews.len() != 0 {
+        let expander = adw::ExpanderRow::builder()
+            .title(tr("More reviews"))
+            .build();
+        for review in reviews {
+            expander.add_row(&review_card(review));
+        }
+        list.append(&expander);
+    }
+    content.append(&list);
 }
 
 fn review_card(review: store::AppReview) -> gtk::Box {
@@ -2570,6 +2728,66 @@ fn review_card(review: store::AppReview) -> gtk::Box {
         card.append(&body);
     }
     card
+}
+
+#[cfg(test)]
+#[test]
+fn review_comments_follow_the_ratings_without_reserved_space() {
+    crate::with_gtk_test(|| {
+        adw::init().unwrap();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let comment = |body: &str| store::AppReview {
+            stars: 5,
+            title: "Works well".into(),
+            body: body.into(),
+            author: "Reviewer".into(),
+            timestamp: None,
+        };
+        populate_reviews(
+            &content,
+            store::ReviewSummary {
+                ratings: [5, 0, 0, 4, 16],
+                reviews: vec![
+                    comment(&"This is a long comment about the application. ".repeat(20)),
+                    comment("This comment can be opened with More reviews."),
+                ],
+            },
+        );
+        let ratings = content.first_child().and_downcast::<gtk::Box>().unwrap();
+        let list = ratings
+            .next_sibling()
+            .and_downcast::<gtk::ListBox>()
+            .unwrap();
+        let more = list
+            .row_at_index(1)
+            .and_downcast::<adw::ExpanderRow>()
+            .unwrap();
+        assert!(!more.is_expanded());
+        for width in [320, 860] {
+            let (_, ratings_height, _, _) = ratings.measure(gtk::Orientation::Vertical, width);
+            let (_, list_height, _, _) = list.measure(gtk::Orientation::Vertical, width);
+            let (_, total_height, _, _) = content.measure(gtk::Orientation::Vertical, width);
+            assert_eq!(
+                total_height,
+                ratings_height + list_height + content.spacing()
+            );
+        }
+
+        let ratings_only = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        populate_reviews(
+            &ratings_only,
+            store::ReviewSummary {
+                ratings: [5, 0, 0, 4, 16],
+                reviews: Vec::new(),
+            },
+        );
+        let message = ratings_only
+            .last_child()
+            .and_downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(message.text(), tr("No written reviews available."));
+        assert_eq!(message.prev_sibling(), ratings_only.first_child());
+    });
 }
 
 fn merge_catalog_remotes(user: Vec<Remote>, system: Vec<Remote>) -> Vec<Remote> {

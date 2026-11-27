@@ -101,6 +101,9 @@ fn main() -> glib::ExitCode {
                  .packlift-store-skeleton-icon { border-radius: 10px; background: alpha(@window_fg_color, 0.09); }
                  .packlift-store-skeleton-line { border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
                  .packlift-addon-loading { padding: 18px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
+                 .packlift-addon-row { padding: 12px 14px; }
+                 .packlift-addon-metadata { font-size: 0.85em; opacity: 0.75; }
+                 .packlift-addon-installed { padding: 6px 10px; border-radius: 99px; background: alpha(@success_color, 0.14); color: @success_color; font-weight: 600; }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
@@ -2529,6 +2532,15 @@ fn show_app_logs(parent: &adw::ApplicationWindow) {
 }
 
 #[cfg(test)]
+fn with_gtk_test(test: impl FnOnce() + Send + std::panic::UnwindSafe + 'static) {
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        eprintln!("GTK tests need a display. Run them with xvfb-run.");
+        return;
+    }
+    gtk::test_synced(test);
+}
+
+#[cfg(test)]
 mod package_review_tests {
     use super::*;
 
@@ -2540,15 +2552,7 @@ mod package_review_tests {
         body: gtk::Box,
     }
 
-    fn fixture() -> Option<ReviewFixture> {
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            eprintln!("GTK review tests need a display; run them with xvfb-run.");
-            return None;
-        }
-        if gtk::init().is_err() {
-            eprintln!("GTK review tests need a display; run them with xvfb-run.");
-            return None;
-        }
+    fn fixture() -> ReviewFixture {
         let app = adw::Application::builder()
             .application_id("io.github.luis_gustavo_git_hub.Packlift.ReviewTest")
             .build();
@@ -2560,13 +2564,13 @@ mod package_review_tests {
         let scroll = package_review_scroll(&body);
         toolbar.set_content(Some(&scroll));
         window.set_content(Some(&toolbar));
-        Some(ReviewFixture {
+        ReviewFixture {
             app,
             window,
             toolbar,
             scroll,
             body,
-        })
+        }
     }
 
     fn widget_is_descendant_of(widget: &gtk::Widget, ancestor: &gtk::Widget) -> bool {
@@ -2598,7 +2602,11 @@ mod package_review_tests {
 
     #[test]
     fn package_analysis_success_and_error_remain_visible_in_original_scroll() {
-        let Some(fixture) = fixture() else { return };
+        with_gtk_test(check_package_review);
+    }
+
+    fn check_package_review() {
+        let fixture = fixture();
         let package = Package {
             kind: "binary".into(),
             name: "Example application".into(),

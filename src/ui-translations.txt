@@ -83,6 +83,7 @@ Windows programs can access files in your home folder.|Programas Windows podem a
 Set up and install|Configurar e instalar|Configurar e instalar|Настроить и установить|配置并安装
 Continue|Continuar|Continuar|Продолжить|继续
 Install|Instalar|Instalar|Установить|安装
+Installed|Instalado|Instalado|Установлено|已安装
 Authorize this host setup command: {command}|Autorize este comando de configuração do sistema: {command}|Autoriza este comando de configuración del sistema: {command}|Разрешите выполнение команды настройки системы: {command}|授权执行此系统配置命令：{command}
 Restart required.|É preciso reiniciar o sistema.|Hay que reiniciar el sistema.|Требуется перезагрузка системы.|需要重启系统。
 Toolbx setup|Configuração do Toolbx|Configuración de Toolbx|Настройка Toolbx|配置 Toolbx
@@ -487,6 +488,7 @@ Reviews|Avaliações|||
 Loading reviews…|Carregando avaliações…|||
 Reviews are unavailable right now.|As avaliações estão indisponíveis no momento.|||
 No reviews available.|Nenhuma avaliação disponível.|||
+No written reviews available.|Nenhum comentário disponível.|No hay comentarios disponibles.|Письменных отзывов нет.|暂无文字评价。
 {stars} stars · {count} ratings|{stars} estrelas · {count} avaliações|||
 1 rating|1 avaliação|||
 {count} ratings|{count} avaliações|||
