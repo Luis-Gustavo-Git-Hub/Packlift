@@ -57,10 +57,27 @@ fn show_host_access_dialog(parent: &adw::ApplicationWindow) {
 }
 
 fn main() -> glib::ExitCode {
+    let background_updates = std::env::args().any(|argument| argument == "--background-updates");
     let app = adw::Application::builder()
-        .application_id(APP_ID)
+        .application_id(if background_updates {
+            "io.github.luis_gustavo_git_hub.Packlift.Background"
+        } else {
+            APP_ID
+        })
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
+    app.add_main_option(
+        "background-updates",
+        glib::Char::from(0_u8),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Check and install updates in the background",
+        None,
+    );
+
+    if !background_updates {
+        updates_ui::ensure_background_autostart();
+    }
 
     app.connect_startup(|_| {
         if let Some(display) = gtk::gdk::Display::default() {
@@ -175,8 +192,16 @@ fn main() -> glib::ExitCode {
         });
     });
     app.add_action(&open_flatpak);
-    app.connect_startup(search_provider::register);
-    app.connect_activate(build_home);
+    if !background_updates {
+        app.connect_startup(search_provider::register);
+    }
+    app.connect_activate(move |app| {
+        if background_updates {
+            updates_ui::run_background(app);
+        } else {
+            build_home(app);
+        }
+    });
     app.connect_open(|app, files, _hint| {
         for file in files {
             if let Some(path) = file.path() {
@@ -1272,6 +1297,9 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     loading.append(&explanation);
     let progress = gtk::ProgressBar::new();
     progress.set_show_text(true);
+    progress.update_property(&[gtk::accessible::Property::Label(tr(
+        "Package analysis progress",
+    ))]);
     progress.set_text(Some(tr("Calculating checksum…")));
     loading.append(&progress);
     let cancel = text_button(tr("Cancel analysis"));

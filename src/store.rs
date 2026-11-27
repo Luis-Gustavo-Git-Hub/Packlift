@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashSet},
     fs,
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, SystemTime},
 };
@@ -1648,17 +1648,31 @@ fn fetch_with_timeout(
             return Ok(cached);
         }
     }
+    let cached = post
+        .is_none()
+        .then(|| stale_store_response(url, max_bytes))
+        .flatten();
     #[cfg(feature = "gui")]
     if !gio::NetworkMonitor::default().is_network_available() {
+        if let Some(cached) = cached {
+            return Ok(cached);
+        }
         return Err(PackliftError::Message(
             "No network connection is available. Reconnect and try again.".into(),
         ));
     }
+    let etag_path = post.is_none().then(|| store_etag_path(url));
     let mut last_error = None;
     for attempt in 0..3_u32 {
-        match fetch_once(runner, url, post, seconds, max_bytes) {
+        match fetch_once(runner, url, post, seconds, max_bytes, etag_path.as_deref()) {
             Ok(bytes) => {
                 if post.is_none() {
+                    if bytes.is_empty() {
+                        if let Some(cached) = cached.as_deref() {
+                            cache_store_response(url, cached);
+                            return Ok(cached.to_vec());
+                        }
+                    }
                     cache_store_response(url, &bytes);
                 }
                 return Ok(bytes);
@@ -1679,6 +1693,9 @@ fn fetch_with_timeout(
             }
         }
     }
+    if let Some(cached) = cached {
+        return Ok(cached);
+    }
     Err(last_error.unwrap_or_else(|| PackliftError::Message("The request failed.".into())))
 }
 
@@ -1694,24 +1711,42 @@ fn store_cache_path(url: &str) -> PathBuf {
 }
 
 fn cached_store_response(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    store_response(url, max_bytes, Some(Duration::from_secs(30 * 60)))
+}
+
+fn stale_store_response(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    store_response(url, max_bytes, None)
+}
+
+fn store_response(url: &str, max_bytes: u64, max_age: Option<Duration>) -> Option<Vec<u8>> {
     let path = store_cache_path(url);
     let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.file_type().is_file()
-        || metadata.len() > max_bytes
-        || SystemTime::now()
-            .duration_since(metadata.modified().ok()?)
-            .ok()?
-            > Duration::from_secs(30 * 60)
-    {
+    let expired = match max_age {
+        Some(max_age) => {
+            SystemTime::now()
+                .duration_since(metadata.modified().ok()?)
+                .ok()?
+                > max_age
+        }
+        None => false,
+    };
+    if !metadata.file_type().is_file() || metadata.len() > max_bytes || expired {
         return None;
     }
     fs::read(path).ok()
+}
+
+fn store_etag_path(url: &str) -> PathBuf {
+    store_cache_path(url).with_extension("etag")
 }
 
 fn cache_store_response(url: &str, bytes: &[u8]) {
     let path = store_cache_path(url);
     let Some(parent) = path.parent() else { return };
     if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    if !fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.file_type().is_dir()) {
         return;
     }
     #[cfg(unix)]
@@ -1726,7 +1761,46 @@ fn cache_store_response(url: &str, bytes: &[u8]) {
             .map_or(0, |duration| duration.as_nanos())
     ));
     if fs::write(&temp, bytes).is_ok() {
-        let _ = fs::rename(temp, path);
+        let _ = fs::rename(temp, &path);
+        prune_store_cache(parent);
+    }
+}
+
+fn prune_store_cache(directory: &Path) {
+    const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+    const MAX_ENTRIES: usize = 512;
+    const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    let Ok(metadata) = fs::symlink_metadata(directory) else {
+        return;
+    };
+    if !metadata.file_type().is_dir() {
+        return;
+    }
+    let now = SystemTime::now();
+    let mut entries = fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            if !metadata.file_type().is_file() {
+                return None;
+            }
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if now.duration_since(modified).unwrap_or_default() > MAX_AGE {
+                let _ = fs::remove_file(entry.path());
+                return None;
+            }
+            Some((modified, metadata.len(), entry.path()))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(modified, _, _)| *modified);
+    let mut total_bytes = entries.iter().map(|(_, size, _)| *size).sum::<u64>();
+    while entries.len() > MAX_ENTRIES || total_bytes > MAX_BYTES {
+        let (_, size, path) = entries.remove(0);
+        let _ = fs::remove_file(path);
+        total_bytes = total_bytes.saturating_sub(size);
     }
 }
 
@@ -1736,6 +1810,7 @@ fn fetch_once(
     post: Option<&str>,
     seconds: u32,
     max_bytes: u64,
+    etag_path: Option<&Path>,
 ) -> Result<Vec<u8>> {
     if !runner.available("curl") {
         if !runner.available("wget") {
@@ -1784,6 +1859,24 @@ fn fetch_once(
         "--max-filesize".into(),
         max_bytes.to_string(),
     ];
+    if let Some(path) = etag_path {
+        let metadata = fs::symlink_metadata(path);
+        let safe_to_save = metadata
+            .as_ref()
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+            || metadata
+                .as_ref()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        if safe_to_save {
+            if metadata
+                .as_ref()
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+            {
+                args.extend(["--etag-compare".into(), path.to_string_lossy().into_owned()]);
+            }
+            args.extend(["--etag-save".into(), path.to_string_lossy().into_owned()]);
+        }
+    }
     if let Some(post) = post {
         args.extend([
             "--header".into(),
@@ -1825,6 +1918,41 @@ fn valid_path_component(component: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_cache_pruning_removes_stale_and_excess_entries_without_following_links() {
+        let root = std::env::temp_dir().join(format!(
+            "packlift-store-cache-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let cache = root.join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        let stale = cache.join("stale");
+        let file = fs::File::create(&stale).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60)),
+        )
+        .unwrap();
+        for index in 0..520 {
+            fs::write(cache.join(format!("entry-{index}")), b"cached").unwrap();
+        }
+        let target = root.join("outside");
+        fs::write(&target, b"keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, cache.join("linked-entry")).unwrap();
+
+        prune_store_cache(&cache);
+
+        assert!(!stale.exists());
+        assert!(fs::read_dir(&cache).unwrap().count() <= 513);
+        assert_eq!(fs::read(target).unwrap(), b"keep");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn configured_remote_results_keep_the_exact_branch_and_architecture() {
