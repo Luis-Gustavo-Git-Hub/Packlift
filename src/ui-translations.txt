@@ -378,3 +378,135 @@ Packlift does not manage permissions for this installation type.|O Packlift não
 Installation scope and updates are handled by Flatpak.|O escopo da instalação e as atualizações são gerenciados pelo Flatpak.|Flatpak administra el alcance de instalación y las actualizaciones.|Область установки и обновления управляются Flatpak.|安装范围和更新由 Flatpak 管理。
 This app has no additional settings in Packlift.|Este aplicativo não tem outras configurações no Packlift.|Esta aplicación no tiene más ajustes en Packlift.|У этого приложения нет дополнительных настроек в Packlift.|此应用在 Packlift 中没有其他设置。
 Loading permissions…|Carregando permissões…|Cargando permisos…|Загрузка разрешений…|正在加载权限…
+Operations|Operações|||
+No recent operations|Nenhuma operação recente|||
+Queued|Na fila|||
+Completed|Concluído|||
+Failed|Falhou|||
+Canceled|Cancelado|||
+In the operations queue|Na fila de operações|||
+Updating AppImages|Atualizando AppImages|||
+Loading library…|Carregando biblioteca…|||
+Favorites|Favoritos|||
+Remove from favorites|Remover dos favoritos|||
+Add to favorites|Adicionar aos favoritos|||
+Saved on this device|Salvos neste dispositivo|||
+No favorites yet|Nenhum favorito ainda|||
+Flathub favorites|Favoritos do Flathub|||
+Could not load permissions.|Não foi possível carregar as permissões.|No se pudieron cargar los permisos.|Не удалось загрузить разрешения.|无法加载权限。
+Try again|Tentar novamente|Volver a intentar|Повторить попытку|重试
+Preparing the operation|Preparando a operação|||
+Packlift is getting everything ready.|O Packlift está preparando os próximos passos.|||
+Installing Flatpak components|Instalando componentes Flatpak|||
+Downloading and deploying the app and any required runtimes.|Baixando e instalando o app e os runtimes necessários.|||
+Updating Flatpak components|Atualizando componentes Flatpak|||
+Downloading and applying new versions of apps and runtimes.|Baixando e aplicando novas versões de apps e runtimes.|||
+Removing a Flatpak component|Removendo componente Flatpak|||
+Removing the selected installation from Flatpak.|Removendo a instalação selecionada do Flatpak.|||
+Preparing Flatpak installation|Preparando a instalação do Flatpak|||
+Checking the selected repository and resolving dependencies.|Verificando o repositório escolhido e as dependências.|||
+Checking for Flatpak updates|Verificando atualizações de Flatpak|||
+Looking for new versions in the configured repositories.|Procurando novas versões nos repositórios configurados.|||
+Updating Flatpaks for my account|Atualizando Flatpaks da minha conta|||
+Checking and applying updates in your personal installation.|Verificando e aplicando atualizações na sua instalação pessoal.|||
+Updating system Flatpaks|Atualizando Flatpaks do sistema|||
+Checking and applying updates in the shared installation.|Verificando e aplicando atualizações na instalação compartilhada.|||
+Finishing the installation|Finalizando a instalação|||
+Checking that the app is available to open.|Verificando se o app já pode ser aberto.|||
+Checking for AppImage updates|Verificando atualizações de AppImage|||
+Looking for a newer version of the installed file.|Procurando uma versão mais recente do arquivo instalado.|||
+Updating AppImage files|Atualizando arquivos AppImage|||
+Downloading and replacing the installed file.|Baixando a nova versão e substituindo o arquivo instalado.|||
+Reading the package metadata and identifying its format.|Lendo os dados do pacote e identificando o formato.|||
+Checking the package architecture and how it can run on this system.|Verificando a arquitetura do pacote e como executá-lo neste sistema.|||
+Setting up the runtime or container required to run the app.|Preparando o runtime ou contêiner que o app precisa para funcionar.|||
+Fetching files the app needs to run.|Baixando os arquivos necessários para executar o app.|||
+Running the Windows installer|Executando o instalador do Windows|||
+Follow the instructions in the installer if it asks for input.|Siga as instruções do instalador se ele pedir alguma ação.|||
+Finding the installed program|Localizando o programa instalado|||
+Looking for the executable to add to your library.|Procurando o executável para adicionar à biblioteca.|||
+Adding the app to your desktop menu.|Adicionando o app ao menu do sistema.|||
+Adding the app to your library|Adicionando o app à biblioteca|||
+Saving the information Packlift needs to open the app.|Salvando as informações para abrir o app pelo Packlift.|||
+Copying the program files to the selected installation.|Copiando os arquivos do programa para a instalação selecionada.|||
+Removing the program|Removendo o programa|||
+Removing the installation and its shortcuts.|Removendo a instalação e seus atalhos.|||
+Component {current} of {total}|Componente {current} de {total}|||
+{percent}% of this component|{percent}% deste componente|||
+Waiting in queue · Position {position}|Aguardando na fila · Posição {position}|||
+Automatic Flatpak updates|Atualizações automáticas de Flatpak|||
+Automatic AppImage updates|Atualizações automáticas de AppImage|||
+Updates apps and runtimes while Packlift is open.|Atualiza apps e runtimes enquanto o Packlift está aberto.|||
+Updates supported AppImages while Packlift is open.|Atualiza AppImages compatíveis enquanto o Packlift está aberto.|||
+Other categories|Outras categorias|||
+New & Updated|Novos e atualizados|||
+Codecs|Codecs|||
+Fonts|Fontes|||
+Hardware drivers|Drivers de hardware|||
+Input sources|Métodos de entrada|||
+Localization|Localização|||
+Flatpak add-ons from your configured repositories.|Complementos Flatpak dos repositórios configurados.|||
+Checking configured repositories. This may take a little while.|Verificando os repositórios configurados. Isso pode levar um momento.|||
+Some repositories could not be reached; showing available add-ons.|Não foi possível acessar alguns repositórios; mostrando os complementos disponíveis.|||
+Preparing the add-on list…|Preparando a lista de complementos…|||
+No Flatpak add-ons found in this category.|Nenhum complemento Flatpak encontrado nesta categoria.|||
+Installing Flatpak add-on|Instalando complemento Flatpak|||
+Account|Conta|||
+Available|Disponível|||
+Install for my account|Instalar para minha conta|||
+Install for the system|Instalar no sistema|||
+Analyzing package…|Analisando o pacote…|||
+Reading package metadata and calculating its checksum.|Lendo metadados do pacote e calculando a soma de verificação.|||
+Calculating checksum…|Calculando soma de verificação…|||
+Cancel analysis|Cancelar análise|||
+The package could not be analyzed.|Não foi possível analisar o pacote.|||
+Open Flathub in Browser|Abrir Flathub no navegador|Abrir Flathub en el navegador|Открыть Flathub в браузере|在浏览器中打开 Flathub
+Additional runtimes may need to be downloaded.|Pode ser necessário baixar runtimes adicionais.|||
+Works on phones, tablets and desktops.|Funciona em celulares, tablets e computadores.|||
+Designed primarily for desktops.|Feito principalmente para computadores.|||
+Minimum recommended age.|Idade mínima recomendada.|||
+Requests access to your home folder or other system files.|Pede acesso à pasta pessoal ou a outros arquivos do sistema.|||
+See what the app can access.|Veja o que o aplicativo pode acessar.|||
+Show more|Mostrar mais|||
+Show less|Mostrar menos|||
+Reviews|Avaliações|||
+Loading reviews…|Carregando avaliações…|||
+Reviews are unavailable right now.|As avaliações estão indisponíveis no momento.|||
+No reviews available.|Nenhuma avaliação disponível.|||
+{stars} stars · {count} ratings|{stars} estrelas · {count} avaliações|||
+1 rating|1 avaliação|||
+{count} ratings|{count} avaliações|||
+More reviews|Mais avaliações|||
+{count} out of 5 stars|{count} de 5 estrelas|||
+Installation will start when the current operation finishes.|A instalação começa quando a operação atual terminar.|||
+Already installed|Já instalado|||
+This version of {name} is already installed.|Esta versão de {name} já está instalada.|||
+Close all Packlift windows and open it again from your app menu to use this version.|Feche todas as janelas do Packlift e abra o app novamente pelo menu para usar esta versão.|||
+Loading apps…|Carregando aplicativos…|||
+Include nearby files|Incluir arquivos próximos|||
+Copy files beside this executable only if the program needs them (up to 512 MiB).|Copie arquivos ao lado deste executável somente se o programa precisar deles (até 512 MiB).|||
+No apps found in this category.|Nenhum aplicativo encontrado nesta categoria.|||
+Could not load apps in this category.|Não foi possível carregar os aplicativos desta categoria.|||
+Windows launch options|Opções de inicialização do Windows|||
+These settings also apply to the shortcut in your app menu.|Estas opções também valem para o atalho no menu de aplicativos.|||
+Executable|Executável|||
+Working directory|Pasta de trabalho|||
+Choose working directory…|Escolher pasta de trabalho…|||
+Launch arguments|Argumentos de inicialização|||
+Disable DXVK (Proton)|Desativar DXVK (Proton)|||
+Disable VKD3D-Proton (Proton)|Desativar VKD3D-Proton (Proton)|||
+Disable Esync (Proton)|Desativar Esync (Proton)|||
+Disable Fsync (Proton)|Desativar Fsync (Proton)|||
+These compatibility switches are used by Proton. They do not change the selected runtime.|Estas opções de compatibilidade são usadas pelo Proton. Elas não trocam o runtime selecionado.|||
+Environment variables|Variáveis de ambiente|||
+Write one NAME=VALUE per line, for example DXVK_HUD=fps. These variables apply only to this game.|Escreva uma variável NOME=VALOR por linha, por exemplo DXVK_HUD=fps. Elas valem somente para este jogo.|||
+Write each environment variable as NAME=VALUE.|Escreva cada variável de ambiente como NOME=VALOR.|||
+Use valid environment variable names and single-line values.|Use nomes válidos de variáveis e valores em uma linha.|||
+Leave the working directory blank to use the default. Put arguments that contain spaces in quotes.|Deixe a pasta de trabalho em branco para usar a padrão. Coloque argumentos com espaços entre aspas.|||
+Loading runtimes…|Carregando runtimes…|||
+Could not load Windows runtimes.|Não foi possível carregar os runtimes do Windows.|||
+Saving launch settings…|Salvando opções de inicialização…|||
+Launch settings saved.|Opções de inicialização salvas.|||
+Choose an existing folder for the working directory.|Escolha uma pasta de trabalho que exista.|||
+Check the quotes and characters in the launch arguments.|Confira as aspas e os caracteres nos argumentos de inicialização.|||
+That Proton version is no longer available. Choose another runtime in Settings.|Essa versão do Proton não está mais disponível. Escolha outro runtime nas configurações.|||

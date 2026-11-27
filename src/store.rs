@@ -1,11 +1,16 @@
 use std::{
     collections::{BTreeSet, HashSet},
+    fs,
     io::Read,
     path::PathBuf,
     thread,
+    time::{Duration, SystemTime},
 };
 
+#[cfg(feature = "gui")]
+use gio::prelude::NetworkMonitorExt;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     core::{PackliftError, Result},
@@ -51,13 +56,13 @@ impl Remote {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CatalogIcon {
     Flathub(Option<String>),
     AppStream(PathBuf),
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatalogApp {
     pub id: String,
     pub name: String,
@@ -76,7 +81,7 @@ pub struct StorePage {
     pub has_next: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AppDetails {
     pub developer: String,
     pub license: String,
@@ -90,6 +95,7 @@ pub struct AppDetails {
     pub age: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct Release {
     pub version: String,
     pub notes: String,
@@ -97,6 +103,7 @@ pub struct Release {
     pub timestamp: Option<i64>,
 }
 
+#[derive(Clone)]
 pub struct Screenshot {
     pub url: String,
     pub large_url: String,
@@ -137,7 +144,212 @@ pub fn remotes(runner: &Runner, destination: Destination) -> Result<Vec<Remote>>
     Ok(remotes)
 }
 
-fn flathub_remote(destination: Destination) -> Remote {
+#[derive(Clone, Copy)]
+pub enum AddonCategory {
+    Codecs,
+    Fonts,
+    Drivers,
+    Input,
+    Languages,
+}
+
+impl AddonCategory {
+    fn matches(self, id: &str) -> bool {
+        let id = id.to_ascii_lowercase();
+        let parts = id.split('.').collect::<Vec<_>>();
+        let has = |keys: &[&str]| parts.iter().any(|part| keys.contains(part));
+        match self {
+            Self::Codecs => has(&[
+                "ffmpeg",
+                "ffmpeg-full",
+                "codecs",
+                "codecs-extra",
+                "openh264",
+                "gstreamer",
+            ]),
+            Self::Fonts => has(&["font", "fonts"]),
+            Self::Drivers => {
+                id.starts_with("org.freedesktop.platform.")
+                    && has(&["gl", "gl32", "vaapi", "vulkanlayer"])
+            }
+            Self::Input => has(&["ibus", "fcitx", "fcitx5", "ime", "inputmethod"]),
+            Self::Languages => id.ends_with(".locale"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Addon {
+    pub remote: Remote,
+    pub reference: String,
+    pub name: String,
+    pub description: String,
+    pub installed: bool,
+}
+
+pub fn addons(runner: &Runner, category: AddonCategory) -> Result<(Vec<Addon>, bool)> {
+    let mut results = Vec::new();
+    let mut partial = false;
+    for destination in [Destination::User, Destination::System] {
+        let scope = destination.flag();
+        let remotes = match configured_remotes(runner, destination, false) {
+            Ok(remotes) => remotes,
+            Err(_) => {
+                partial = true;
+                continue;
+            }
+        };
+        if remotes.is_empty() {
+            continue;
+        }
+        let installed = runner.capture(
+            &[
+                "flatpak".into(),
+                "list".into(),
+                scope.into(),
+                "--all".into(),
+                "--columns=ref".into(),
+            ],
+            false,
+        );
+        let installed = match installed {
+            Ok(installed) => installed,
+            Err(_) => {
+                partial = true;
+                continue;
+            }
+        };
+        let installed: HashSet<_> = installed
+            .lines()
+            .map(|reference| {
+                reference
+                    .trim()
+                    .strip_prefix("runtime/")
+                    .unwrap_or(reference.trim())
+            })
+            .collect();
+        let parents: HashSet<_> = installed
+            .iter()
+            .map(|reference| reference.trim_start_matches("app/"))
+            .collect();
+        let mut seen = BTreeSet::new();
+        for batch in remotes.chunks(4) {
+            let outputs = std::thread::scope(|workers| {
+                let jobs: Vec<_> = batch
+                    .iter()
+                    .map(|remote| {
+                        let runner = runner.clone();
+                        let remote = remote.clone();
+                        workers.spawn(move || {
+                            let output = runner.capture(
+                                &[
+                                    "flatpak".into(),
+                                    "remote-ls".into(),
+                                    scope.into(),
+                                    "--runtime".into(),
+                                    "--all".into(),
+                                    "--columns=ref,name,description".into(),
+                                    "--".into(),
+                                    remote.name.clone(),
+                                ],
+                                false,
+                            );
+                            (remote, output)
+                        })
+                    })
+                    .collect();
+                jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>()
+            });
+            for output in outputs {
+                let (remote, output) = match output {
+                    Ok(result) => result,
+                    Err(_) => {
+                        partial = true;
+                        continue;
+                    }
+                };
+                let Ok(output) = output else {
+                    partial = true;
+                    continue;
+                };
+                results.extend(output.lines().filter_map(|line| {
+                    let mut fields = line.splitn(3, '\t');
+                    let reference = fields.next()?.strip_prefix("runtime/")?;
+                    let mut components = reference.split('/');
+                    let id = components.next()?;
+                    let arch = components.next()?;
+                    let branch = components.next()?;
+                    if !valid_app_id(id)
+                        || !valid_path_component(arch)
+                        || !valid_path_component(branch)
+                        || components.next().is_some()
+                        || !category.matches(id)
+                    {
+                        return None;
+                    }
+                    let present = installed.contains(reference);
+                    if matches!(category, AddonCategory::Languages) && !present {
+                        let base = id.strip_suffix(".Locale")?;
+                        if !parents.contains(format!("{base}/{arch}/{branch}").as_str()) {
+                            return None;
+                        }
+                    }
+                    if !seen.insert(reference.to_owned()) {
+                        return None;
+                    }
+                    let name = fields
+                        .next()
+                        .filter(|name| !name.is_empty() && *name != "-")
+                        .unwrap_or(id);
+                    Some(Addon {
+                        remote: remote.clone(),
+                        reference: format!("runtime/{reference}"),
+                        name: name.into(),
+                        description: fields
+                            .next()
+                            .filter(|description| *description != "-")
+                            .unwrap_or("")
+                            .into(),
+                        installed: present,
+                    })
+                }));
+            }
+        }
+    }
+    results.sort_by_cached_key(|addon| (addon.name.to_lowercase(), addon.reference.clone()));
+    Ok((results, partial))
+}
+
+pub fn install_addon(runner: &Runner, addon: &Addon) -> Result<()> {
+    let _operation = operation(&runner.data)?;
+    runner.write("Preparing Flatpak installation");
+    if !configured_remotes(runner, addon.remote.destination, false)?
+        .iter()
+        .any(|remote| remote.name == addon.remote.name && remote.url == addon.remote.url)
+    {
+        return Err(PackliftError::Message(
+            "The selected Flatpak repository changed. Open the store again.".into(),
+        ));
+    }
+    runner.run(
+        &[
+            "flatpak".into(),
+            "install".into(),
+            addon.remote.destination.flag().into(),
+            "--runtime".into(),
+            "--assumeyes".into(),
+            "--".into(),
+            addon.remote.name.clone(),
+            addon.reference.clone(),
+        ],
+        false,
+        true,
+        true,
+    )?;
+    Ok(())
+}
+
+pub fn flathub_remote(destination: Destination) -> Remote {
     Remote {
         name: String::new(),
         title: "Flathub".into(),
@@ -151,8 +363,8 @@ pub fn catalog_remotes(runner: &Runner, destination: Destination) -> Result<Vec<
     if !host_access_available() {
         return Err(PackliftError::HostAccessRequired);
     }
-    let remotes = remotes(runner, destination)
-        .unwrap_or_else(|_| vec![flathub_remote(destination)]);
+    let remotes =
+        remotes(runner, destination).unwrap_or_else(|_| vec![flathub_remote(destination)]);
     Ok(remotes)
 }
 
@@ -455,7 +667,7 @@ pub fn search(runner: &Runner, remote: &Remote, query: &str, page: usize) -> Res
     // complete remote just to return a small first page; use its AppStream
     // catalog when present and only fall back to remote-ls otherwise.
     if let Ok(Some(root)) = appstream_root(runner, remote) {
-        if let Some(mut results) = appstream_search(runner, &root, query, page).ok() {
+        if let Ok(mut results) = appstream_search(runner, &root, query, page) {
             for app in &mut results.apps {
                 if let Some(arch) = app.reference.split('/').nth(2) {
                     app.icon = Some(CatalogIcon::AppStream(root.join(arch).join("active/icons")));
@@ -489,7 +701,11 @@ fn appstream_search(
     for arch in ["x86_64", "aarch64", "i386", "arm"] {
         let path = root.join(arch).join("active/appstream.xml.gz");
         let bytes = match runner.capture_bytes_limited(
-            &["cat".into(), "--".into(), path.to_string_lossy().into_owned()],
+            &[
+                "cat".into(),
+                "--".into(),
+                path.to_string_lossy().into_owned(),
+            ],
             false,
             8 * 1024 * 1024,
         ) {
@@ -510,7 +726,10 @@ fn appstream_search(
             .descendants()
             .filter(|node| node.has_tag_name("component"))
         {
-            if component.attribute("type").is_some_and(|kind| kind != "desktop") {
+            if component
+                .attribute("type")
+                .is_some_and(|kind| kind != "desktop")
+            {
                 continue;
             }
             let Some(id) = component
@@ -611,22 +830,6 @@ pub fn discovery_page(runner: &Runner, collection: &str, page: usize) -> Result<
     })
 }
 
-pub fn discovery_apps(
-    runner: &Runner,
-    collection: &str,
-    installed: &BTreeSet<String>,
-) -> Vec<CatalogApp> {
-    discovery_page(runner, collection, 1)
-        .map(|page| {
-            page.apps
-                .into_iter()
-                .filter(|app| !installed.contains(&app.id))
-                .take(6)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
     let body = json!({"query": query, "page": page, "hits_per_page": PAGE_SIZE}).to_string();
     Ok(serde_json::from_slice(&fetch(
@@ -634,6 +837,24 @@ fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
         &format!("{FLATHUB_API}/search"),
         Some(&body),
     )?)?)
+}
+
+pub fn desktop_search(runner: &Runner, query: &str) -> Result<Vec<CatalogApp>> {
+    let body = json!({"query": query, "page": 1, "hits_per_page": 8}).to_string();
+    let response: Value = serde_json::from_slice(&fetch_with_timeout(
+        runner,
+        &format!("{FLATHUB_API}/search"),
+        Some(&body),
+        5,
+        512 * 1024,
+    )?)?;
+    Ok(response["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(flathub_catalog_app)
+        .take(8)
+        .collect())
 }
 
 fn flathub_catalog_app(hit: &Value) -> Option<CatalogApp> {
@@ -709,7 +930,7 @@ pub fn similar_apps(runner: &Runner, id: &str, category: &str) -> Result<Vec<Cat
         .collect())
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FlathubFacts {
     pub download_size: Option<u64>,
     pub installs_last_month: Option<u64>,
@@ -778,6 +999,80 @@ pub fn flathub_facts(runner: &Runner, app: &CatalogApp) -> FlathubFacts {
             .and_then(|stats| stats["installs_last_month"].as_u64()),
         permissions,
     }
+}
+
+pub struct ReviewSummary {
+    pub ratings: [u64; 5],
+    pub reviews: Vec<AppReview>,
+}
+
+pub struct AppReview {
+    pub stars: usize,
+    pub title: String,
+    pub body: String,
+    pub author: String,
+    pub timestamp: Option<i64>,
+}
+
+pub fn reviews(runner: &Runner, id: &str, locale: &str, version: &str) -> Option<ReviewSummary> {
+    if !valid_app_id(id) {
+        return None;
+    }
+    const ODRS: &str = "https://odrs.gnome.org/1.0/reviews/api";
+    let request = |url: &str, post: Option<&str>| -> Option<Value> {
+        let bytes = fetch_with_timeout(runner, url, post, 6, 512 * 1024).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    };
+    // Read-only reviews do not need a user identifier.
+    let body =
+        json!({"app_id": id, "locale": locale, "distro": "Linux", "version": version, "limit": 12})
+            .to_string();
+    let (ratings, reviews) = thread::scope(|tasks| {
+        let ratings = tasks.spawn(|| request(&format!("{ODRS}/ratings/{id}"), None));
+        let reviews = request(&format!("{ODRS}/fetch"), Some(&body));
+        (ratings.join().ok().flatten(), reviews)
+    });
+    let reviews = reviews.as_ref().and_then(Value::as_array);
+    if reviews.is_none() && ratings.is_none() {
+        return None;
+    }
+    let ratings = std::array::from_fn(|index| {
+        ratings
+            .as_ref()
+            .and_then(|entry| entry[format!("star{}", index + 1)].as_u64())
+            .unwrap_or(0)
+    });
+    let reviews = reviews
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let percent = entry["rating"]
+                .as_u64()
+                .filter(|value| (20..=100).contains(value))?;
+            let text = |key: &str, limit: usize| -> String {
+                entry[key]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .chars()
+                    .take(limit)
+                    .collect()
+            };
+            let title = text("summary", 160);
+            let body = text("description", 1600);
+            if title.is_empty() && body.is_empty() {
+                return None;
+            }
+            Some(AppReview {
+                stars: (percent as usize / 20).clamp(1, 5),
+                title,
+                body,
+                author: text("user_display", 80),
+                timestamp: entry["date_created"].as_f64().map(|value| value as i64),
+            })
+        })
+        .collect();
+    Some(ReviewSummary { ratings, reviews })
 }
 
 const APP_LINKS: [(&str, &str); 9] = [
@@ -1275,6 +1570,7 @@ pub fn install(runner: &Runner, remote: &Remote, app: &CatalogApp) -> Result<()>
         ));
     }
     let _operation = operation(&runner.data)?;
+    runner.write("Preparing Flatpak installation");
     let flag = remote.destination.flag();
     let name = if remote.name.is_empty() && remote.flathub {
         let available = configured_remotes(runner, remote.destination, false)?;
@@ -1347,6 +1643,100 @@ fn fetch_with_timeout(
     seconds: u32,
     max_bytes: u64,
 ) -> Result<Vec<u8>> {
+    if post.is_none() {
+        if let Some(cached) = cached_store_response(url, max_bytes) {
+            return Ok(cached);
+        }
+    }
+    #[cfg(feature = "gui")]
+    if !gio::NetworkMonitor::default().is_network_available() {
+        return Err(PackliftError::Message(
+            "No network connection is available. Reconnect and try again.".into(),
+        ));
+    }
+    let mut last_error = None;
+    for attempt in 0..3_u32 {
+        match fetch_once(runner, url, post, seconds, max_bytes) {
+            Ok(bytes) => {
+                if post.is_none() {
+                    cache_store_response(url, &bytes);
+                }
+                return Ok(bytes);
+            }
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    // Short exponential delay with bounded jitter avoids retry
+                    // bursts while keeping store failures responsive.
+                    let jitter = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.subsec_millis())
+                        % 350) as u64;
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        350 * (1 << attempt) + jitter,
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| PackliftError::Message("The request failed.".into())))
+}
+
+fn store_cache_path(url: &str) -> PathBuf {
+    let digest = Sha256::digest(url.as_bytes());
+    let key = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    crate::system::packlift_data_dir()
+        .join("store-cache")
+        .join(key)
+}
+
+fn cached_store_response(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    let path = store_cache_path(url);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.len() > max_bytes
+        || SystemTime::now()
+            .duration_since(metadata.modified().ok()?)
+            .ok()?
+            > Duration::from_secs(30 * 60)
+    {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn cache_store_response(url: &str, bytes: &[u8]) {
+    let path = store_cache_path(url);
+    let Some(parent) = path.parent() else { return };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    }
+    let temp = path.with_extension(format!(
+        "tmp-{}",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    if fs::write(&temp, bytes).is_ok() {
+        let _ = fs::rename(temp, path);
+    }
+}
+
+fn fetch_once(
+    runner: &Runner,
+    url: &str,
+    post: Option<&str>,
+    seconds: u32,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
     if !runner.available("curl") {
         if !runner.available("wget") {
             return Err(PackliftError::Message(
@@ -1357,9 +1747,9 @@ fn fetch_with_timeout(
             "wget".into(),
             "--no-config".into(),
             "--https-only".into(),
-            "--max-redirect=0".into(),
+            "--max-redirect=5".into(),
             "--timeout=8".into(),
-            "--tries=1".into(),
+            "--tries=3".into(),
             "--quiet".into(),
             "-O".into(),
             "-".into(),
@@ -1377,6 +1767,9 @@ fn fetch_with_timeout(
         "curl".into(),
         "--disable".into(),
         "--fail".into(),
+        "--location".into(),
+        "--max-redirs".into(),
+        "5".into(),
         "--silent".into(),
         "--show-error".into(),
         "--proto".into(),
@@ -1385,6 +1778,9 @@ fn fetch_with_timeout(
         "6".into(),
         "--max-time".into(),
         seconds.to_string(),
+        "--retry".into(),
+        "2".into(),
+        "--retry-connrefused".into(),
         "--max-filesize".into(),
         max_bytes.to_string(),
     ];

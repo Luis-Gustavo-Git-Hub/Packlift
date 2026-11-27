@@ -59,6 +59,8 @@ pub struct Package {
     pub terminal: bool,
     pub digest: String,
     #[serde(skip)]
+    pub include_binary_siblings: bool,
+    #[serde(skip)]
     pub icon: Option<PathBuf>,
     #[serde(skip)]
     pub desktop_id: String,
@@ -79,6 +81,7 @@ pub fn architecture_group(value: &str) -> &str {
     match v.as_str() {
         "i386" | "i486" | "i586" | "i686" | "x86" | "win32" => "x86",
         "amd64" | "x86_64" | "win64" | "x64" => "x86_64",
+        "aarch64" | "arm64" | "armv8l" => "arm64",
         "all" | "noarch" | "neutral" | "any" | "" => "any",
         _ => value,
     }
@@ -163,7 +166,9 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
                                 let arch = elf_architecture(&hdr[..n]);
                                 let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                                 if fname.eq_ignore_ascii_case(dir_name)
-                                    || dir_name.to_ascii_lowercase().starts_with(&fname.to_ascii_lowercase())
+                                    || dir_name
+                                        .to_ascii_lowercase()
+                                        .starts_with(&fname.to_ascii_lowercase())
                                 {
                                     return Ok(("binary".into(), arch));
                                 }
@@ -224,6 +229,9 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
     if header.starts_with(b"\xed\xab\xee\xdb") {
         return Ok(("rpm".into(), String::new()));
     }
+    if name.ends_with(".pkg.tar.xz") && header.starts_with(b"\xfd7zXZ\0") {
+        return Ok(("arch".into(), String::new()));
+    }
     if tar_header(&header) {
         return Ok(("tar".into(), String::new()));
     }
@@ -242,11 +250,36 @@ pub fn detect(path: &Path) -> Result<(String, String)> {
             pe_architecture(path, &header)?,
         ));
     }
-    if header.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+    if suffix == "msi" && header.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
         return Ok(("msi".into(), String::new()));
     }
     if header.starts_with(b"\x28\xb5\x2f\xfd") && name.ends_with(".pkg.tar.zst") {
         return Ok(("arch".into(), String::new()));
+    }
+    if header.starts_with(b"PK\x03\x04") && suffix == "zip" {
+        return Ok(("tar".into(), String::new()));
+    }
+    if name.ends_with(".tar.zst") && header.starts_with(b"\x28\xb5\x2f\xfd") {
+        let mut decoded = [0_u8; 512];
+        zstd::stream::read::Decoder::new(File::open(path)?)?
+            .read_exact(&mut decoded)
+            .map_err(|_| {
+                PackliftError::Message("The file is not a supported tar archive.".into())
+            })?;
+        if tar_header(&decoded) {
+            return Ok(("tar".into(), String::new()));
+        }
+    }
+    if name.ends_with(".tar.bz2") && header.starts_with(b"BZh") {
+        let mut decoded = [0_u8; 512];
+        bzip2::read::BzDecoder::new(File::open(path)?)
+            .read_exact(&mut decoded)
+            .map_err(|_| {
+                PackliftError::Message("The file is not a supported tar archive.".into())
+            })?;
+        if tar_header(&decoded) {
+            return Ok(("tar".into(), String::new()));
+        }
     }
     if header.starts_with(b"\x1f\x8b") {
         let mut decoded = [0_u8; 512];
@@ -307,9 +340,9 @@ pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<P
     let (distro, host_machine) = host;
     let arch = architecture_group(&package.architecture);
     let machine = architecture_group(host_machine);
-    if machine != "x86" && machine != "x86_64" {
+    if !matches!(machine, "x86" | "x86_64" | "arm64") {
         return Err(PackliftError::Message(
-            "This host architecture is outside the supported x86 family.".into(),
+            "This host architecture is not supported for this package type.".into(),
         ));
     }
     if arch != "any" && arch != machine && !(machine == "x86_64" && arch == "x86") {
@@ -406,6 +439,11 @@ pub fn plan_for(package: &Package, host: &(HashSet<String>, String)) -> Result<P
             multilib,
         },
     };
+    if machine == "arm64" && plan.method == "wine" {
+        return Err(PackliftError::Message(
+            "Windows programs currently require an x86 or x86_64 computer.".into(),
+        ));
+    }
     Ok(plan)
 }
 
@@ -459,4 +497,54 @@ pub fn environment(text: &str) -> Result<Vec<(String, String)>> {
             Ok((name.to_owned(), value.to_owned()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect;
+    use std::{fs, io::Write, path::PathBuf};
+
+    fn test_root() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "packlift-format-tests-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn tar_payload() -> Vec<u8> {
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "metadata", &b"test"[..])
+            .unwrap();
+        archive.into_inner().unwrap()
+    }
+
+    #[test]
+    fn detects_supported_compressed_archives_by_content() {
+        let root = test_root();
+        let tar = tar_payload();
+        let zstd = zstd::stream::encode_all(&tar[..], 0).unwrap();
+        fs::write(root.join("portable.tar.zst"), zstd).unwrap();
+        let bz2 = {
+            let mut encoder =
+                bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+            encoder.write_all(&tar).unwrap();
+            encoder.finish().unwrap()
+        };
+        fs::write(root.join("portable.tar.bz2"), bz2).unwrap();
+        for name in ["portable.tar.zst", "portable.tar.bz2"] {
+            assert_eq!(detect(&root.join(name)).unwrap().0, "tar");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
