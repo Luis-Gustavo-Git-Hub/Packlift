@@ -1282,6 +1282,7 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
                                 addon.name.clone(),
                                 addon.reference.clone(),
                                 addon.remote.name.clone(),
+                                addon.remote.url.clone(),
                             ))
                             .or_insert_with(Vec::new)
                             .push(addon);
