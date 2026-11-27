@@ -17,7 +17,7 @@ use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 use packlift::{
     core::{Package, PackliftError, Result},
     installer::{windows_prefix_drive, Installer},
-    system::{host_access_available, packlift_data_dir, LogHandler},
+    system::{host_access_available, packlift_data_dir, with_cancellation_token, LogHandler},
     APP_ID,
 };
 use serde_json::Value;
@@ -1222,6 +1222,12 @@ fn open_package_review(
 }
 
 fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path: &Path) {
+    let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let close_cancellation = cancellation.clone();
+    window.connect_close_request(move |_| {
+        close_cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+        glib::Propagation::Proceed
+    });
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(tr("Review package"), "")));
@@ -1268,6 +1274,16 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     progress.set_show_text(true);
     progress.set_text(Some(tr("Calculating checksum…")));
     loading.append(&progress);
+    let cancel = text_button(tr("Cancel analysis"));
+    let cancel_cancellation = cancellation.clone();
+    let cancel_window = window.downgrade();
+    cancel.connect_clicked(move |_| {
+        cancel_cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(window) = cancel_window.upgrade() {
+            window.close();
+        }
+    });
+    loading.append(&cancel);
     body.append(&loading);
 
     let scroll = gtk::ScrolledWindow::new();
@@ -1317,12 +1333,15 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
         }
         glib::ControlFlow::Continue
     });
+    let worker_cancellation = cancellation.clone();
     glib::MainContext::default().spawn_local(async move {
         let result = gio::spawn_blocking(move || {
-            installer().and_then(|manager| {
-                manager.probe_with_progress(&probe_path, |done, size| {
-                    completed.store(done, std::sync::atomic::Ordering::Relaxed);
-                    total.store(size, std::sync::atomic::Ordering::Relaxed);
+            with_cancellation_token(worker_cancellation, || {
+                installer().and_then(|manager| {
+                    manager.probe_with_progress(&probe_path, |done, size| {
+                        completed.store(done, std::sync::atomic::Ordering::Relaxed);
+                        total.store(size, std::sync::atomic::Ordering::Relaxed);
+                    })
                 })
             })
         })
@@ -1333,6 +1352,9 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
             ))
         });
         finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let (Some(window), Some(body), Some(toolbar)) =
             (owner.upgrade(), target.upgrade(), view.upgrade())
         else {
