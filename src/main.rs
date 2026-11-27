@@ -1703,12 +1703,6 @@ fn populate_package_review(
             body.append(&file);
         }
     }
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
-    scroll.set_propagate_natural_height(true);
-    scroll.set_max_content_height(480);
-    scroll.set_child(Some(body));
-    toolbar.set_content(Some(&scroll));
 }
 
 fn package_identity(package: &Package, path: &Path) -> gtk::Box {
