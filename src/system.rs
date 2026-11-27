@@ -755,9 +755,15 @@ pub fn operation(data: &Path) -> Result<File> {
 }
 
 pub fn sha256(path: &Path) -> Result<String> {
+    sha256_with_progress(path, |_, _| {})
+}
+
+pub fn sha256_with_progress(path: &Path, mut progress: impl FnMut(u64, u64)) -> Result<String> {
     let mut file = File::open(path)?;
+    let total = file.metadata()?.len();
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 1024 * 1024];
+    let mut completed = 0_u64;
     loop {
         if cancellation_requested() {
             return Err(PackliftError::Message("Operation canceled.".into()));
@@ -767,7 +773,10 @@ pub fn sha256(path: &Path) -> Result<String> {
             break;
         }
         hasher.update(&buffer[..count]);
+        completed = completed.saturating_add(count as u64);
+        progress(completed, total);
     }
+    progress(total, total);
     Ok(format!("{:x}", hasher.finalize()))
 }
 

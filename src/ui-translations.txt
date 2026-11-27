@@ -455,6 +455,10 @@ Account|Conta|||
 Available|Disponível|||
 Install for my account|Instalar para minha conta|||
 Install for the system|Instalar no sistema|||
+Analyzing package…|Analisando o pacote…|||
+Reading package metadata and calculating its checksum.|Lendo metadados do pacote e calculando a soma de verificação.|||
+Calculating checksum…|Calculando soma de verificação…|||
+The package could not be analyzed.|Não foi possível analisar o pacote.|||
 Open Flathub in Browser|Abrir Flathub no navegador|Abrir Flathub en el navegador|Открыть Flathub в браузере|在浏览器中打开 Flathub
 Additional runtimes may need to be downloaded.|Pode ser necessário baixar runtimes adicionais.|||
 Works on phones, tablets and desktops.|Funciona em celulares, tablets e computadores.|||

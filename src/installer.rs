@@ -12,8 +12,8 @@ use crate::{
     core::{architecture_group, detect, Package, PackliftError, Result},
     system::{
         cancellation_requested, desktop_exec, export_desktop, export_desktop_with_wm_class,
-        host_access_available, operation, packlift_data_dir, remove_exports, sha256, Registry,
-        Runner,
+        host_access_available, operation, packlift_data_dir, remove_exports, sha256,
+        sha256_with_progress, Registry, Runner,
     },
     APP_ID,
 };
@@ -156,6 +156,14 @@ impl Installer {
     }
 
     pub fn probe(&self, path: &Path) -> Result<(Package, crate::core::Plan)> {
+        self.probe_with_progress(path, |_, _| {})
+    }
+
+    pub fn probe_with_progress(
+        &self,
+        path: &Path,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<(Package, crate::core::Plan)> {
         self.runner
             .write(&format!("Analyzing package: {}", path.display()));
         let (kind, architecture) = detect(path)?;
@@ -185,7 +193,7 @@ impl Installer {
             signature: "unknown".into(),
             ..Default::default()
         };
-        package.digest = sha256(&resolved_path)?;
+        package.digest = sha256_with_progress(&resolved_path, progress)?;
         match kind.as_str() {
             "deb" => self.inspect_deb(&mut package)?,
             "rpm" => self.inspect_rpm(&mut package)?,

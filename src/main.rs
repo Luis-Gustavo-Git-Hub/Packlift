@@ -204,12 +204,29 @@ fn build_home(app: &adw::Application) {
     let window = adw::ApplicationWindow::new(app);
     window.set_title(Some("Packlift"));
     window.set_default_size(1120, 760);
+    attach_package_drop_target(app, &window);
     if host_access_available() {
         store_ui::show(app, &window);
     } else {
         render_home(app, &window);
         window.present();
     }
+}
+
+fn attach_package_drop_target(app: &adw::Application, window: &adw::ApplicationWindow) {
+    let target = gtk::DropTarget::new(gio::File::static_type(), gtk::gdk::DragAction::COPY);
+    let app = app.clone();
+    target.connect_drop(move |_, value, _, _| {
+        let Ok(file) = value.get::<gio::File>() else {
+            return false;
+        };
+        let Some(path) = file.path() else {
+            return false;
+        };
+        open_package(&app, &path);
+        true
+    });
+    window.add_controller(target);
 }
 
 fn render_home(app: &adw::Application, window: &adw::ApplicationWindow) {
@@ -1220,8 +1237,113 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     body.set_margin_bottom(16);
     body.set_margin_start(16);
     body.set_margin_end(16);
+    let loading = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    loading.set_halign(gtk::Align::Center);
+    loading.set_valign(gtk::Align::Center);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(32, 32);
+    spinner.start();
+    loading.append(&spinner);
+    let status = home_label(tr("Analyzing package…"), "title-3");
+    status.set_xalign(0.5);
+    loading.append(&status);
+    let explanation = home_label(
+        tr("Reading package metadata and calculating its checksum."),
+        "dim-label",
+    );
+    explanation.set_xalign(0.5);
+    explanation.set_max_width_chars(46);
+    loading.append(&explanation);
+    let progress = gtk::ProgressBar::new();
+    progress.set_show_text(true);
+    progress.set_text(Some(tr("Calculating checksum…")));
+    loading.append(&progress);
+    body.append(&loading);
 
-    match installer().and_then(|manager| manager.probe(path)) {
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_max_content_height(480);
+    scroll.set_child(Some(&body));
+    toolbar.set_content(Some(&scroll));
+    operations_ui::attach_button(&header);
+    window.set_widget_name("packlift-package-review");
+    window.set_title(Some(tr("Review package")));
+    window.set_content(Some(&toolbar));
+    window.present();
+
+    let path = path.to_path_buf();
+    let probe_path = path.clone();
+    let app = app.clone();
+    let owner = window.downgrade();
+    let target = body.downgrade();
+    let view = toolbar.downgrade();
+    let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let total = Arc::new(std::sync::atomic::AtomicU64::new(
+        std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0),
+    ));
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let progress_view = progress.downgrade();
+    let progress_completed = completed.clone();
+    let progress_total = total.clone();
+    let progress_finished = finished.clone();
+    glib::timeout_add_local(Duration::from_millis(120), move || {
+        if progress_finished.load(std::sync::atomic::Ordering::Relaxed) {
+            return glib::ControlFlow::Break;
+        }
+        if let Some(progress) = progress_view.upgrade() {
+            let done = progress_completed.load(std::sync::atomic::Ordering::Relaxed);
+            let size = progress_total.load(std::sync::atomic::Ordering::Relaxed);
+            if size > 0 {
+                progress.set_fraction((done as f64 / size as f64).clamp(0.0, 1.0));
+                progress.set_text(Some(&format!(
+                    "{} / {}",
+                    human_size(done),
+                    human_size(size)
+                )));
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+    glib::MainContext::default().spawn_local(async move {
+        let result = gio::spawn_blocking(move || {
+            installer().and_then(|manager| {
+                manager.probe_with_progress(&probe_path, |done, size| {
+                    completed.store(done, std::sync::atomic::Ordering::Relaxed);
+                    total.store(size, std::sync::atomic::Ordering::Relaxed);
+                })
+            })
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(PackliftError::Message(
+                tr("The package could not be analyzed.").into(),
+            ))
+        });
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (Some(window), Some(body), Some(toolbar)) =
+            (owner.upgrade(), target.upgrade(), view.upgrade())
+        else {
+            return;
+        };
+        while let Some(child) = body.first_child() {
+            body.remove(&child);
+        }
+        populate_package_review(&app, &window, &path, &body, &toolbar, result);
+    });
+}
+
+fn populate_package_review(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    path: &Path,
+    body: &gtk::Box,
+    toolbar: &adw::ToolbarView,
+    result: Result<(Package, packlift::core::Plan)>,
+) {
+    match result {
         Ok((package, plan)) => {
             body.append(&package_identity(&package, path));
 
@@ -1525,13 +1647,8 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::External);
     scroll.set_propagate_natural_height(true);
     scroll.set_max_content_height(480);
-    scroll.set_child(Some(&body));
+    scroll.set_child(Some(body));
     toolbar.set_content(Some(&scroll));
-    operations_ui::attach_button(&header);
-    window.set_widget_name("packlift-package-review");
-    window.set_title(Some(tr("Review package")));
-    window.set_content(Some(&toolbar));
-    window.present();
 }
 
 fn package_identity(package: &Package, path: &Path) -> gtk::Box {
