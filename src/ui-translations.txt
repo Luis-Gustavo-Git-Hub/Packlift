@@ -446,9 +446,15 @@ Hardware drivers|Drivers de hardware|||
 Input sources|Métodos de entrada|||
 Localization|Localização|||
 Flatpak add-ons from your configured repositories.|Complementos Flatpak dos repositórios configurados.|||
-Loading Flatpak add-ons…|Carregando complementos Flatpak…|||
+Checking configured repositories. This may take a little while.|Verificando os repositórios configurados. Isso pode levar um momento.|||
+Some repositories could not be reached; showing available add-ons.|Não foi possível acessar alguns repositórios; mostrando os complementos disponíveis.|||
+Preparing the add-on list…|Preparando a lista de complementos…|||
 No Flatpak add-ons found in this category.|Nenhum complemento Flatpak encontrado nesta categoria.|||
 Installing Flatpak add-on|Instalando complemento Flatpak|||
+Account|Conta|||
+Available|Disponível|||
+Install for my account|Instalar para minha conta|||
+Install for the system|Instalar no sistema|||
 Open Flathub in Browser|Abrir Flathub no navegador|Abrir Flathub en el navegador|Открыть Flathub в браузере|在浏览器中打开 Flathub
 Additional runtimes may need to be downloaded.|Pode ser necessário baixar runtimes adicionais.|||
 Works on phones, tablets and desktops.|Funciona em celulares, tablets e computadores.|||

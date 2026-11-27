@@ -233,65 +233,87 @@ pub fn addons(runner: &Runner, category: AddonCategory) -> Result<(Vec<Addon>, b
             .map(|reference| reference.trim_start_matches("app/"))
             .collect();
         let mut seen = BTreeSet::new();
-        for remote in remotes {
-            let output = runner.capture(
-                &[
-                    "flatpak".into(),
-                    "remote-ls".into(),
-                    scope.into(),
-                    "--runtime".into(),
-                    "--all".into(),
-                    "--columns=ref,name,description".into(),
-                    "--".into(),
-                    remote.name.clone(),
-                ],
-                false,
-            );
-            let Ok(output) = output else {
-                partial = true;
-                continue;
-            };
-            results.extend(output.lines().filter_map(|line| {
-                let mut fields = line.splitn(3, '\t');
-                let reference = fields.next()?.strip_prefix("runtime/")?;
-                let mut components = reference.split('/');
-                let id = components.next()?;
-                let arch = components.next()?;
-                let branch = components.next()?;
-                if !valid_app_id(id)
-                    || !valid_path_component(arch)
-                    || !valid_path_component(branch)
-                    || components.next().is_some()
-                    || !category.matches(id)
-                {
-                    return None;
-                }
-                let present = installed.contains(reference);
-                if matches!(category, AddonCategory::Languages) && !present {
-                    let base = id.strip_suffix(".Locale")?;
-                    if !parents.contains(format!("{base}/{arch}/{branch}").as_str()) {
+        for batch in remotes.chunks(4) {
+            let outputs = std::thread::scope(|workers| {
+                let jobs: Vec<_> = batch
+                    .iter()
+                    .map(|remote| {
+                        let runner = runner.clone();
+                        let remote = remote.clone();
+                        workers.spawn(move || {
+                            let output = runner.capture(
+                                &[
+                                    "flatpak".into(),
+                                    "remote-ls".into(),
+                                    scope.into(),
+                                    "--runtime".into(),
+                                    "--all".into(),
+                                    "--columns=ref,name,description".into(),
+                                    "--".into(),
+                                    remote.name.clone(),
+                                ],
+                                false,
+                            );
+                            (remote, output)
+                        })
+                    })
+                    .collect();
+                jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>()
+            });
+            for output in outputs {
+                let (remote, output) = match output {
+                    Ok(result) => result,
+                    Err(_) => {
+                        partial = true;
+                        continue;
+                    }
+                };
+                let Ok(output) = output else {
+                    partial = true;
+                    continue;
+                };
+                results.extend(output.lines().filter_map(|line| {
+                    let mut fields = line.splitn(3, '\t');
+                    let reference = fields.next()?.strip_prefix("runtime/")?;
+                    let mut components = reference.split('/');
+                    let id = components.next()?;
+                    let arch = components.next()?;
+                    let branch = components.next()?;
+                    if !valid_app_id(id)
+                        || !valid_path_component(arch)
+                        || !valid_path_component(branch)
+                        || components.next().is_some()
+                        || !category.matches(id)
+                    {
                         return None;
                     }
-                }
-                if !seen.insert(reference.to_owned()) {
-                    return None;
-                }
-                let name = fields
-                    .next()
-                    .filter(|name| !name.is_empty() && *name != "-")
-                    .unwrap_or(id);
-                Some(Addon {
-                    remote: remote.clone(),
-                    reference: format!("runtime/{reference}"),
-                    name: name.into(),
-                    description: fields
+                    let present = installed.contains(reference);
+                    if matches!(category, AddonCategory::Languages) && !present {
+                        let base = id.strip_suffix(".Locale")?;
+                        if !parents.contains(format!("{base}/{arch}/{branch}").as_str()) {
+                            return None;
+                        }
+                    }
+                    if !seen.insert(reference.to_owned()) {
+                        return None;
+                    }
+                    let name = fields
                         .next()
-                        .filter(|description| *description != "-")
-                        .unwrap_or("")
-                        .into(),
-                    installed: present,
-                })
-            }));
+                        .filter(|name| !name.is_empty() && *name != "-")
+                        .unwrap_or(id);
+                    Some(Addon {
+                        remote: remote.clone(),
+                        reference: format!("runtime/{reference}"),
+                        name: name.into(),
+                        description: fields
+                            .next()
+                            .filter(|description| *description != "-")
+                            .unwrap_or("")
+                            .into(),
+                        installed: present,
+                    })
+                }));
+            }
         }
     }
     results.sort_by_cached_key(|addon| (addon.name.to_lowercase(), addon.reference.clone()));

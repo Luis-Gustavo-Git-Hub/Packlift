@@ -1198,11 +1198,31 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
     body.set_margin_start(18);
     body.set_margin_end(18);
     body.append(&home_label(title, "title-2"));
-    body.append(&home_label(
+    let introduction = home_label(
         tr("Flatpak add-ons from your configured repositories."),
         "dim-label",
-    ));
-    let status = home_label(tr("Loading Flatpak add-ons…"), "dim-label");
+    );
+    introduction.set_max_width_chars(76);
+    body.append(&introduction);
+    let loading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    loading.add_css_class("packlift-addon-loading");
+    loading.set_margin_top(8);
+    loading.set_margin_bottom(8);
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(24, 24);
+    spinner.start();
+    loading.append(&spinner);
+    let loading_message = home_label(
+        tr("Checking configured repositories. This may take a little while."),
+        "dim-label",
+    );
+    loading_message.set_max_width_chars(68);
+    loading_message.set_valign(gtk::Align::Center);
+    loading.append(&loading_message);
+    body.append(&loading);
+    let status = home_label("", "dim-label");
+    status.set_visible(false);
+    status.set_max_width_chars(76);
     body.append(&status);
     let region = gtk::ListBox::new();
     region.set_selection_mode(gtk::SelectionMode::None);
@@ -1218,27 +1238,82 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
     window.set_title(Some(title));
     window.set_content(Some(&toolbar));
 
-    let (owner, status, region) = (window.downgrade(), status.downgrade(), region.downgrade());
+    let (owner, status, region, loading, spinner) = (
+        window.downgrade(),
+        status.downgrade(),
+        region.downgrade(),
+        loading.downgrade(),
+        spinner.downgrade(),
+    );
     background(
         move || worker().and_then(|runner| store::addons(&runner, category)),
         move |result| {
-            let (Some(status), Some(region)) = (status.upgrade(), region.upgrade()) else {
+            let (Some(status), Some(region), Some(loading), Some(spinner)) = (
+                status.upgrade(),
+                region.upgrade(),
+                loading.upgrade(),
+                spinner.upgrade(),
+            ) else {
                 return;
             };
+            spinner.stop();
+            loading.set_visible(false);
             match result {
                 Ok((addons, partial)) => {
                     if partial {
-                        status.set_text(tr("Some Flatpak repositories could not be checked."));
+                        status.set_text(tr(
+                            "Some repositories could not be reached; showing available add-ons.",
+                        ));
+                        status.set_visible(true);
                     } else if addons.is_empty() {
                         status.set_text(tr("No Flatpak add-ons found in this category."));
+                        status.set_visible(true);
                     } else {
-                        status.set_visible(false);
+                        status.set_text(tr("Preparing the add-on list…"));
+                        status.set_visible(true);
                     }
+                    if addons.is_empty() {
+                        return;
+                    }
+                    let mut grouped = std::collections::BTreeMap::new();
                     for addon in addons {
-                        region.append(&addon_row(&owner, addon));
+                        grouped
+                            .entry((
+                                addon.name.clone(),
+                                addon.reference.clone(),
+                                addon.remote.name.clone(),
+                            ))
+                            .or_insert_with(Vec::new)
+                            .push(addon);
                     }
+                    let mut addons = grouped.into_values();
+                    let owner = owner.clone();
+                    let status = status.downgrade();
+                    let region = region.downgrade();
+                    glib::idle_add_local(move || {
+                        let (Some(status), Some(region)) = (status.upgrade(), region.upgrade())
+                        else {
+                            return glib::ControlFlow::Break;
+                        };
+                        for _ in 0..16 {
+                            let Some(addon_group) = addons.next() else {
+                                status.set_visible(partial);
+                                if partial {
+                                    status.set_text(tr(
+                                        "Some repositories could not be reached; showing available add-ons.",
+                                    ));
+                                }
+                                return glib::ControlFlow::Break;
+                            };
+                            region.append(&addon_row(&owner, addon_group));
+                        }
+                        glib::ControlFlow::Continue
+                    });
                 }
-                Err(error) => status.set_text(&error.to_string()),
+                Err(error) => {
+                    status.set_text(&error.to_string());
+                    status.set_visible(true);
+                }
             }
         },
     );
@@ -1246,38 +1321,114 @@ fn show_addons(window: &adw::ApplicationWindow, category: store::AddonCategory, 
 
 fn addon_row(
     window: &glib::WeakRef<adw::ApplicationWindow>,
-    addon: store::Addon,
+    mut choices: Vec<store::Addon>,
 ) -> adw::ActionRow {
-    let scope = match addon.remote.destination {
-        Destination::User => tr("For my account"),
-        Destination::System => tr("For the system"),
-    };
-    let mut info = format!("{} · {} · {}", addon.remote.label(), scope, addon.reference);
-    if !addon.description.is_empty() {
-        info = format!("{}\n{info}", addon.description);
+    choices.sort_by_key(|addon| addon.remote.destination == Destination::System);
+    let first = &choices[0];
+    let scope_summary = choices
+        .iter()
+        .map(|addon| {
+            let scope = match addon.remote.destination {
+                Destination::User => tr("Account"),
+                Destination::System => tr("System"),
+            };
+            let state = if addon.installed {
+                tr("Installed")
+            } else {
+                tr("Available")
+            };
+            format!("{scope}: {state}")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut info = format!(
+        "{} · {scope_summary}\n{}",
+        first.remote.label(),
+        first.reference
+    );
+    if !first.description.is_empty() {
+        info = format!("{}\n{info}", first.description);
     }
     let row = adw::ActionRow::builder()
         .use_markup(false)
-        .title(&addon.name)
+        .title(&first.name)
         .subtitle(&info)
+        .title_lines(2)
+        .subtitle_lines(4)
         .build();
-    let install = text_button(if addon.installed {
-        tr("Installed")
+    let pending: Vec<_> = choices
+        .into_iter()
+        .filter(|addon| !addon.installed)
+        .collect();
+    if pending.is_empty() {
+        let installed = text_button(tr("Installed"));
+        installed.set_sensitive(false);
+        installed.set_valign(gtk::Align::Center);
+        row.add_suffix(&installed);
+    } else if pending.len() == 1 {
+        let install = addon_install_button(tr("Install"));
+        install.set_tooltip_text(Some(match pending[0].remote.destination {
+            Destination::User => tr("Install for my account"),
+            Destination::System => tr("Install for the system"),
+        }));
+        queue_addon_install(window, &install, pending[0].clone());
+        row.add_suffix(&install);
     } else {
-        tr("Install")
-    });
-    install.set_sensitive(!addon.installed);
-    install.set_valign(gtk::Align::Center);
-    row.add_suffix(&install);
+        let install = gtk::MenuButton::builder()
+            .label(tr("Install"))
+            .valign(gtk::Align::Center)
+            .width_request(96)
+            .build();
+        let popover = gtk::Popover::new();
+        let options = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        options.set_margin_top(8);
+        options.set_margin_bottom(8);
+        options.set_margin_start(8);
+        options.set_margin_end(8);
+        for addon in pending {
+            let label = match addon.remote.destination {
+                Destination::User => tr("Install for my account"),
+                Destination::System => tr("Install for the system"),
+            };
+            let action = text_button(label);
+            action.set_halign(gtk::Align::Fill);
+            queue_addon_install(window, &action, addon);
+            options.append(&action);
+        }
+        popover.set_child(Some(&options));
+        install.set_popover(Some(&popover));
+        row.add_suffix(&install);
+    }
+    row
+}
+
+fn addon_install_button(label: &str) -> gtk::Button {
+    let button = text_button(label);
+    button.set_valign(gtk::Align::Center);
+    button.set_size_request(96, -1);
+    if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+        label.set_wrap(false);
+    }
+    button
+}
+
+fn queue_addon_install(
+    window: &glib::WeakRef<adw::ApplicationWindow>,
+    button: &gtk::Button,
+    addon: store::Addon,
+) {
     let owner = window.clone();
-    let installed = Rc::new(Cell::new(addon.installed));
     let title = format!(
-        "{} · {} · {}",
+        "{} · {} · {} · {}",
         tr("Installing Flatpak add-on"),
         addon.name,
-        addon.reference
+        addon.reference,
+        match addon.remote.destination {
+            Destination::User => tr("Account"),
+            Destination::System => tr("System"),
+        }
     );
-    install.connect_clicked(move |button| {
+    button.connect_clicked(move |button| {
         let Some(app) = owner.upgrade().and_then(|window| window.application()) else {
             return;
         };
@@ -1285,9 +1436,8 @@ fn addon_row(
             return;
         }
         button.set_sensitive(false);
-        button.set_label(tr("In the operations queue"));
+        button.set_label(tr("Queued"));
         let (completed, released) = (button.downgrade(), button.downgrade());
-        let (state, final_state) = (installed.clone(), installed.clone());
         let addon = addon.clone();
         crate::operations_ui::submit(
             &app,
@@ -1295,23 +1445,19 @@ fn addon_row(
             move |log| store::install_addon(&Runner::new(None, log)?, &addon).map(|_| None),
             move |result| {
                 if result.is_ok() {
-                    state.set(true);
                     if let Some(button) = completed.upgrade() {
                         button.set_label(tr("Installed"));
                     }
                 }
             },
             move || {
-                if !final_state.get() {
-                    if let Some(button) = released.upgrade() {
-                        button.set_label(tr("Install"));
-                        button.set_sensitive(true);
-                    }
+                if let Some(button) = released.upgrade() {
+                    button.set_label(tr("Install"));
+                    button.set_sensitive(true);
                 }
             },
         );
     });
-    row
 }
 
 fn show_collection(

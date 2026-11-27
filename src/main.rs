@@ -82,6 +82,7 @@ fn main() -> glib::ExitCode {
                  .packlift-store-skeleton-card { min-height: 82px; padding: 14px; border-radius: 12px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@borders, 0.42); }
                  .packlift-store-skeleton-icon { border-radius: 10px; background: alpha(@window_fg_color, 0.09); }
                  .packlift-store-skeleton-line { border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
+                 .packlift-addon-loading { padding: 18px; border-radius: 12px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.55); }
                  button.packlift-scope-option { padding: 8px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); }
                  button.packlift-scope-option:hover, button.packlift-scope-option:focus-visible { background: alpha(@accent_bg_color, 0.19); }
                  .packlift-scope-icon { padding: 7px; border-radius: 8px; color: @accent_color; background: alpha(@accent_bg_color, 0.15); }
