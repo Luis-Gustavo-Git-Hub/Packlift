@@ -27,6 +27,12 @@ pub struct Installer {
     pub registry: Registry,
 }
 
+/// Optional launch overrides for a Windows program in the library.
+pub struct WindowsLaunchOptions {
+    pub working_directory: Option<PathBuf>,
+    pub arguments: String,
+}
+
 impl Installer {
     pub fn new(
         output: crate::system::LogHandler,
@@ -2158,6 +2164,26 @@ fi"#
         runtime: &str,
         proton_path: Option<&Path>,
     ) -> Result<Value> {
+        self.update_windows_program(id, runtime, proton_path, None)
+    }
+
+    pub fn set_windows_launch_options(
+        &self,
+        id: &str,
+        runtime: &str,
+        proton_path: Option<&Path>,
+        options: WindowsLaunchOptions,
+    ) -> Result<Value> {
+        self.update_windows_program(id, runtime, proton_path, Some(options))
+    }
+
+    fn update_windows_program(
+        &self,
+        id: &str,
+        runtime: &str,
+        proton_path: Option<&Path>,
+        options: Option<WindowsLaunchOptions>,
+    ) -> Result<Value> {
         if !host_access_available() {
             return Err(PackliftError::HostAccessRequired);
         }
@@ -2180,11 +2206,11 @@ fi"#
                     .iter()
                     .any(|version| version == path)
             {
-                return Err(PackliftError::Message("That Proton version is no longer available. Reopen the runtime picker to see installed versions.".into()));
+                return Err(PackliftError::Message("That Proton version is no longer available. Choose another runtime in Settings.".into()));
             }
         }
         let entry = &record["exports"][0];
-        let arguments = entry["wine_args"]
+        let mut arguments = entry["wine_args"]
             .as_array()
             .and_then(|items| {
                 items
@@ -2196,6 +2222,47 @@ fi"#
             .ok_or_else(|| {
                 PackliftError::Message("This shortcut has no Windows executable.".into())
             })?;
+        let options = options.unwrap_or_else(|| WindowsLaunchOptions {
+            working_directory: record["launch_directory"].as_str().map(PathBuf::from),
+            arguments: record["launch_arguments"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        });
+        if let Some(directory) = &options.working_directory {
+            let directory_text = directory.to_string_lossy();
+            if !directory.is_absolute()
+                || directory_text.contains(char::is_control)
+                || (!directory.is_dir()
+                    && (!self.runner.sandbox
+                        || !self
+                            .runner
+                            .run(
+                                &["test".into(), "-d".into(), directory_text.into_owned()],
+                                false,
+                                true,
+                                false,
+                            )?
+                            .status
+                            .success()))
+            {
+                return Err(PackliftError::Message(
+                    "Choose an existing folder for the working directory.".into(),
+                ));
+            }
+        }
+        let extra_arguments = shlex::split(&options.arguments)
+            .filter(|arguments| {
+                !arguments
+                    .iter()
+                    .any(|argument| argument.contains(char::is_control))
+            })
+            .ok_or_else(|| {
+                PackliftError::Message(
+                    "Check the quotes and characters in the launch arguments.".into(),
+                )
+            })?;
+        arguments.extend(extra_arguments);
         let executable = Path::new(&arguments[0]);
         if entry["desktop"].as_str().is_none() {
             return Err(PackliftError::Message(
@@ -2206,9 +2273,10 @@ fi"#
             .as_str()
             .or_else(|| record["name"].as_str())
             .unwrap_or("Program");
-        let cwd = record["working_directory"]
-            .as_str()
-            .map(Path::new)
+        let cwd = options
+            .working_directory
+            .as_deref()
+            .or_else(|| record["working_directory"].as_str().map(Path::new))
             .or_else(|| executable.parent());
         let machine = self.machine()?;
         let resolved_runtime = self.windows_runtime(runtime, &machine)?;
@@ -2224,6 +2292,8 @@ fi"#
         let mut updated = record.clone();
         updated["runtime"] = json!(wine.runtime);
         updated["proton_path"] = json!(proton_path);
+        updated["launch_directory"] = json!(options.working_directory);
+        updated["launch_arguments"] = json!(options.arguments);
         updated["exports"][0]["argv"] = json!(argv);
         if let Err(error) = self
             .sync_app_menu_entry(&mut updated)
@@ -2233,7 +2303,7 @@ fi"#
             return Err(error);
         }
         self.runner
-            .write(&format!("Updated the Windows runtime for {name}"));
+            .write(&format!("Updated Windows launch settings for {name}"));
         Ok(updated)
     }
 

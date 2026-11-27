@@ -471,3 +471,20 @@ Installation will start when the current operation finishes.|A instalação come
 Already installed|Já instalado|||
 This version of {name} is already installed.|Esta versão de {name} já está instalada.|||
 Close all Packlift windows and open it again from your app menu to use this version.|Feche todas as janelas do Packlift e abra o app novamente pelo menu para usar esta versão.|||
+Loading apps…|Carregando aplicativos…|||
+No apps found in this category.|Nenhum aplicativo encontrado nesta categoria.|||
+Could not load apps in this category.|Não foi possível carregar os aplicativos desta categoria.|||
+Windows launch options|Opções de inicialização do Windows|||
+These settings also apply to the shortcut in your app menu.|Estas opções também valem para o atalho no menu de aplicativos.|||
+Executable|Executável|||
+Working directory|Pasta de trabalho|||
+Choose working directory…|Escolher pasta de trabalho…|||
+Launch arguments|Argumentos de inicialização|||
+Leave the working directory blank to use the default. Put arguments that contain spaces in quotes.|Deixe a pasta de trabalho em branco para usar a padrão. Coloque argumentos com espaços entre aspas.|||
+Loading runtimes…|Carregando runtimes…|||
+Could not load Windows runtimes.|Não foi possível carregar os runtimes do Windows.|||
+Saving launch settings…|Salvando opções de inicialização…|||
+Launch settings saved.|Opções de inicialização salvas.|||
+Choose an existing folder for the working directory.|Escolha uma pasta de trabalho que exista.|||
+Check the quotes and characters in the launch arguments.|Confira as aspas e os caracteres nos argumentos de inicialização.|||
+That Proton version is no longer available. Choose another runtime in Settings.|Essa versão do Proton não está mais disponível. Escolha outro runtime nas configurações.|||

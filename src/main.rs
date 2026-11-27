@@ -4,10 +4,11 @@ mod operations_ui;
 mod search_provider;
 mod store_ui;
 mod updates_ui;
+mod windows_ui;
 
 use adw::prelude::*;
 use i18n::tr;
-use std::{path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
 
 use packlift::{
     core::{Package, PackliftError, Result},
@@ -433,13 +434,13 @@ fn populate_library(
                     let searchable = format!(
                         "{} {} {}",
                         row.title(),
-                        row.subtitle().unwrap_or_default(),
+                        record["flatpak_app_id"].as_str().unwrap_or_default(),
                         record["target"].as_str().unwrap_or_default()
                     )
                     .to_lowercase();
                     row.set_activatable(true);
                     list.append(&row);
-                    (row, searchable, record)
+                    (row, searchable, Rc::new(RefCell::new(record)))
                 })
                 .collect();
             let rows = Rc::new(rows);
@@ -486,7 +487,10 @@ fn populate_library(
             let detail_target = details.downgrade();
             let detail_app = app.clone();
             let detail_window = window.downgrade();
-            let selected_rows = rows.iter().map(|(_, _, record)| record.clone()).collect::<Vec<_>>();
+            let selected_rows = rows
+                .iter()
+                .map(|(row, _, record)| (row.downgrade(), record.clone()))
+                .collect::<Vec<_>>();
             let scroll = detail_scroll.downgrade();
             list.connect_row_selected(move |_, selected| {
                 let Some(details) = detail_target.upgrade() else { return; };
@@ -500,14 +504,14 @@ fn populate_library(
                     return;
                 };
                 let index = selected.index();
-                let Some(record) = usize::try_from(index)
+                let Some((row, record)) = usize::try_from(index)
                     .ok()
                     .and_then(|index| selected_rows.get(index))
                 else {
                     return;
                 };
                 let Some(window) = detail_window.upgrade() else { return; };
-                let detail = library_detail(record, &detail_app, &window);
+                let detail = library_detail(record, row.clone(), &detail_app, &window);
                 let clamp = adw::Clamp::builder()
                     .maximum_size(1000)
                     .child(&detail)
@@ -528,7 +532,10 @@ fn populate_library(
                     .1;
                 let mut matches = false;
                 for (row, searchable, record) in rows.iter() {
-                    let visible = searchable.contains(&query) && filter(record);
+                    let record = record.borrow();
+                    let visible = (searchable.contains(&query)
+                        || row.subtitle().is_some_and(|subtitle| subtitle.to_lowercase().contains(&query)))
+                        && filter(&record);
                     row.set_visible(visible);
                     matches |= visible;
                 }
@@ -749,8 +756,7 @@ fn add_menu_item(
     actions.append(&item);
 }
 
-fn library_row(record: &Value) -> adw::ActionRow {
-    let name = record["name"].as_str().unwrap_or(tr("Program"));
+fn library_subtitle(record: &Value) -> String {
     let game = record["game_shortcut"].as_bool() == Some(true);
     let method = record["method"].as_str().unwrap_or("local");
     let subtitle = match method {
@@ -774,13 +780,18 @@ fn library_row(record: &Value) -> adw::ActionRow {
         _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").into(),
         _ => tr("Local Linux application").into(),
     };
-    let subtitle = match record["version"]
+    match record["version"]
         .as_str()
         .filter(|version| !version.is_empty())
     {
         Some(version) => format!("{subtitle} · {version}"),
         None => subtitle,
-    };
+    }
+}
+
+fn library_row(record: &Value) -> adw::ActionRow {
+    let name = record["name"].as_str().unwrap_or(tr("Program"));
+    let subtitle = library_subtitle(record);
     let row = adw::ActionRow::builder()
         .use_markup(false)
         .title(name)
@@ -796,8 +807,9 @@ fn library_row(record: &Value) -> adw::ActionRow {
 fn library_actions(
     app: &adw::Application,
     window: &adw::ApplicationWindow,
-    record: &Value,
+    settings: &Rc<RefCell<Value>>,
 ) -> gtk::Box {
+    let record = settings.borrow();
     let name = record["name"].as_str().unwrap_or(tr("Program"));
     let game = record["game_shortcut"].as_bool() == Some(true);
     let method = record["method"].as_str().unwrap_or("local");
@@ -808,12 +820,12 @@ fn library_actions(
         launch.update_property(&[gtk::accessible::Property::Label(
             &tr("Open {name}").replace("{name}", name),
         )]);
-        let record = record.clone();
+        let record = settings.clone();
         let parent = window.downgrade();
         launch.connect_clicked(move |button| {
             button.set_sensitive(false);
             let (sender, receiver) = std::sync::mpsc::channel();
-            let record = record.clone();
+            let record = record.borrow().clone();
             thread::spawn(move || {
                 let _ = sender.send(installer().and_then(|manager| manager.launch(&record)));
             });
@@ -850,7 +862,7 @@ fn library_actions(
         (_, "flatpak") => (
             tr("Uninstall"),
             tr("You are removing this installation ({scope}).")
-                .replace("{scope}", &flatpak_scope_label(record)),
+                .replace("{scope}", &flatpak_scope_label(&record)),
         ),
         (_, "wine") => (
             tr("Remove from Packlift"),
@@ -904,7 +916,11 @@ fn library_actions(
             run_job(
                 &app,
                 &window,
-                &format!("{} · {}", tr("Removing from your library"), record["name"].as_str().unwrap_or(tr("Program"))),
+                &format!(
+                    "{} · {}",
+                    tr("Removing from your library"),
+                    record["name"].as_str().unwrap_or(tr("Program"))
+                ),
                 move |logger| {
                     let manager = installer_with_output(logger)?;
                     if delete_data {
@@ -923,10 +939,12 @@ fn library_actions(
 }
 
 fn library_detail(
-    record: &Value,
+    current: &Rc<RefCell<Value>>,
+    row: glib::WeakRef<adw::ActionRow>,
     app: &adw::Application,
     window: &adw::ApplicationWindow,
 ) -> gtk::Box {
+    let record = current.borrow();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
     content.add_css_class("packlift-library-detail-content");
     content.set_hexpand(true);
@@ -935,21 +953,19 @@ fn library_detail(
     let method = record["method"].as_str().unwrap_or("local");
     let game = record["game_shortcut"].as_bool() == Some(true);
     let description = match method {
-        "flatpak" => flatpak_scope_label(record),
+        "flatpak" => flatpak_scope_label(&record),
         "wine" if game => tr("Game shortcut").to_owned(),
         "wine" => tr("Windows program").to_owned(),
         "toolbox" => tr("Toolbx container").to_owned(),
         "native" => tr("Installed on this system").to_owned(),
-        _ if record["sandbox_only"].as_bool() == Some(true) => {
-            tr("Sandbox application").to_owned()
-        }
+        _ if record["sandbox_only"].as_bool() == Some(true) => tr("Sandbox application").to_owned(),
         _ => tr("Local Linux application").to_owned(),
     };
 
     let hero = gtk::Box::new(gtk::Orientation::Horizontal, 20);
     hero.add_css_class("packlift-library-detail-hero");
     hero.set_valign(gtk::Align::Center);
-    let icon = record_image(record, 92);
+    let icon = record_image(&record, 92);
     icon.set_valign(gtk::Align::Center);
     hero.append(&icon);
     let identity = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -957,7 +973,7 @@ fn library_detail(
     identity.set_hexpand(true);
     identity.append(&home_label(name, "title-1"));
     identity.append(&home_label(&description, "dim-label"));
-    identity.append(&library_actions(app, window, record));
+    identity.append(&library_actions(app, window, current));
     hero.append(&identity);
     content.append(&hero);
 
@@ -982,7 +998,7 @@ fn library_detail(
 
     content.append(&home_label(tr("Permissions"), "title-3"));
     if method == "flatpak" {
-        content.append(&flatpak_ui::editor(window, record));
+        content.append(&flatpak_ui::editor(window, &record));
     } else {
         let permissions = home_label(
             tr("Packlift does not manage permissions for this installation type."),
@@ -996,10 +1012,19 @@ fn library_detail(
     let settings = gtk::Box::new(gtk::Orientation::Vertical, 10);
     settings.add_css_class("packlift-library-detail-row");
     match method {
-        "wine" => settings.append(&library_detail_row(
-            tr("Runtime"),
-            &program_runtime_label(record),
-        )),
+        "wine" => {
+            let current = current.clone();
+            settings.append(&windows_ui::launch_settings(
+                window,
+                &record,
+                move |record| {
+                    if let Some(row) = row.upgrade() {
+                        row.set_subtitle(&library_subtitle(&record));
+                    }
+                    *current.borrow_mut() = record;
+                },
+            ));
+        }
         "toolbox" => {
             let container = record["container"]
                 .as_str()

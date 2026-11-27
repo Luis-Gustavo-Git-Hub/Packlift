@@ -796,21 +796,6 @@ pub fn discovery_page(runner: &Runner, collection: &str, page: usize) -> Result<
     })
 }
 
-pub fn discovery_apps(
-    runner: &Runner,
-    collection: &str,
-    installed: &BTreeSet<String>,
-) -> Vec<CatalogApp> {
-    discovery_page(runner, collection, 1)
-        .map(|page| {
-            page.apps
-                .into_iter()
-                .filter(|app| !installed.contains(&app.id))
-                .take(6)
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 fn flathub_search(runner: &Runner, query: &str, page: usize) -> Result<Value> {
     let body = json!({"query": query, "page": page, "hits_per_page": PAGE_SIZE}).to_string();
