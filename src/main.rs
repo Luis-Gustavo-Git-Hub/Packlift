@@ -841,56 +841,6 @@ fn library_actions(
         buttons.append(&launch);
     }
 
-    let (menu, popover, actions) = action_menu(
-        &tr("More options for {name}").replace("{name}", name),
-        "view-more-symbolic",
-    );
-    menu.set_valign(gtk::Align::Center);
-    if method == "wine" {
-        let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
-        let parent = window.downgrade();
-        add_menu_item(&popover, &actions, tr("Open prefix folder"), move || {
-            if let Some(window) = parent.upgrade() {
-                open_prefix_folder(&window, &runtime);
-            }
-        });
-        let app = app.clone();
-        let record = record.clone();
-        let parent = window.downgrade();
-        add_menu_item(&popover, &actions, tr("Change runtime…"), move || {
-            if let Some(window) = parent.upgrade() {
-                program_runtime_dialog(&app, &window, &record);
-            }
-        });
-    }
-    if method == "toolbox" {
-        let app = app.clone();
-        let record = record.clone();
-        let parent = window.downgrade();
-        add_menu_item(
-            &popover,
-            &actions,
-            tr("Repair installation…"),
-            move || {
-                let Some(window) = parent.upgrade() else {
-                    return;
-                };
-                let app = app.clone();
-                let record = record.clone();
-                confirm_library_action(
-                &window, tr("Repair this installation?"),
-                tr("Packlift will reinstall the package in Toolbx, check dependencies and recreate its shortcuts."),
-                tr("Repair"), false, move |window| {
-                    let record = record.clone();
-                    run_job(&app, window, tr("Repairing installation"), move |logger| {
-                        installer_with_output(logger)?.repair_container_app(&record).map(Some)
-                    });
-                },
-            );
-            },
-        );
-    }
-
     let (remove, detail) = match (game, method) {
         (true, _) => (
             tr("Remove shortcut"),
@@ -910,11 +860,14 @@ fn library_actions(
             tr("This removes the installed program and its shortcuts.").into(),
         ),
     };
+    let uninstall = text_button(remove);
+    uninstall.add_css_class("destructive-action");
+    uninstall.set_valign(gtk::Align::Center);
     let name = name.to_owned();
     let record = record.clone();
     let app = app.clone();
     let parent = window.downgrade();
-    add_menu_item(&popover, &actions, &format!("{remove}…"), move || {
+    uninstall.connect_clicked(move |_| {
         let Some(window) = parent.upgrade() else {
             return;
         };
@@ -964,7 +917,7 @@ fn library_actions(
         });
         dialog.present();
     });
-    buttons.append(&menu);
+    buttons.append(&uninstall);
     buttons
 }
 
@@ -1087,33 +1040,10 @@ fn library_detail(
     let settings = gtk::Box::new(gtk::Orientation::Vertical, 10);
     settings.add_css_class("packlift-library-detail-row");
     match method {
-        "wine" => {
-            settings.append(&library_detail_row(
-                tr("Runtime"),
-                &program_runtime_label(record),
-            ));
-            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let change = text_button(tr("Change runtime…"));
-            let app = app.clone();
-            let parent = window.downgrade();
-            let change_record = record.clone();
-            change.connect_clicked(move |_| {
-                if let Some(window) = parent.upgrade() {
-                    program_runtime_dialog(&app, &window, &change_record);
-                }
-            });
-            actions.append(&change);
-            let runtime = record["runtime"].as_str().unwrap_or_default().to_owned();
-            let open = text_button(tr("Open prefix folder"));
-            let parent = window.downgrade();
-            open.connect_clicked(move |_| {
-                if let Some(window) = parent.upgrade() {
-                    open_prefix_folder(&window, &runtime);
-                }
-            });
-            actions.append(&open);
-            settings.append(&actions);
-        }
+        "wine" => settings.append(&library_detail_row(
+            tr("Runtime"),
+            &program_runtime_label(record),
+        )),
         "toolbox" => {
             let container = record["container"]
                 .as_str()
@@ -1230,93 +1160,6 @@ fn program_runtime_label(record: &Value) -> String {
         .and_then(|path| Path::new(path).file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| tr("Proton (automatic)").into())
-}
-
-fn program_runtime_dialog(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
-    let Some(id) = record["id"].as_str().map(str::to_owned) else {
-        return;
-    };
-    let manager = match installer() {
-        Ok(manager) => manager,
-        Err(error) => {
-            show_error(window, &error.to_string());
-            return;
-        }
-    };
-    let versions = manager.installed_proton_versions();
-    let saved = record["proton_path"].as_str().map(Path::new);
-    let mut names = vec!["Wine".to_owned(), tr("Proton (automatic)").to_owned()];
-    names.extend(versions.iter().map(|path| {
-        format!(
-            "Proton · {}",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        )
-    }));
-    let labels = names.iter().map(String::as_str).collect::<Vec<_>>();
-    let choices = gtk::DropDown::from_strings(&labels);
-    choices.update_property(&[gtk::accessible::Property::Label(tr(
-        "Runtime for this program",
-    ))]);
-    let selected = if record["runtime"] == "proton" {
-        saved
-            .and_then(|path| versions.iter().position(|version| version == path))
-            .map(|index| index + 2)
-            .unwrap_or(1)
-    } else {
-        0
-    };
-    choices.set_selected(selected as u32);
-
-    let name = record["name"].as_str().unwrap_or(tr("Program"));
-    let title = tr("Runtime for {name}").replace("{name}", name);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    body.set_spacing(12);
-    body.set_margin_top(16);
-    body.set_margin_bottom(16);
-    body.set_margin_start(16);
-    body.set_margin_end(16);
-    body.append(&home_label(tr("Windows runtime"), "heading"));
-    body.append(&choices);
-    body.append(&home_label(
-        if versions.is_empty() {
-            tr("Proton (automatic) uses UMU to download Proton as needed. Installed Proton versions will appear here.")
-        } else {
-            tr("Proton (automatic) uses UMU to manage the version. Pick an installed version to use it for this app.")
-        },
-        "dim-label",
-    ));
-    body.append(&home_label(
-        tr("This setting applies to this program and its system menu shortcut."),
-        "dim-label",
-    ));
-    if saved.is_some() && selected == 1 {
-        body.append(&home_label(
-            tr("The previously selected Proton version is no longer installed."),
-            "warning",
-        ));
-    }
-    let app = app.clone();
-    let parent = window.downgrade();
-    let apply = text_button(tr("Apply"));
-    apply.add_css_class("suggested-action");
-    apply.connect_clicked(move |_| {
-        let Some(window) = parent.upgrade() else {
-            return;
-        };
-        let selected = choices.selected();
-        let selected_proton = selected
-            .checked_sub(2)
-            .and_then(|i| versions.get(i as usize))
-            .cloned();
-        let runtime = if selected == 0 { "wine" } else { "proton" };
-        let id = id.clone();
-        run_job(&app, &window, tr("Saving Windows runtime"), move |logger| {
-            installer_with_output(logger)?
-                .set_program_runtime(&id, runtime, selected_proton.as_deref())
-                .map(|_| None)
-        });
-    });
-    show_editor(window, &title, &body, &apply);
 }
 
 fn open_package(app: &adw::Application, path: &Path) {
