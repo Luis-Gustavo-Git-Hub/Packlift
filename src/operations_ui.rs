@@ -88,7 +88,7 @@ pub(super) fn submit(
     task: impl FnOnce(LogHandler) -> Result<Option<serde_json::Value>> + Send + 'static,
     completed: impl FnOnce(Result<Option<serde_json::Value>>) + 'static,
     released: impl FnOnce() + 'static,
-) {
+) -> u64 {
     let id = NEXT.with(|next| {
         let id = next.get();
         next.set(id + 1);
@@ -121,6 +121,7 @@ pub(super) fn submit(
     });
     notify();
     start_next();
+    id
 }
 
 fn start_next() {
@@ -409,6 +410,34 @@ pub(super) fn panel() -> gtk::Box {
     (refresh.borrow_mut())();
     observe(&panel, move || (refresh.borrow_mut())());
     panel
+}
+
+pub(super) fn track(slot: &gtk::Box, id: u64, title: &str) {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 7);
+    let card = RunningCard::new(&container, title);
+    slot.append(&container);
+    let container_ref = container.downgrade();
+    let refresh = move || {
+        if container_ref.upgrade().is_none() {
+            return;
+        }
+        HISTORY.with_borrow(|history| {
+            let Some(entry) = history.iter().find(|entry| entry.id == id) else {
+                return;
+            };
+            let progress = match entry.phase {
+                Phase::Queued => Progress::stage(
+                    "In the operations queue",
+                    "Installation will start when the current operation finishes.",
+                ),
+                Phase::Running => entry.progress,
+                _ => return,
+            };
+            card.update(progress);
+        });
+    };
+    refresh();
+    observe(&container, refresh);
 }
 
 struct RunningCard {

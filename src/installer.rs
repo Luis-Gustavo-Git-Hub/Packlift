@@ -890,6 +890,9 @@ impl Installer {
         )?;
 
         let mut record = json!({"name": package.name, "method": "flatpak"});
+        if let Some((id, _, _)) = bundle.as_ref().and_then(|(reference, _)| flatpak_ref_parts(reference)) {
+            record["flatpak_app_id"] = json!(id);
+        }
         let mut changed = self.flatpak_apps()?.into_iter().filter(|(reference, app)| {
             if let Some((expected_ref, _)) = &bundle {
                 return reference == expected_ref;

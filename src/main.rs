@@ -1351,6 +1351,20 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                 }
                 _ => {}
             }
+            let progress = gtk::Box::new(gtk::Orientation::Vertical, 7);
+            progress.add_css_class("packlift-progress");
+            progress.set_visible(false);
+            progress.set_margin_start(16);
+            progress.set_margin_end(16);
+            progress.set_margin_top(10);
+            toolbar.add_bottom_bar(&progress);
+            let install_button = install.downgrade();
+            progress.connect_visible_notify(move |progress| {
+                if let Some(install) = install_button.upgrade() {
+                    install.set_sensitive(!progress.is_visible());
+                }
+            });
+            let progress = progress.downgrade();
             let setup = setup.ok().flatten();
             install.add_css_class("suggested-action");
             let app = app.clone();
@@ -1369,7 +1383,9 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                     if let Some(window) = weak_window.upgrade() {
                         choose_windows_action(&app, &window, &package, &runtime);
                     }
-                } else if let Some(window) = weak_window.upgrade() {
+                } else if let (Some(window), Some(progress)) =
+                    (weak_window.upgrade(), progress.upgrade())
+                {
                     let setup = setup.clone();
                     let mut package = package.clone();
                     package.resolve_libraries = libraries.is_active();
@@ -1384,10 +1400,12 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                     }
                     let runtime = runtime.clone();
                     if kind == "setup" {
-                        run_job(
+                        let title = format!("{} · {}", tr("Installing program or game"), package.name);
+                        run_job_with_progress(
                             &app,
                             &window,
-                            tr("Installing program or game"),
+                            &title,
+                            Some(&progress),
                             move |logger| {
                                 installer_with_output(logger)?
                                     .install_windows(&package, &runtime)
@@ -1395,7 +1413,8 @@ fn review_package(app: &adw::Application, window: &adw::ApplicationWindow, path:
                             },
                         );
                     } else {
-                        run_job(&app, &window, tr("Installing program"), move |logger| {
+                        let title = format!("{} · {}", tr("Installing program"), package.name);
+                        run_job_with_progress(&app, &window, &title, Some(&progress), move |logger| {
                             let manager = installer_with_output(logger)?;
                             if let Some(command) = setup {
                                 manager.setup_container_support(&command)?;
@@ -1712,6 +1731,7 @@ fn run_job_with_progress<F>(
     F: FnOnce(LogHandler) -> Result<Option<Value>> + Send + 'static,
 {
     let library = window.widget_name() == "packlift-library";
+    let package_review = window.widget_name() == "packlift-package-review";
     if operations_ui::has_active_title(title)
         || inline.map_or_else(
             || !library && window.has_css_class("packlift-running-job"),
@@ -1722,26 +1742,34 @@ fn run_job_with_progress<F>(
     }
     let is_inline = inline.is_some();
     if let Some(slot) = inline {
-        slot.append(&home_label(tr("In the operations queue"), "caption"));
+        if !package_review {
+            slot.append(&home_label(tr("In the operations queue"), "caption"));
+        }
         slot.set_visible(true);
     } else if !library {
         window.add_css_class("packlift-running-job");
     }
 
-    let inline = inline.map(ObjectExt::downgrade);
+    let progress_slot = inline.map(ObjectExt::downgrade);
+    let release_slot = progress_slot.clone();
     let owner = window.downgrade();
     let original = window.content().map(|content| content.downgrade());
     let application = app.clone();
     let completed_owner = owner.clone();
-    operations_ui::submit(app.upcast_ref(), title, task, move |result| {
+    let id = operations_ui::submit(app.upcast_ref(), title, task, move |result| {
         let window = completed_owner.upgrade().filter(|window| window.application().is_some());
+        let still_here = window.as_ref().is_some_and(|window| {
+            original.as_ref().and_then(glib::WeakRef::upgrade) == window.content()
+        });
         if let Ok(Some(record)) = &result {
-            if record["method"] == "flatpak" && record["flatpak_already_installed"] != true {
+            if record["method"] == "flatpak"
+                && record["flatpak_already_installed"] != true
+                && !(package_review && still_here)
+            {
                 notify_flatpak_installed(&application, record);
             }
         }
         let Some(window) = window else { return; };
-        let still_here = original.as_ref().and_then(glib::WeakRef::upgrade) == window.content();
         match result {
             Err(PackliftError::InstalledExecutableRequired { package, runtime }) => {
                 choose_installed_executable(&application, &window, *package, runtime);
@@ -1750,8 +1778,8 @@ fn run_job_with_progress<F>(
                 choose_installed_executable(&application, &window, *package, runtime);
                 show_error(&window, &reason);
             }
-            Err(error) if !is_inline && still_here => show_error(&window, &error.to_string()),
-            Ok(Some(record)) if record["method"] != "flatpak" && still_here => {
+            Err(error) if (package_review || !is_inline) && still_here => show_error(&window, &error.to_string()),
+            Ok(Some(record)) if still_here && (package_review || record["method"] != "flatpak") => {
                 show_success(&application, &window, &record);
             }
             Ok(_) => {
@@ -1769,13 +1797,16 @@ fn run_job_with_progress<F>(
                 window.remove_css_class("packlift-running-job");
             }
         }
-        if let Some(slot) = inline.and_then(|slot| slot.upgrade()) {
-            if let Some(child) = slot.first_child() {
+        if let Some(slot) = release_slot.and_then(|slot| slot.upgrade()) {
+            while let Some(child) = slot.first_child() {
                 slot.remove(&child);
             }
             slot.set_visible(false);
         }
     });
+    if let Some(slot) = progress_slot.and_then(|slot| slot.upgrade()).filter(|_| package_review) {
+        operations_ui::track(&slot, id, title);
+    }
 }
 
 fn choose_installed_executable(
@@ -1866,10 +1897,18 @@ fn notify_flatpak_installed(app: &adw::Application, record: &Value) {
 
 fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record: &Value) {
     let app = app.clone();
+    let package_review = window.widget_name() == "packlift-package-review";
+    let already_installed = record["flatpak_already_installed"] == true;
+    let self_install = record["flatpak_app_id"] == APP_ID;
+    let record_is_flatpak = record["method"] == "flatpak";
     let target = window.downgrade();
     let finish = Rc::new(move || {
         if let Some(window) = target.upgrade() {
-            render_home(&app, &window);
+            if package_review && record_is_flatpak {
+                window.close();
+            } else {
+                render_home(&app, &window);
+            }
         }
     });
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1889,6 +1928,8 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     let is_game = record["game_shortcut"].as_bool().unwrap_or(false);
     let title = gtk::Label::new(Some(if is_game {
         tr("Game added to Packlift")
+    } else if already_installed {
+        tr("Already installed")
     } else {
         tr("Installation complete")
     }));
@@ -1898,7 +1939,11 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     body.append(&title);
     let name = record["name"].as_str().unwrap_or(tr("Program"));
     let runnable = record["exports"][0]["argv"].is_array();
-    let message = if runnable {
+    let message = if already_installed {
+        tr("This version of {name} is already installed.").replace("{name}", name)
+    } else if self_install {
+        tr("Close all Packlift windows and open it again from your app menu to use this version.").to_owned()
+    } else if runnable {
         tr("{name} is ready to use.").replace("{name}", name)
     } else {
         tr("{name} is installed. This package has no application launcher.").replace("{name}", name)
@@ -1935,7 +1980,7 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
             finish();
         }
     });
-    if runnable {
+    if runnable && !self_install {
         actions.append(&open);
     }
     body.append(&actions);

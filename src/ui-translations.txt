@@ -467,3 +467,7 @@ No reviews available.|Nenhuma avaliação disponível.|||
 {count} ratings|{count} avaliações|||
 More reviews|Mais avaliações|||
 {count} out of 5 stars|{count} de 5 estrelas|||
+Installation will start when the current operation finishes.|A instalação começa quando a operação atual terminar.|||
+Already installed|Já instalado|||
+This version of {name} is already installed.|Esta versão de {name} já está instalada.|||
+Close all Packlift windows and open it again from your app menu to use this version.|Feche todas as janelas do Packlift e abra o app novamente pelo menu para usar esta versão.|||
