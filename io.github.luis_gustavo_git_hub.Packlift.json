@@ -11,6 +11,7 @@
     "--socket=pulseaudio",
     "--device=dri",
     "--share=network",
+    "--talk-name=org.kde.StatusNotifierWatcher",
     "--filesystem=home",
     "--filesystem=xdg-data/applications:create",
     "--filesystem=xdg-data/icons:create"

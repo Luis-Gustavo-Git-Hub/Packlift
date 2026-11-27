@@ -20,14 +20,14 @@ jobs:
       - name: Install build and validation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y appstream desktop-file-utils libadwaita-1-dev libarchive-tools libgtk-4-dev squashfs-tools zstd
+          sudo apt-get install -y appstream desktop-file-utils libadwaita-1-dev libarchive-tools libgtk-4-dev squashfs-tools xvfb zstd
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check lints
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Run tests and validate desktop integration
         run: |
-          make test
+          xvfb-run -a make test
           make install DESTDIR="$RUNNER_TEMP/flatapk-install"
           desktop-file-validate data/io.github.luis_gustavo_git_hub.Packlift.desktop
           appstreamcli validate --no-net data/io.github.luis_gustavo_git_hub.Packlift.metainfo.xml

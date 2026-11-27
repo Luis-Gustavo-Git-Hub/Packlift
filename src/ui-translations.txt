@@ -450,7 +450,7 @@ Could not read the system update check result. See the Packlift log.|Não foi po
 System update|Atualização do sistema|||
 Updating system|Atualizando o sistema|||
 Start Packlift with the system|Iniciar o Packlift junto com o sistema|||
-Check for updates in the background when you sign in. The window stays closed.|Verifique atualizações em segundo plano ao entrar na sessão. A janela não será aberta.|||
+Check for updates in the background when you sign in. A tray icon shows when supported.|Verifique atualizações em segundo plano ao entrar na sessão. Um ícone na bandeja aparecerá se houver suporte.|||
 Other categories|Outras categorias|||
 New & Updated|Novos e atualizados|||
 Codecs|Codecs|||
