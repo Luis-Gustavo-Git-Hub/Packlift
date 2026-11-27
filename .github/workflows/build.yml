@@ -16,6 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.89.0
+          components: rustfmt, clippy
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check lints
@@ -38,6 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.89.0
+          components: rustfmt, clippy
       - name: Audit dependencies
         run: |
           cargo install cargo-audit --version 0.23.0 --locked
@@ -95,6 +97,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.89.0
+          components: rustfmt, clippy
       - name: Install Rust integration tools
         run: |
           sudo apt-get update
