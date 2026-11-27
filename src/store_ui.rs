@@ -2478,30 +2478,33 @@ fn show_project_details(
     parent: &glib::WeakRef<adw::ApplicationWindow>,
 ) {
     if !license.is_empty() || installs.is_some() {
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         card.set_valign(gtk::Align::Start);
         card.add_css_class("packlift-store-info-card");
         let icon = gtk::Image::from_icon_name("text-x-generic-symbolic");
-        icon.set_halign(gtk::Align::Start);
+        icon.set_valign(gtk::Align::Start);
         icon.add_css_class("packlift-store-fact-badge");
         card.append(&icon);
+        let information = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        information.set_hexpand(true);
         if !license.is_empty() {
             let label = match free_software {
                 Some(true) => tr("Free software"),
                 Some(false) => tr("Proprietary software"),
                 None => tr("License"),
             };
-            card.append(&home_label(label, "heading"));
+            information.append(&home_label(label, "heading"));
             let value = home_label(&license, "dim-label");
             value.set_selectable(true);
-            card.append(&value);
+            information.append(&value);
         }
         if let Some(installs) = installs {
-            card.append(&home_label(
+            information.append(&home_label(
                 &format!("{} · {installs}", tr("Installs last month")),
                 "dim-label",
             ));
         }
+        card.append(&information);
         section.append(&card);
     }
     if !links.is_empty() {
@@ -2559,7 +2562,7 @@ fn show_project_details(
 
 #[cfg(test)]
 #[test]
-fn project_details_use_only_the_height_of_the_license_and_links() {
+fn project_license_is_compact_and_has_no_hover_target_in_the_gap() {
     crate::with_gtk_test(|| {
         adw::init().unwrap();
         let project = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -2584,6 +2587,10 @@ fn project_details_use_only_the_height_of_the_license_and_links() {
             .unwrap();
         assert!(project.is_visible());
         assert!(links.next_sibling().is_none());
+        assert_eq!(license.orientation(), gtk::Orientation::Horizontal);
+        let window = gtk::Window::builder().child(&project).build();
+        window.present();
+        assert!(project.is_mapped());
         for width in [320, 860] {
             let (_, license_height, _, _) = license.measure(gtk::Orientation::Vertical, width);
             let (_, links_height, _, _) = links.measure(gtk::Orientation::Vertical, width);
@@ -2593,7 +2600,31 @@ fn project_details_use_only_the_height_of_the_license_and_links() {
                 total_height,
                 license_height + links_height + project.spacing()
             );
+            project.allocate(width, total_height, -1, None);
+            let bounds = license.compute_bounds(&project).unwrap();
+            let gap_y = f64::from(bounds.y() + bounds.height()) + 1.0;
+            assert_eq!(
+                project.pick(f64::from(width) / 2.0, gap_y, gtk::PickFlags::DEFAULT),
+                Some(project.clone().upcast())
+            );
+            let information = license.last_child().and_downcast::<gtk::Box>().unwrap();
+            let value = information
+                .first_child()
+                .and_then(|heading| heading.next_sibling())
+                .and_downcast::<gtk::Label>()
+                .unwrap();
+            let bounds = value.compute_bounds(&project).unwrap();
+            assert!(value.is_selectable());
+            assert_eq!(
+                project.pick(
+                    f64::from(bounds.x()) + 1.0,
+                    f64::from(bounds.y()) + 1.0,
+                    gtk::PickFlags::DEFAULT
+                ),
+                Some(value.upcast())
+            );
         }
+        window.close();
     });
 }
 
