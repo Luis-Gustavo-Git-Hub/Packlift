@@ -2249,10 +2249,20 @@ fn show_success(app: &adw::Application, window: &adw::ApplicationWindow, record:
     close.connect_clicked(move |_| close_page());
     actions.append(&close);
     if record["method"].as_str() == Some("wine") {
-        actions.append(&prefix_folder_button(
-            window,
-            record["runtime"].as_str().unwrap_or_default(),
-        ));
+        let data = packlift_data_dir();
+        let runtime = record["runtime"].as_str().unwrap_or_default();
+        if let Some(prefix) = packlift::installer::game_prefix_directory(&data, record) {
+            let button = text_button(tr("Open prefix folder"));
+            let parent = window.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(window) = parent.upgrade() {
+                    show_prefix_path(&window, &prefix);
+                }
+            });
+            actions.append(&button);
+        } else {
+            actions.append(&prefix_folder_button(window, runtime));
+        }
     }
     let open = gtk::Button::with_label(tr("Open"));
     open.add_css_class("suggested-action");
@@ -2289,8 +2299,11 @@ fn prefix_folder_button(window: &adw::ApplicationWindow, runtime: &str) -> gtk::
 
 fn open_prefix_folder(window: &adw::ApplicationWindow, runtime: &str) {
     let drive = windows_prefix_drive(&packlift_data_dir(), runtime);
-    // The desktop portal opens the parent and selects the C: drive.
-    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(drive)));
+    show_prefix_path(window, &drive);
+}
+
+fn show_prefix_path(window: &adw::ApplicationWindow, path: &Path) {
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
     let parent = window.downgrade();
     launcher.open_containing_folder(Some(window), None::<&gio::Cancellable>, move |result| {
         if let (Err(error), Some(window)) = (result, parent.upgrade()) {

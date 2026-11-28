@@ -534,3 +534,13 @@ Show AppImage in folder|Mostrar AppImage na pasta|||
 Update source saved.|Fonte de atualização salva.|||
 Use an HTTPS .zsync link or a supported release update string.|Use um link HTTPS .zsync ou uma configuração de atualização compatível.|||
 This updater cannot use a custom AppImage source.|Este atualizador não aceita uma fonte personalizada.|||
+Previous AppImage versions|Versões anteriores do AppImage|||
+Automatic updates are paused for this AppImage until you update it manually.|As atualizações automáticas estão pausadas para este AppImage até você atualizá-lo manualmente.|||
+Restore|Restaurar|||
+Restoring an AppImage version|Restaurando uma versão do AppImage|||
+Could not read AppImage history.|Não foi possível ler o histórico do AppImage.|||
+No previous versions saved.|Nenhuma versão anterior salva.|||
+This AppImage is no longer in the library.|Este AppImage não está mais na biblioteca.|||
+This AppImage version is no longer available.|Esta versão do AppImage não está mais disponível.|||
+Use a separate Wine prefix|Usar um prefixo Wine separado|||
+Switching prefixes keeps files and settings in their original prefix.|Ao trocar de prefixo, os arquivos e as configurações permanecem no prefixo original.|||
