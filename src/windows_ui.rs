@@ -80,6 +80,22 @@ pub(super) fn launch_settings(
     arguments.set_text(record["launch_arguments"].as_str().unwrap_or_default());
     group.add(&arguments);
 
+    let game_id = adw::EntryRow::builder()
+        .title(tr("Game ID (Proton)"))
+        .build();
+    game_id.set_text(record["game_id"].as_str().unwrap_or_default());
+    game_id.set_tooltip_text(Some(tr(
+        "Enter a Proton game ID like umu-1234 or leave the field blank.",
+    )));
+    group.add(&game_id);
+    game_id.set_sensitive(runtime.selected() != 0);
+    let game_id_ref = game_id.downgrade();
+    runtime.connect_selected_notify(move |runtime| {
+        if let Some(game_id) = game_id_ref.upgrade() {
+            game_id.set_sensitive(runtime.selected() != 0);
+        }
+    });
+
     let options = &record["wine_options"];
     let disable_dxvk = adw::SwitchRow::builder()
         .title(tr("Disable DXVK (Proton)"))
@@ -254,10 +270,12 @@ pub(super) fn launch_settings(
     );
     let environment_buffer = environment_buffer.clone();
     let fields = panel.downgrade();
+    let game_id = game_id.downgrade();
     save.connect_clicked(move |button| {
         let (Some(runtime), Some(directory), Some(arguments), Some(label), Some(group), Some(disable_dxvk), Some(disable_vkd3d), Some(disable_esync), Some(disable_fsync)) =
             (runtime.upgrade(), directory.upgrade(), arguments.upgrade(), status.upgrade(), fields.upgrade(), disable_dxvk.upgrade(), disable_vkd3d.upgrade(), disable_esync.upgrade(), disable_fsync.upgrade())
         else { return; };
+        let Some(game_id) = game_id.upgrade() else { return; };
         let selection = runtime.selected();
         let runtime = if selection == 0 { "wine" } else { "proton" };
         let proton_path = selection.checked_sub(2).and_then(|index| versions.borrow().get(index as usize).cloned());
@@ -265,6 +283,7 @@ pub(super) fn launch_settings(
         let options = WindowsLaunchOptions {
             working_directory: (!path.is_empty()).then(|| PathBuf::from(path.as_str())),
             arguments: arguments.text().to_string(),
+            game_id: game_id.text().to_string(),
             environment: environment_buffer.text(
                 &environment_buffer.start_iter(),
                 &environment_buffer.end_iter(),
@@ -306,6 +325,7 @@ pub(super) fn launch_settings(
                         label.set_text(match message.as_str() {
                             "Choose an existing folder for the working directory." => tr("Choose an existing folder for the working directory."),
                             "Check the quotes and characters in the launch arguments." => tr("Check the quotes and characters in the launch arguments."),
+                            "Enter a Proton game ID like umu-1234 or leave the field blank." => tr("Enter a Proton game ID like umu-1234 or leave the field blank."),
                             "That Proton version is no longer available. Choose another runtime in Settings." => tr("That Proton version is no longer available. Choose another runtime in Settings."),
                             _ => &message,
                         });

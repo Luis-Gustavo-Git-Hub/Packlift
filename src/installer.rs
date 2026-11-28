@@ -35,6 +35,7 @@ pub struct WindowsLaunchOptions {
     pub working_directory: Option<PathBuf>,
     pub arguments: String,
     pub environment: String,
+    pub game_id: String,
     pub disable_dxvk: bool,
     pub disable_vkd3d: bool,
     pub disable_esync: bool,
@@ -2177,6 +2178,27 @@ fi"#
         versions.into_iter().collect()
     }
 
+    pub fn appimage_path(&self, id: &str) -> Option<PathBuf> {
+        managed_appimage_path(&self.data, id).filter(|path| path.is_file())
+    }
+
+    pub fn set_appimage_update_source(&self, id: &str, source: &str) -> Result<Value> {
+        let source = normalize_appimage_source(source)?;
+        let _operation = operation(&self.data)?;
+        let mut record = self
+            .registry
+            .apps()?
+            .into_iter()
+            .find(|app| app["id"].as_str() == Some(id) && app["method"] == "local")
+            .filter(|_| self.appimage_path(id).is_some())
+            .ok_or_else(|| {
+                PackliftError::Message("This AppImage is no longer in the library.".into())
+            })?;
+        record["appimage_update_source"] = json!(source);
+        self.registry.save(&record)?;
+        Ok(record)
+    }
+
     pub fn set_program_runtime(
         &self,
         id: &str,
@@ -2248,6 +2270,7 @@ fi"#
                 .unwrap_or_default()
                 .to_owned(),
             environment: String::new(),
+            game_id: record["game_id"].as_str().unwrap_or_default().into(),
             disable_dxvk: false,
             disable_vkd3d: false,
             disable_esync: false,
@@ -2288,6 +2311,7 @@ fi"#
             })?;
         arguments.extend(extra_arguments);
         let environment = parse_windows_environment(&options.environment)?;
+        let game_id = normalize_game_id(&options.game_id)?;
         for (key, value) in [
             ("PROTON_USE_WINED3D", options.disable_dxvk),
             ("PROTON_NO_D3D12", options.disable_vkd3d),
@@ -2325,6 +2349,7 @@ fi"#
             &machine,
         );
         wine.proton_path = proton_path.map(Path::to_owned);
+        wine.game_id = game_id.clone();
         wine.extra_env = environment.clone();
         for (key, value) in [
             ("PROTON_USE_WINED3D", options.disable_dxvk),
@@ -2340,6 +2365,7 @@ fi"#
         let mut updated = record.clone();
         updated["runtime"] = json!(wine.runtime);
         updated["proton_path"] = json!(proton_path);
+        updated["game_id"] = json!(game_id);
         updated["launch_directory"] = json!(options.working_directory);
         updated["launch_arguments"] = json!(options.arguments);
         updated["launch_environment"] = json!(environment);
@@ -2976,6 +3002,48 @@ fn windows_desktop_command(argv: &[String]) -> Vec<String> {
     result
 }
 
+pub fn managed_appimage_path(data: &Path, id: &str) -> Option<PathBuf> {
+    (id.len() == 20 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| data.join("installed").join(id).join("program.AppImage"))
+}
+
+pub fn normalize_appimage_source(input: &str) -> Result<Option<String>> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let safe = !input
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace());
+    let url = input.strip_prefix("zsync|").unwrap_or(input);
+    let valid_url = url.strip_prefix("https://").is_some_and(|rest| {
+        rest.split_once('/').is_some_and(|(host, path)| {
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+                && path.ends_with(".zsync")
+                && !path.contains(['|', '?', '#', '\\'])
+        })
+    });
+    if safe && valid_url {
+        return Ok(Some(format!("zsync|{url}")));
+    }
+    let fields: Vec<_> = input.split('|').collect();
+    if safe
+        && matches!(fields.as_slice(),
+        ["gh-releases-zsync" | "gl-releases-zsync" | "cb-releases-zsync", owner, repo, tag, filename]
+        if [owner, repo, tag].iter().all(|field| !field.is_empty() && !matches!(**field, "." | "..")
+            && field.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+            && filename.ends_with(".zsync") && !filename.contains(['/', '\\', '?', '#']))
+    {
+        return Ok(Some(input.to_owned()));
+    }
+    Err(PackliftError::Message(
+        "Use an HTTPS .zsync link or a supported release update string.".into(),
+    ))
+}
+
 fn is_host_appimage(record: &Value) -> bool {
     record["method"] == "local"
         && record["sandbox_only"] != true
@@ -3033,6 +3101,7 @@ struct Wine {
     umu: bool,
     flatpak: bool,
     proton_path: Option<PathBuf>,
+    game_id: Option<String>,
     extra_env: BTreeMap<String, String>,
 }
 
@@ -3052,6 +3121,7 @@ impl Wine {
             prefix: shared_windows_prefix(data),
             integrations: data.join("wine/desktop"),
             proton_path: None,
+            game_id: None,
             extra_env: BTreeMap::new(),
         }
     }
@@ -3059,7 +3129,10 @@ impl Wine {
     fn command(&self, tool: &str, args: &[String], cwd: Option<&Path>) -> Vec<String> {
         let mut values = vec![("WINEPREFIX", self.prefix.to_string_lossy().to_string())];
         if self.umu {
-            values.push(("GAMEID", "umu-default".into()));
+            values.push((
+                "GAMEID",
+                self.game_id.as_deref().unwrap_or("umu-default").into(),
+            ));
             if let Some(path) = &self.proton_path {
                 values.push(("PROTONPATH", path.to_string_lossy().into_owned()));
             }
@@ -3168,6 +3241,24 @@ impl Wine {
 
 fn short_hash(value: &str) -> Result<String> {
     Ok(sha256_bytes(value.as_bytes())?[..20].to_owned())
+}
+
+fn normalize_game_id(input: &str) -> Result<Option<String>> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    if input == "umu-default"
+        || (input.len() <= 32
+            && input
+                .strip_prefix("umu-")
+                .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())))
+    {
+        return Ok(Some(input.to_owned()));
+    }
+    Err(PackliftError::Message(
+        "Enter a Proton game ID like umu-1234 or leave the field blank.".into(),
+    ))
 }
 
 fn parse_windows_environment(input: &str) -> Result<BTreeMap<String, String>> {
@@ -5121,6 +5212,125 @@ mod tests {
     }
 
     #[test]
+    fn appimage_source_accepts_zsync_and_supported_forge_releases() {
+        use super::{managed_appimage_path, normalize_appimage_source, Path};
+
+        let url = "https://example.org/Example.AppImage.zsync";
+        assert_eq!(
+            normalize_appimage_source(url).unwrap(),
+            Some(format!("zsync|{url}"))
+        );
+        assert_eq!(normalize_appimage_source("  ").unwrap(), None);
+        let release = "gh-releases-zsync|owner|app|latest|app-*.AppImage.zsync";
+        assert_eq!(
+            normalize_appimage_source(release).unwrap().as_deref(),
+            Some(release)
+        );
+        for invalid in [
+            "http://example.org/app.zsync",
+            "https://example.org/app.AppImage",
+            "https://user@example.org/app.zsync",
+            "zsync|file:///tmp/app.zsync",
+            "gh-releases-zsync|owner|app|latest|../app.zsync",
+        ] {
+            assert!(normalize_appimage_source(invalid).is_err(), "{invalid}");
+        }
+        assert!(managed_appimage_path(Path::new("/data"), "../other").is_none());
+    }
+
+    #[test]
+    fn appimage_update_source_is_saved_and_can_be_cleared() {
+        use super::{fs, managed_appimage_path, Installer};
+        use std::sync::Arc;
+
+        let temp = std::env::temp_dir().join(format!(
+            "packlift-appimage-update-source-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Installer::new(
+            Arc::new(|_| {}),
+            Some(temp.clone()),
+            Some(temp.join("applications")),
+        )
+        .unwrap();
+        let id = "0123456789abcdef0123";
+        let path = managed_appimage_path(&temp, id).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"AppImage placeholder").unwrap();
+        manager
+            .registry
+            .save(&serde_json::json!({
+                "id": id,
+                "name": "Example",
+                "method": "local"
+            }))
+            .unwrap();
+
+        let source = "https://example.org/example.AppImage.zsync";
+        manager.set_appimage_update_source(id, source).unwrap();
+        let installed = manager.registry.apps().unwrap();
+        assert_eq!(
+            installed[0]["appimage_update_source"],
+            format!("zsync|{source}")
+        );
+        assert!(manager.set_appimage_update_source(id, "invalid").is_err());
+        let cleared = manager.set_appimage_update_source(id, "").unwrap();
+        assert!(cleared["appimage_update_source"].is_null());
+        assert!(manager.registry.apps().unwrap()[0]["appimage_update_source"].is_null());
+        drop(manager);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn proton_game_ids_are_optional_validated_and_do_not_affect_wine() {
+        use super::{normalize_game_id, Runner, Wine};
+        use std::sync::Arc;
+
+        assert_eq!(normalize_game_id("").unwrap(), None);
+        let game_id = normalize_game_id(" umu-1234 ").unwrap();
+        assert_eq!(game_id.as_deref(), Some("umu-1234"));
+        for invalid in ["umu-", "1234", "umu-12/3", "umu-12 3"] {
+            assert!(normalize_game_id(invalid).is_err());
+        }
+        let mut runner = Runner::new(
+            Some(std::env::temp_dir().join("packlift-runtime-command-test")),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        runner.sandbox = false;
+        let mut proton = Wine::new(
+            runner.clone(),
+            "proton".into(),
+            &runner.data,
+            &runner.data,
+            "x86_64",
+        );
+        assert!(proton
+            .command("wine", &[], None)
+            .contains(&"GAMEID=umu-default".into()));
+        proton.game_id = game_id.clone();
+        assert!(proton
+            .command("wine", &[], None)
+            .contains(&"GAMEID=umu-1234".into()));
+        let mut wine = Wine::new(
+            runner.clone(),
+            "wine".into(),
+            &runner.data,
+            &runner.data,
+            "x86_64",
+        );
+        wine.game_id = game_id;
+        assert!(!wine
+            .command("wine", &[], None)
+            .iter()
+            .any(|part| part.contains("GAMEID=")));
+    }
+
+    #[test]
     fn selected_proton_version_reaches_the_host_shortcut() {
         use super::{Path, PathBuf, Runner, Wine};
         use std::sync::Arc;
@@ -5140,6 +5350,7 @@ mod tests {
             "x86_64",
         );
         wine.proton_path = Some(PathBuf::from("/home/user/Proton Versions/GE-Proton"));
+        wine.game_id = Some("umu-1234".into());
         let argv = wine.command(
             "wine",
             &["/home/user/Games/My Game.exe".into()],
@@ -5149,6 +5360,7 @@ mod tests {
             .iter()
             .any(|arg| arg == "--env=PROTONPATH=/home/user/Proton Versions/GE-Proton"));
         let shortcut = windows_desktop_command(&argv);
+        assert!(shortcut.iter().any(|arg| arg == "GAMEID=umu-1234"));
         assert!(shortcut
             .iter()
             .any(|arg| arg == "PROTONPATH=/home/user/Proton Versions/GE-Proton"));

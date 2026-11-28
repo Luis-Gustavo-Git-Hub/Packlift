@@ -1101,6 +1101,24 @@ fn library_detail(
                 },
             ));
         }
+        "local"
+            if record["id"]
+                .as_str()
+                .and_then(|id| {
+                    packlift::installer::managed_appimage_path(&packlift_data_dir(), id)
+                        .filter(|path| path.is_file())
+                })
+                .is_some() =>
+        {
+            let current = current.clone();
+            settings.append(&updates_ui::appimage_settings(
+                window,
+                &record,
+                move |record| {
+                    *current.borrow_mut() = record;
+                },
+            ));
+        }
         "toolbox" => {
             let container = record["container"]
                 .as_str()

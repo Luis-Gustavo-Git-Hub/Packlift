@@ -10,6 +10,7 @@ use std::{
 use adw::prelude::*;
 use packlift::{
     core::{PackliftError, Result},
+    installer::{managed_appimage_path, normalize_appimage_source},
     system::{home_dir, host_access_available, operation, packlift_data_dir, LogHandler, Runner},
 };
 
@@ -33,7 +34,25 @@ enum Backend {
     System(SystemUpdater),
     Flatpak(&'static str, Vec<String>),
     Flatpaks(Vec<(&'static str, Vec<String>)>),
-    AppImages(String, Vec<std::path::PathBuf>),
+    AppImages(String, Vec<AppImageUpdate>),
+}
+
+#[derive(Clone)]
+struct AppImageUpdate {
+    id: String,
+    path: std::path::PathBuf,
+    source: Option<String>,
+}
+
+impl AppImageUpdate {
+    fn command(&self, updater: &str, mode: &str) -> Vec<String> {
+        let mut args = command(&[updater, mode]);
+        if let Some(source) = &self.source {
+            args.push(format!("--update-info={source}"));
+        }
+        args.extend(["--".into(), self.path.to_string_lossy().into_owned()]);
+        args
+    }
 }
 
 struct Available {
@@ -62,6 +81,115 @@ fn invalidate_check(source: Source) {
             state.invalidated = !state.waiting.is_empty();
         }
     });
+}
+
+pub(super) fn appimage_settings(
+    window: &adw::ApplicationWindow,
+    record: &serde_json::Value,
+    saved: impl Fn(serde_json::Value) + 'static,
+) -> gtk::Box {
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let Some(id) = record["id"].as_str().map(str::to_owned) else {
+        return panel;
+    };
+    let Some(path) = managed_appimage_path(&packlift_data_dir(), &id) else {
+        return panel;
+    };
+    let options = adw::PreferencesGroup::new();
+    let source = adw::EntryRow::builder()
+        .title(tr("AppImage update source"))
+        .build();
+    let stored = record["appimage_update_source"]
+        .as_str()
+        .unwrap_or_default();
+    source.set_text(stored.strip_prefix("zsync|").unwrap_or(stored));
+    options.add(&source);
+    panel.append(&options);
+    panel.append(&home_label(
+        tr("Use a .zsync link from the publisher. Leave blank to use the AppImage's own source."),
+        "dim-label",
+    ));
+    let status = home_label("", "dim-label");
+    status.set_visible(false);
+    panel.append(&status);
+
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let save = text_button(tr("Save"));
+    let folder = text_button(tr("Show AppImage in folder"));
+    actions.append(&save);
+    actions.append(&folder);
+    panel.append(&actions);
+    let parent = window.downgrade();
+    folder.connect_clicked(move |_| {
+        let Some(window) = parent.upgrade() else {
+            return;
+        };
+        let parent = window.downgrade();
+        gtk::FileLauncher::new(Some(&gio::File::for_path(&path))).open_containing_folder(
+            Some(&window),
+            gio::Cancellable::NONE,
+            move |result| {
+                if let (Err(error), Some(window)) = (result, parent.upgrade()) {
+                    crate::show_error(&window, &error.to_string());
+                }
+            },
+        );
+    });
+    let source = source.downgrade();
+    let status = status.downgrade();
+    let saved = Rc::new(saved);
+    let application = window.application().map(|app| app.downgrade());
+    save.connect_clicked(move |button| {
+        let (Some(source), Some(status)) = (source.upgrade(), status.upgrade()) else {
+            return;
+        };
+        let input = source.text().to_string();
+        button.set_sensitive(false);
+        source.set_sensitive(false);
+        status.set_visible(false);
+        let (button, source, status) = (button.downgrade(), source.downgrade(), status.downgrade());
+        let (id, saved) = (id.clone(), saved.clone());
+        let hold = application
+            .as_ref()
+            .and_then(glib::WeakRef::upgrade)
+            .map(|app| app.hold());
+        glib::MainContext::default().spawn_local(async move {
+            let _hold = hold;
+            let result = gio::spawn_blocking(move || {
+                crate::installer()?.set_appimage_update_source(&id, &input)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(PackliftError::Message(
+                    tr("The operation ended unexpectedly.").into(),
+                ))
+            });
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(true);
+            }
+            if let Some(source) = source.upgrade() {
+                source.set_sensitive(true);
+            }
+            let message = match result {
+                Ok(record) => {
+                    invalidate_check(Source::AppImages);
+                    saved(record);
+                    tr("Update source saved.").to_owned()
+                }
+                Err(error) => match error.to_string().as_str() {
+                    "Use an HTTPS .zsync link or a supported release update string." => {
+                        tr("Use an HTTPS .zsync link or a supported release update string.").into()
+                    }
+                    message => message.to_owned(),
+                },
+            };
+            if let Some(status) = status.upgrade() {
+                status.set_text(&message);
+                status.set_visible(true);
+            }
+        });
+    });
+    panel
 }
 
 fn command(args: &[&str]) -> Vec<String> {
@@ -682,44 +810,76 @@ fn check_appimages(runner: &Runner) -> Result<Available> {
         let Some(id) = app["id"].as_str() else {
             continue;
         };
-        let path = data.join("installed").join(id).join("program.AppImage");
+        let Some(path) = managed_appimage_path(&data, id) else {
+            continue;
+        };
         if !path.is_file() {
             let sandbox_only = app["sandbox_only"].as_bool() == Some(true);
             let migrated = sandbox_only
                 && app["source"]
                     .as_str()
                     .map(std::path::Path::new)
-                    .filter(|source| source.is_file())
+                    .filter(|source| {
+                        source.is_file()
+                            && source
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("appimage"))
+                    })
                     .is_some_and(|source| fs::copy(source, &path).is_ok());
             if !migrated {
                 unsupported += if sandbox_only { 1 } else { 0 };
                 continue;
             }
         }
-        let path_text = path.to_string_lossy().into_owned();
-        let describe =
-            runner.capture(&command(&[updater, "--describe", "--", &path_text]), local)?;
-        if !describe.lines().any(|line| {
-            line.trim_start()
-                .strip_prefix("Update info:")
-                .is_some_and(|info| !info.trim().is_empty())
-        }) {
-            unsupported += 1;
+        let name = app["name"].as_str().unwrap_or("AppImage");
+        let source = match normalize_appimage_source(
+            app["appimage_update_source"].as_str().unwrap_or_default(),
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                failed.push(format!("{name}: {error}"));
+                continue;
+            }
+        };
+        if source.is_some() && updater == "appimageupdatetool" {
+            failed.push(format!(
+                "{name}: {}",
+                tr("This updater cannot use a custom AppImage source.")
+            ));
             continue;
         }
-        supported += 1;
-
-        runner.write(&format!("Checking AppImage updates for {}", path.display()));
-        let result = std::process::Command::new(updater)
-            .args(["--check-for-update", "--", path_text.as_str()])
-            .output()?;
-        let diagnostic = String::from_utf8_lossy(&result.stderr);
-        for line in String::from_utf8_lossy(&result.stdout)
-            .lines()
-            .chain(diagnostic.lines())
-        {
-            runner.write(line);
+        let target = AppImageUpdate {
+            id: id.to_owned(),
+            path,
+            source,
+        };
+        if target.source.is_none() {
+            let describe = runner.capture(&target.command(updater, "--describe"), local);
+            if !describe.is_ok_and(|output| {
+                output.lines().any(|line| {
+                    line.trim_start()
+                        .strip_prefix("Update info:")
+                        .is_some_and(|info| !info.trim().is_empty())
+                })
+            }) {
+                unsupported += 1;
+                continue;
+            }
         }
+        supported += 1;
+        let result = match runner.run(
+            &target.command(updater, "--check-for-update"),
+            local,
+            true,
+            false,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                failed.push(format!("{name}: {error}"));
+                continue;
+            }
+        };
+        let diagnostic = String::from_utf8_lossy(&result.stderr);
         if diagnostic.contains("Error:") {
             failed.push(format!(
                 "{}: {}",
@@ -731,7 +891,7 @@ fn check_appimages(runner: &Runner) -> Result<Available> {
         match result.status.code() {
             Some(0) => {}
             Some(1) => {
-                updates.push(path);
+                updates.push(target);
                 names.push(app["name"].as_str().unwrap_or("AppImage").to_owned());
             }
             _ => {
@@ -911,12 +1071,25 @@ fn apply_with_mode(backend: &Backend, log: LogHandler, noninteractive: bool) -> 
             }
         }
         Backend::AppImages(updater, paths) => {
-            for path in paths {
+            let records = packlift::system::Registry::new(&runner.data)?.apps()?;
+            for target in paths {
+                let current = records
+                    .iter()
+                    .find(|app| app["id"].as_str() == Some(&target.id) && app["method"] == "local");
+                let Some(app) = current else {
+                    continue;
+                };
+                let source = normalize_appimage_source(
+                    app["appimage_update_source"].as_str().unwrap_or_default(),
+                )?;
+                if source != target.source || !target.path.is_file() {
+                    continue;
+                }
+                let path = &target.path;
                 runner.write("Applying AppImage update");
-                let path_text = path.to_string_lossy().into_owned();
                 let result = runner.run(
-                    &command(&[updater, "--overwrite", "--", &path_text]),
-                    true,
+                    &target.command(updater, "--overwrite"),
+                    runner.sandbox,
                     true,
                     false,
                 )?;
@@ -1599,4 +1772,40 @@ pub(super) fn attach(
         glib::Propagation::Proceed
     });
     toolbar.add_controller(keys);
+}
+
+#[cfg(test)]
+mod appimage_tests {
+    use super::*;
+
+    #[test]
+    fn appimage_check_and_apply_use_the_same_custom_source() {
+        let mut target = AppImageUpdate {
+            id: "0123456789abcdef0123".into(),
+            path: "/tmp/file with spaces.AppImage".into(),
+            source: Some("zsync|https://example.com/app.AppImage.zsync".into()),
+        };
+        for mode in ["--check-for-update", "--overwrite"] {
+            assert_eq!(
+                target.command("appimageupdate", mode),
+                [
+                    "appimageupdate",
+                    mode,
+                    "--update-info=zsync|https://example.com/app.AppImage.zsync",
+                    "--",
+                    "/tmp/file with spaces.AppImage",
+                ]
+            );
+        }
+        target.source = None;
+        assert_eq!(
+            target.command("appimageupdate", "--check-for-update"),
+            [
+                "appimageupdate",
+                "--check-for-update",
+                "--",
+                "/tmp/file with spaces.AppImage"
+            ]
+        );
+    }
 }
