@@ -526,3 +526,11 @@ Launch settings saved.|Opções de inicialização salvas.|||
 Choose an existing folder for the working directory.|Escolha uma pasta de trabalho que exista.|||
 Check the quotes and characters in the launch arguments.|Confira as aspas e os caracteres nos argumentos de inicialização.|||
 That Proton version is no longer available. Choose another runtime in Settings.|Essa versão do Proton não está mais disponível. Escolha outro runtime nas configurações.|||
+Game ID (Proton)|ID do jogo (Proton)|||
+Enter a Proton game ID like umu-1234 or leave the field blank.|Informe um ID do Proton como umu-1234 ou deixe em branco.|||
+AppImage update source|Fonte de atualização do AppImage|||
+Use a .zsync link from the publisher. Leave blank to use the AppImage's own source.|Use um link .zsync do desenvolvedor. Deixe em branco para usar a fonte do próprio AppImage.|||
+Show AppImage in folder|Mostrar AppImage na pasta|||
+Update source saved.|Fonte de atualização salva.|||
+Use an HTTPS .zsync link or a supported release update string.|Use um link HTTPS .zsync ou uma configuração de atualização compatível.|||
+This updater cannot use a custom AppImage source.|Este atualizador não aceita uma fonte personalizada.|||
