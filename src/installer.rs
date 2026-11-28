@@ -36,6 +36,7 @@ pub struct WindowsLaunchOptions {
     pub arguments: String,
     pub environment: String,
     pub game_id: String,
+    pub isolated_prefix: bool,
     pub disable_dxvk: bool,
     pub disable_vkd3d: bool,
     pub disable_esync: bool,
@@ -1831,7 +1832,7 @@ fi"#
         }
         let _operation = operation(&self.data)?;
         self.runner
-            .write("Preparing the shared Windows runtime environment");
+            .write("Preparing a Windows prefix for this game");
         let digest = sha256(&package.path)?;
         let identifier =
             sha256_bytes(format!("game:{}", package.path.display()).as_bytes())?[..20].to_owned();
@@ -1847,13 +1848,15 @@ fi"#
         }
         let machine = self.machine()?;
         let runtime = self.windows_runtime(runtime, &machine)?;
-        let wine = Wine::new(
+        let mut wine = Wine::new(
             self.runner.clone(),
             runtime,
             &self.data,
             &self.applications,
             &machine,
         );
+        wine.prefix = game_prefix(&self.data, &identifier, &wine.runtime)
+            .ok_or_else(|| PackliftError::Message("Invalid game identifier.".into()))?;
         wine.prepare()?;
         let identifier_path = self.data.join("games").join(&identifier);
         fs::create_dir_all(&identifier_path)?;
@@ -1882,7 +1885,7 @@ fi"#
                 "desktop": export_path, "name": package.name, "icon": icon,
                 "argv": argv, "terminal": false, "wine_args": [package.path.to_string_lossy()]
             }], "method": "wine", "runtime": wine.runtime,
-            "game_shortcut": true, "working_directory": app_dir
+            "game_shortcut": true, "isolated_prefix": true, "working_directory": app_dir
         });
         self.sync_app_menu_entry(&mut app)?;
         self.registry.save(&app)?;
@@ -2271,6 +2274,7 @@ fi"#
                 .to_owned(),
             environment: String::new(),
             game_id: record["game_id"].as_str().unwrap_or_default().into(),
+            isolated_prefix: record["isolated_prefix"] == true,
             disable_dxvk: false,
             disable_vkd3d: false,
             disable_esync: false,
@@ -2350,6 +2354,11 @@ fi"#
         );
         wine.proton_path = proton_path.map(Path::to_owned);
         wine.game_id = game_id.clone();
+        let isolated = record["game_shortcut"] == true && options.isolated_prefix;
+        if isolated {
+            wine.prefix = game_prefix(&self.data, id, &wine.runtime)
+                .ok_or_else(|| PackliftError::Message("Invalid game identifier.".into()))?;
+        }
         wine.extra_env = environment.clone();
         for (key, value) in [
             ("PROTON_USE_WINED3D", options.disable_dxvk),
@@ -2366,6 +2375,7 @@ fi"#
         updated["runtime"] = json!(wine.runtime);
         updated["proton_path"] = json!(proton_path);
         updated["game_id"] = json!(game_id);
+        updated["isolated_prefix"] = json!(isolated);
         updated["launch_directory"] = json!(options.working_directory);
         updated["launch_arguments"] = json!(options.arguments);
         updated["launch_environment"] = json!(environment);
@@ -3079,6 +3089,27 @@ exit 1
 
 fn shared_windows_prefix(data: &Path) -> PathBuf {
     data.join("wine/prefix")
+}
+
+fn game_prefix(data: &Path, id: &str, runtime: &str) -> Option<PathBuf> {
+    (id.len() == 20 && id.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
+        let runtime_folder = if runtime == "proton" {
+            "proton"
+        } else {
+            "wine"
+        };
+        data.join("games").join(id).join(runtime_folder)
+    })
+}
+
+pub fn game_prefix_directory(data: &Path, record: &Value) -> Option<PathBuf> {
+    if record["method"] != "wine" || record["game_shortcut"] != true {
+        return None;
+    }
+    if record["isolated_prefix"] == true {
+        return game_prefix(data, record["id"].as_str()?, record["runtime"].as_str()?);
+    }
+    Some(shared_windows_prefix(data))
 }
 
 /// The C: drive whose containing folder is the prefix used by this runtime.
@@ -5283,6 +5314,37 @@ mod tests {
         assert!(manager.registry.apps().unwrap()[0]["appimage_update_source"].is_null());
         drop(manager);
         fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn new_shortcuts_can_isolate_prefixes_per_game_and_runtime() {
+        use super::{game_prefix, game_prefix_directory, Path};
+        let data = Path::new("/packlift");
+        let id = "0123456789abcdef0123";
+        let another = "0123456789abcdef0124";
+        let mut record = serde_json::json!({
+            "id": id, "method": "wine", "runtime": "wine", "game_shortcut": true
+        });
+        assert_eq!(
+            game_prefix_directory(data, &record),
+            Some(data.join("wine/prefix"))
+        );
+        record["isolated_prefix"] = true.into();
+        assert_eq!(
+            game_prefix_directory(data, &record),
+            Some(data.join("games").join(id).join("wine"))
+        );
+        assert_ne!(
+            game_prefix(data, id, "wine"),
+            game_prefix(data, another, "wine")
+        );
+        record["runtime"] = "proton".into();
+        assert_eq!(
+            game_prefix_directory(data, &record),
+            Some(data.join("games").join(id).join("proton"))
+        );
+        record["id"] = "../escape".into();
+        assert!(game_prefix_directory(data, &record).is_none());
     }
 
     #[test]

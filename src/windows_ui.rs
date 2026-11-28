@@ -96,6 +96,16 @@ pub(super) fn launch_settings(
         }
     });
 
+    let isolated = adw::SwitchRow::builder()
+        .title(tr("Use a separate Wine prefix"))
+        .subtitle(tr(
+            "Switching prefixes keeps files and settings in their original prefix.",
+        ))
+        .active(record["isolated_prefix"] == true)
+        .visible(record["game_shortcut"] == true)
+        .build();
+    group.add(&isolated);
+
     let options = &record["wine_options"];
     let disable_dxvk = adw::SwitchRow::builder()
         .title(tr("Disable DXVK (Proton)"))
@@ -271,11 +281,12 @@ pub(super) fn launch_settings(
     let environment_buffer = environment_buffer.clone();
     let fields = panel.downgrade();
     let game_id = game_id.downgrade();
+    let isolated = isolated.downgrade();
     save.connect_clicked(move |button| {
         let (Some(runtime), Some(directory), Some(arguments), Some(label), Some(group), Some(disable_dxvk), Some(disable_vkd3d), Some(disable_esync), Some(disable_fsync)) =
             (runtime.upgrade(), directory.upgrade(), arguments.upgrade(), status.upgrade(), fields.upgrade(), disable_dxvk.upgrade(), disable_vkd3d.upgrade(), disable_esync.upgrade(), disable_fsync.upgrade())
         else { return; };
-        let Some(game_id) = game_id.upgrade() else { return; };
+        let (Some(game_id), Some(isolated)) = (game_id.upgrade(), isolated.upgrade()) else { return; };
         let selection = runtime.selected();
         let runtime = if selection == 0 { "wine" } else { "proton" };
         let proton_path = selection.checked_sub(2).and_then(|index| versions.borrow().get(index as usize).cloned());
@@ -284,6 +295,7 @@ pub(super) fn launch_settings(
             working_directory: (!path.is_empty()).then(|| PathBuf::from(path.as_str())),
             arguments: arguments.text().to_string(),
             game_id: game_id.text().to_string(),
+            isolated_prefix: isolated.is_active(),
             environment: environment_buffer.text(
                 &environment_buffer.start_iter(),
                 &environment_buffer.end_iter(),

@@ -120,12 +120,13 @@ pub(super) fn appimage_settings(
     actions.append(&folder);
     panel.append(&actions);
     let parent = window.downgrade();
+    let folder_path = path.clone();
     folder.connect_clicked(move |_| {
         let Some(window) = parent.upgrade() else {
             return;
         };
         let parent = window.downgrade();
-        gtk::FileLauncher::new(Some(&gio::File::for_path(&path))).open_containing_folder(
+        gtk::FileLauncher::new(Some(&gio::File::for_path(&folder_path))).open_containing_folder(
             Some(&window),
             gio::Cancellable::NONE,
             move |result| {
@@ -135,6 +136,94 @@ pub(super) fn appimage_settings(
             },
         );
     });
+    let history = adw::PreferencesGroup::new();
+    history.set_title(tr("Previous AppImage versions"));
+    {
+        let refresh: Rc<Box<dyn Fn()>> = Rc::new_cyclic(
+            |refresh: &std::rc::Weak<Box<dyn Fn()>>| {
+                let history = history.downgrade();
+                let app = window.application().map(|app| app.downgrade());
+                let rows = RefCell::new(Vec::<adw::ActionRow>::new());
+                let id = id.clone();
+                let refresh = refresh.clone();
+                Box::new(move || {
+                    let Some(history) = history.upgrade() else {
+                        return;
+                    };
+                    for row in rows.borrow_mut().drain(..) {
+                        history.remove(&row);
+                    }
+                    let held = path.with_file_name("hold-appimage-version").exists();
+                    history.set_description(held.then(|| tr("Automatic updates are paused for this AppImage until you update it manually.")));
+                    match appimage_versions(&path) {
+                        Ok(versions) if !versions.is_empty() => {
+                            for version in versions {
+                                let date = i64::try_from(version)
+                                    .ok()
+                                    .and_then(|time| glib::DateTime::from_unix_local(time).ok())
+                                    .and_then(|date| date.format("%x %X").ok())
+                                    .map_or_else(|| version.to_string(), |date| date.to_string());
+                                let row = adw::ActionRow::builder().title(date).build();
+                                let restore = text_button(tr("Restore"));
+                                restore.set_valign(gtk::Align::Center);
+                                let (app, id, refresh) = (app.clone(), id.clone(), refresh.clone());
+                                restore.connect_clicked(move |button| {
+                                    let Some(app) = app.as_ref().and_then(glib::WeakRef::upgrade)
+                                    else {
+                                        return;
+                                    };
+                                    let title =
+                                        format!("{} · {id}", tr("Restoring an AppImage version"));
+                                    if operations_ui::has_active_title(&title) {
+                                        return;
+                                    }
+                                    button.set_sensitive(false);
+                                    let button = button.downgrade();
+                                    let id = id.clone();
+                                    let refresh = refresh.clone();
+                                    operations_ui::submit(
+                                        &app,
+                                        &title,
+                                        move |log| {
+                                            restore_appimage(&id, version, log).map(|_| None)
+                                        },
+                                        move |result| {
+                                            if result.is_ok() {
+                                                invalidate_check(Source::AppImages);
+                                                if let Some(refresh) = refresh.upgrade() {
+                                                    refresh();
+                                                }
+                                            }
+                                        },
+                                        move || {
+                                            if let Some(button) = button.upgrade() {
+                                                button.set_sensitive(true);
+                                            }
+                                        },
+                                    );
+                                });
+                                row.add_suffix(&restore);
+                                history.add(&row);
+                                rows.borrow_mut().push(row);
+                            }
+                        }
+                        result => {
+                            let title = if result.is_err() {
+                                tr("Could not read AppImage history.")
+                            } else {
+                                tr("No previous versions saved.")
+                            };
+                            let row = adw::ActionRow::builder().title(title).build();
+                            history.add(&row);
+                            rows.borrow_mut().push(row);
+                        }
+                    }
+                })
+            },
+        );
+        history.connect_map(move |_| refresh());
+    }
+    panel.append(&history);
     let source = source.downgrade();
     let status = status.downgrade();
     let saved = Rc::new(saved);
@@ -680,7 +769,7 @@ fn apply_due_update(source: Source, log: LogHandler) -> Result<()> {
             }
             let available = check_appimages(&runner)?;
             if available.available {
-                apply(&available.backend, log)?;
+                apply_with_mode(&available.backend, log, true)?;
             }
         }
     }
@@ -1082,97 +1171,221 @@ fn apply_with_mode(backend: &Backend, log: LogHandler, noninteractive: bool) -> 
                 let source = normalize_appimage_source(
                     app["appimage_update_source"].as_str().unwrap_or_default(),
                 )?;
-                if source != target.source || !target.path.is_file() {
+                if source != target.source
+                    || !target.path.is_file()
+                    || (noninteractive
+                        && target.path.with_file_name("hold-appimage-version").exists())
+                {
                     continue;
                 }
-                let path = &target.path;
                 runner.write("Applying AppImage update");
-                let result = runner.run(
-                    &target.command(updater, "--overwrite"),
-                    runner.sandbox,
-                    true,
-                    false,
-                )?;
-                if !result.status.success() {
-                    return Err(PackliftError::Message(format!(
-                        "{} could not be updated. See the Packlift log.",
-                        path.file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("AppImage")
-                    )));
-                }
-                if let Err(error) = refresh_appimage_payload(&runner, path) {
-                    restore_appimage_backup(path);
-                    return Err(error);
-                }
+                replace_appimage(&runner, &target.path, |staged| {
+                    fs::copy(&target.path, staged)?;
+                    let target = AppImageUpdate {
+                        path: staged.to_owned(),
+                        ..target.clone()
+                    };
+                    runner.run(
+                        &target.command(updater, "--overwrite"),
+                        runner.sandbox,
+                        true,
+                        true,
+                    )?;
+                    Ok(())
+                })?;
+                clear_appimage_hold(&target.path)?;
             }
         }
     }
     Ok(())
 }
 
-fn refresh_appimage_payload(runner: &Runner, image: &std::path::Path) -> Result<()> {
-    use std::fs;
+const APPIMAGE_HISTORY_LIMIT: usize = 3;
 
-    let directory = image.parent().ok_or_else(|| {
-        PackliftError::Message("The AppImage installation directory is missing.".into())
-    })?;
-    let payload = directory.join("payload");
-    let replacement = directory.join("payload.update");
-    let backup = directory.join("payload.old");
-    if replacement.exists() {
-        fs::remove_dir_all(&replacement)?;
+fn clear_appimage_hold(image: &std::path::Path) -> std::io::Result<()> {
+    match fs::remove_file(image.with_file_name("hold-appimage-version")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
-    let offset = packlift::installer::appimage_offset(image)?.ok_or_else(|| {
+}
+
+fn restore_appimage(id: &str, version: u64, log: LogHandler) -> Result<()> {
+    let data = packlift_data_dir();
+    let _operation = operation(&data)?;
+    let runner = Runner::new(Some(data.clone()), log)?;
+    let path = managed_appimage_path(&data, id)
+        .filter(|path| path.is_file())
+        .ok_or_else(|| {
+            PackliftError::Message(tr("This AppImage is no longer in the library.").into())
+        })?;
+    if !appimage_versions(&path)?.contains(&version) {
+        return Err(PackliftError::Message(
+            tr("This AppImage version is no longer available.").into(),
+        ));
+    }
+    let source = path
+        .with_file_name("versions")
+        .join(format!("{version}.AppImage"));
+    let hold = path.with_file_name("hold-appimage-version");
+    let already_held = hold.exists();
+    fs::write(&hold, [])?;
+    let result = replace_appimage(&runner, &path, |stage| {
+        fs::copy(source, stage)?;
+        Ok(())
+    });
+    if result.is_err() && !already_held {
+        let _ = clear_appimage_hold(&path);
+    }
+    result
+}
+
+fn appimage_versions(image: &std::path::Path) -> std::io::Result<Vec<u64>> {
+    let history = image.with_file_name("versions");
+    let entries = match fs::read_dir(history) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut versions = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        if let Some(id) = name
+            .strip_suffix(".AppImage")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|id| name == format!("{id}.AppImage"))
+        {
+            versions.push(id);
+        }
+    }
+    versions.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(versions)
+}
+
+fn replace_appimage(
+    runner: &Runner,
+    image: &std::path::Path,
+    prepare: impl FnOnce(&std::path::Path) -> Result<()>,
+) -> Result<()> {
+    let stage = image.with_file_name(".packlift-update");
+    fs::create_dir(&stage)?;
+    let staged = stage.join("program.AppImage");
+    let result = (|| {
+        prepare(&staged)?;
+        let extract = packlift::installer::appimage_offset(image)?.is_some();
+        unpack_updated_appimage(runner, &staged, &stage, extract)?;
+        commit_appimage(image, &staged, &stage)?;
+        Ok(())
+    })();
+    // If an exceptional recovery failure left the original payload here,
+    // preserve it so it can still be recovered.
+    if !stage.join("previous-payload").exists() || result.is_ok() {
+        let _ = fs::remove_dir_all(&stage);
+    }
+    result
+}
+
+fn commit_appimage(
+    image: &std::path::Path,
+    staged: &std::path::Path,
+    stage: &std::path::Path,
+) -> Result<()> {
+    let history = image.with_file_name("versions");
+    fs::create_dir_all(&history)?;
+    let versions = appimage_versions(image)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let version = now.max(versions.first().map_or(0, |id| id.saturating_add(1)));
+    let archive = history.join(format!("{version}.AppImage"));
+    fs::hard_link(image, &archive)?;
+    let payload = image.with_file_name("payload");
+    let previous = stage.join("previous-payload");
+    let replacement = stage.join("payload");
+    let has_previous = payload.is_dir();
+    let has_replacement = replacement.is_dir();
+    let result = (|| -> std::io::Result<()> {
+        if has_replacement {
+            if has_previous {
+                fs::rename(&payload, &previous)?;
+            }
+            if let Err(error) = fs::rename(&replacement, &payload) {
+                if has_previous {
+                    fs::rename(&previous, &payload)?;
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = fs::rename(staged, image) {
+            if has_replacement {
+                fs::rename(&payload, &replacement)?;
+                if has_previous {
+                    fs::rename(&previous, &payload)?;
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(archive);
+        return Err(error.into());
+    }
+    for old in versions.into_iter().skip(APPIMAGE_HISTORY_LIMIT - 1) {
+        let _ = fs::remove_file(history.join(format!("{old}.AppImage")));
+    }
+    Ok(())
+}
+
+fn unpack_updated_appimage(
+    runner: &Runner,
+    image: &std::path::Path,
+    stage: &std::path::Path,
+    current_uses_payload: bool,
+) -> Result<()> {
+    let offset = packlift::installer::appimage_offset(image)?;
+    if !current_uses_payload {
+        let (kind, _) = packlift::core::detect(image)?;
+        return if kind == "appimage" {
+            Ok(())
+        } else {
+            Err(PackliftError::Message(
+                "The replacement is not an AppImage.".into(),
+            ))
+        };
+    }
+    let offset = offset.ok_or_else(|| {
         PackliftError::Message("The updated file is not a supported type 2 AppImage.".into())
     })?;
-    let offset_text = offset.to_string();
-    let replacement_text = replacement.to_string_lossy().into_owned();
-    let image_text = image.to_string_lossy().into_owned();
+    let replacement = stage.join("payload");
     runner.run(
         &command(&[
             "unsquashfs",
             "-no-progress",
             "-o",
-            &offset_text,
+            &offset.to_string(),
             "-d",
-            &replacement_text,
-            &image_text,
+            &replacement.to_string_lossy(),
+            &image.to_string_lossy(),
         ]),
         true,
         true,
         true,
     )?;
-    let canonical_replacement = fs::canonicalize(&replacement)?;
-    let app_run = fs::canonicalize(replacement.join("AppRun")).map_err(|_| {
-        PackliftError::Message("The updated AppImage has no usable AppRun entry.".into())
-    })?;
-    if !app_run.starts_with(&canonical_replacement) || !app_run.is_file() {
-        fs::remove_dir_all(&replacement)?;
+    let canonical = replacement.canonicalize()?;
+    let app_run = replacement.join("AppRun").canonicalize()?;
+    if !app_run.starts_with(&canonical) || !app_run.is_file() {
         return Err(PackliftError::Message(
-            "The updated AppImage AppRun points outside its payload or is not a file.".into(),
+            "The updated AppImage has no usable AppRun entry.".into(),
         ));
     }
-    if backup.exists() {
-        fs::remove_dir_all(&backup)?;
-    }
-    fs::rename(&payload, &backup)?;
-    if let Err(error) = fs::rename(&replacement, &payload) {
-        let _ = fs::rename(&backup, &payload);
-        return Err(error.into());
-    }
     Ok(())
-}
-
-fn restore_appimage_backup(image: &std::path::Path) {
-    let backup = image.with_file_name("program.AppImage.old");
-    let failed = image.with_file_name("program.AppImage.failed");
-    if backup.is_file() {
-        let _ = fs::remove_file(&failed);
-        if fs::rename(image, &failed).is_ok() {
-            let _ = fs::rename(backup, image);
-        }
-    }
 }
 
 struct Section {
@@ -1777,6 +1990,45 @@ pub(super) fn attach(
 #[cfg(test)]
 mod appimage_tests {
     use super::*;
+
+    #[test]
+    fn appimage_history_keeps_three_versions_and_rolls_back_on_swap_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("packlift-image-history-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let image = dir.join("program.AppImage");
+        let payload = dir.join("payload");
+        fs::create_dir(&payload).unwrap();
+        fs::write(&image, b"0").unwrap();
+        fs::write(payload.join("AppRun"), b"0").unwrap();
+
+        for version in 1..=5 {
+            let stage = dir.join("stage");
+            fs::create_dir_all(stage.join("payload")).unwrap();
+            let staged = stage.join("program.AppImage");
+            fs::write(&staged, version.to_string()).unwrap();
+            fs::write(stage.join("payload/AppRun"), version.to_string()).unwrap();
+            commit_appimage(&image, &staged, &stage).unwrap();
+            fs::remove_dir_all(stage).unwrap();
+        }
+        let versions = appimage_versions(&image).unwrap();
+        let history = dir.join("versions");
+        assert_eq!(versions.len(), 3);
+        for (version, expected) in versions.iter().zip(["4", "3", "2"]) {
+            assert_eq!(
+                fs::read_to_string(history.join(format!("{version}.AppImage"))).unwrap(),
+                expected
+            );
+        }
+        let stage = dir.join("stage");
+        fs::create_dir_all(stage.join("payload")).unwrap();
+        fs::write(stage.join("payload/AppRun"), "replacement").unwrap();
+        assert!(commit_appimage(&image, &stage.join("missing.AppImage"), &stage).is_err());
+        assert_eq!(fs::read_to_string(&image).unwrap(), "5");
+        assert_eq!(fs::read_to_string(payload.join("AppRun")).unwrap(), "5");
+        assert_eq!(appimage_versions(&image).unwrap(), versions);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn appimage_check_and_apply_use_the_same_custom_source() {
